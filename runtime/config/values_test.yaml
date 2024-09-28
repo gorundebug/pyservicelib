@@ -1,0 +1,10 @@
+§charsProcessorGrpcHost: 0.0.0.0
+charsProcessorGrpcPort: 9202
+charsProcessorMonitoringHost: 0.0.0.0
+charsProcessorMonitoringPort: 9092
+webServerHost: 0.0.0.0
+webServerPort: 8080
+wordsProcessorGrpcHost: 0.0.0.0
+wordsProcessorGrpcPort: 9201
+wordsProcessorMonitoringHost: 0.0.0.0
+wordsProcessorMonitoringPort: 9091
