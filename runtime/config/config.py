@@ -14,9 +14,10 @@ from pyservicelib.api.models.link import Link
 from pyservicelib.api.models.project_settings import ProjectSettings as ApiProjectSettings
 from pyservicelib.api.models.stream_app import StreamApp
 from typing import Any, Dict, List, Union, Self, cast, Tuple, Optional
+from pydantic import Field
 
 class StreamConfig(Stream):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -26,7 +27,7 @@ class StreamConfig(Stream):
         return _obj
 
 class DataConnectorConfig(DataConnector):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -36,7 +37,7 @@ class DataConnectorConfig(DataConnector):
         return _obj
 
 class EndpointConfig(Endpoint):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -47,7 +48,7 @@ class EndpointConfig(Endpoint):
 
 
 class PoolConfig(Pool):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -58,7 +59,7 @@ class PoolConfig(Pool):
 
 
 class TypeConfig(Type):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -69,7 +70,7 @@ class TypeConfig(Type):
 
 
 class ServiceConfig(Service):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -80,7 +81,7 @@ class ServiceConfig(Service):
 
 
 class LinkConfig(Link):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -91,7 +92,7 @@ class LinkConfig(Link):
 
 
 class ProjectSettings(ApiProjectSettings):
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -148,7 +149,7 @@ class RuntimeConfig:
 
 
 class StreamAppConfig(StreamApp):
-    runtime_config: RuntimeConfig
+    runtime_config: RuntimeConfig = Field(default=None, exclude=True)
 
     def __init__(self, **data):
         super().__init__(**data)
