@@ -237,7 +237,8 @@ class ServiceAppConfig(StreamApp):
         return self._runtime_config.pool_by_name.get(name)
 
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
-        return self._runtime_config.links_by_id.get(LinkId(from_id=from_id, to_id=to_id))
+        link_id = LinkId(from_id=from_id, to_id=to_id)
+        return self._runtime_config.links_by_id.get(link_id)
 
 
 class Config(ABC):

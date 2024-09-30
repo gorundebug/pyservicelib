@@ -14,6 +14,8 @@ from pyservicelib.runtime import DataSource
 from pyservicelib.runtime import DataSink
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.context import Context
+from collections.abc import Hashable
+from pyservicelib.runtime.datastruct import KeyValue
 
 class DataConnector(ABC):
     @property
@@ -121,6 +123,68 @@ class TypedConsumedStream[T](TypedStream[T], Consumer[T], ABC):
 
 class TypedTransformConsumedStream[T, R](TypedStream[R], Consumer[T], ABC):
     pass
+
+
+class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K, T1], R]):
+
+    @abstractmethod
+    def consume_right(self, kv: KeyValue[K, T2]) -> None:
+        pass
+
+
+class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStream[KeyValue[K, T], R]):
+
+    @abstractmethod
+    def consume_right(self, kv: KeyValue[K, T]) -> None:
+        pass
+
+class TypedLinkStream[T](TypedStream[T], Consumer[T]):
+
+    @abstractmethod
+    def set_source(self, stream: TypedConsumedStream[T]) -> None:
+        pass
+
+
+class TypedSplitStream[T](TypedConsumedStream[T]):
+
+    @abstractmethod
+    def add_stream(self) -> TypedConsumedStream[T]:
+        pass
+
+class BinaryConsumer(ABC):
+
+    @abstractmethod
+    def consume_binary(self, data: bytes) -> None:
+        pass
+
+
+class BinaryKVConsumer(ABC):
+
+    @abstractmethod
+    def consume_binary(self, key_data: bytes, value_data: bytes) -> None:
+        pass
+
+
+class TypedBinaryConsumedStream[T](TypedConsumedStream[T], BinaryConsumer, ABC):
+   pass
+
+
+class TypedBinaryKVConsumedStream[T](TypedConsumedStream[T], BinaryKVConsumer, ABC):
+    pass
+
+
+class TypedBinarySplitStream[T](TypedBinaryConsumedStream[T]):
+
+    @abstractmethod
+    def add_stream(self) -> TypedConsumedStream[T]:
+        pass
+
+
+class TypedBinaryKVSplitStream[T](TypedBinaryKVConsumedStream[T]):
+
+    @abstractmethod
+    def add_stream(self) -> TypedConsumedStream[T]:
+        pass
 
 
 class StreamExecutionEnvironment(ABC):
