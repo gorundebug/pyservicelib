@@ -149,11 +149,11 @@ class RuntimeConfig:
 
 
 class StreamAppConfig(StreamApp):
-    runtime_config: RuntimeConfig = Field(default=None, exclude=True)
+    _runtime_config: RuntimeConfig = Field(default=None, exclude=True)
 
     def __init__(self, **data):
         super().__init__(**data)
-        self.runtime_config = RuntimeConfig()
+        self._runtime_config = RuntimeConfig()
         self.init_runtime_config()
 
     class Config:
@@ -183,50 +183,50 @@ class StreamAppConfig(StreamApp):
 
     def init_runtime_config(self):
         for stream in self.streams:
-            self.runtime_config.streams_by_name[stream.name] = cast(StreamConfig, stream)
-            self.runtime_config.streams_by_id[stream.id] = cast(StreamConfig, stream)
+            self._runtime_config.streams_by_name[stream.name] = cast(StreamConfig, stream)
+            self._runtime_config.streams_by_id[stream.id] = cast(StreamConfig, stream)
 
         for service in self.services:
-            self.runtime_config.services_by_name[service.name] = cast(ServiceConfig, service)
-            self.runtime_config.services_by_id[service.id] = cast(ServiceConfig, service)
+            self._runtime_config.services_by_name[service.name] = cast(ServiceConfig, service)
+            self._runtime_config.services_by_id[service.id] = cast(ServiceConfig, service)
 
         for endpoint in self.endpoints:
-            self.runtime_config.endpoints_by_name[endpoint.name] = cast(EndpointConfig, endpoint)
-            self.runtime_config.endpoints_by_id[endpoint.id] = cast(EndpointConfig, endpoint)
+            self._runtime_config.endpoints_by_name[endpoint.name] = cast(EndpointConfig, endpoint)
+            self._runtime_config.endpoints_by_id[endpoint.id] = cast(EndpointConfig, endpoint)
 
         for data_connector in self.data_connectors:
-            self.runtime_config.data_connectors_by_name[data_connector.name] = (
+            self._runtime_config.data_connectors_by_name[data_connector.name] = (
                 cast(DataConnectorConfig, data_connector))
-            self.runtime_config.data_connectors_by_id[data_connector.id] = (
+            self._runtime_config.data_connectors_by_id[data_connector.id] = (
                 cast(DataConnectorConfig, data_connector))
 
         for pool in self.pools:
-            self.runtime_config.pool_by_name[pool.name] = cast(PoolConfig, pool)
+            self._runtime_config.pool_by_name[pool.name] = cast(PoolConfig, pool)
 
         for link in self.links:
             link_id = (link.var_from, link.to)
-            self.runtime_config.links_by_id[link_id] = cast(LinkConfig, link)
+            self._runtime_config.links_by_id[link_id] = cast(LinkConfig, link)
 
     def get_stream_config_by_name(self, name: str) -> Optional[StreamConfig]:
-        return self.runtime_config.streams_by_name.get(name)
+        return self._runtime_config.streams_by_name.get(name)
 
     def get_data_connector_by_id(self, data_connector_id: int) -> Optional[DataConnectorConfig]:
-        return self.runtime_config.data_connectors_by_id.get(data_connector_id)
+        return self._runtime_config.data_connectors_by_id.get(data_connector_id)
 
     def get_endpoint_config_by_id(self, endpoint_id: int) -> Optional[EndpointConfig]:
-        return self.runtime_config.endpoints_by_id.get(endpoint_id)
+        return self._runtime_config.endpoints_by_id.get(endpoint_id)
 
     def get_service_config_by_name(self, name: str) -> Optional[ServiceConfig]:
-        return self.runtime_config.services_by_name.get(name)
+        return self._runtime_config.services_by_name.get(name)
 
     def get_service_config_by_id(self, service_id: int) -> Optional[ServiceConfig]:
-        return self.runtime_config.services_by_id.get(service_id)
+        return self._runtime_config.services_by_id.get(service_id)
 
     def get_stream_config_by_id(self,stream_id: int) -> Optional[StreamConfig]:
-        return self.runtime_config.streams_by_id.get(stream_id)
+        return self._runtime_config.streams_by_id.get(stream_id)
 
     def get_pool_by_name(self, name: str) -> Optional[PoolConfig]:
-        return self.runtime_config.pool_by_name.get(name)
+        return self._runtime_config.pool_by_name.get(name)
 
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
-        return self.runtime_config.links_by_id.get((from_id, to_id))
+        return self._runtime_config.links_by_id.get((from_id, to_id))
