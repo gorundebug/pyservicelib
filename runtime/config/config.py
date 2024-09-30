@@ -13,8 +13,11 @@ from pyservicelib.api.models.service import Service
 from pyservicelib.api.models.link import Link
 from pyservicelib.api.models.project_settings import ProjectSettings as ApiProjectSettings
 from pyservicelib.api.models.stream_app import StreamApp
-from typing import Any, Dict, List, Union, Self, cast, Tuple, Optional
+from typing import Any, Dict, List, Union, Self, cast, Optional
 from pydantic import Field
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+
 
 class StreamConfig(Stream):
     properties: Dict[str, Any] = Field(default=None, exclude=True)
@@ -123,10 +126,15 @@ def replace_placeholders(config: Dict[str, Any], values: Dict[str, Any]) -> Dict
         raise ValueError("The result must be a dictionary.")
     return result
 
+@dataclass(frozen=True)
+class LinkId:
+    from_id: int
+    to_id: int
+
 class RuntimeConfig:
     streams_by_name: Dict[str, StreamConfig]
     services_by_name: Dict[str, ServiceConfig]
-    links_by_id: Dict[Tuple[int, int], LinkConfig]
+    links_by_id: Dict[LinkId, LinkConfig]
     data_connectors_by_name: Dict[str, DataConnectorConfig]
     endpoints_by_name: Dict[str, EndpointConfig]
     streams_by_id: Dict[int, StreamConfig]
@@ -148,7 +156,7 @@ class RuntimeConfig:
         self.pool_by_name = {}
 
 
-class StreamAppConfig(StreamApp):
+class ServiceAppConfig(StreamApp):
     _runtime_config: RuntimeConfig = Field(default=None, exclude=True)
 
     def __init__(self, **data):
@@ -204,7 +212,7 @@ class StreamAppConfig(StreamApp):
             self._runtime_config.pool_by_name[pool.name] = cast(PoolConfig, pool)
 
         for link in self.links:
-            link_id = (link.var_from, link.to)
+            link_id = LinkId(from_id=link.var_from, to_id=link.to)
             self._runtime_config.links_by_id[link_id] = cast(LinkConfig, link)
 
     def get_stream_config_by_name(self, name: str) -> Optional[StreamConfig]:
@@ -229,4 +237,12 @@ class StreamAppConfig(StreamApp):
         return self._runtime_config.pool_by_name.get(name)
 
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
-        return self._runtime_config.links_by_id.get((from_id, to_id))
+        return self._runtime_config.links_by_id.get(LinkId(from_id=from_id, to_id=to_id))
+
+
+class Config(ABC):
+
+    @property
+    @abstractmethod
+    def service_config(self) -> ServiceAppConfig:
+        pass

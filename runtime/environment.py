@@ -6,25 +6,14 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-import time
 from typing import List
-from pyservicelib.runtime.config import StreamConfig
+from pyservicelib.runtime.config import StreamConfig, Config
 from pyservicelib.runtime import StreamExecutionRuntime
-
-class Context:
-    __deadline: float
-
-    def __init__(self, timeout: timedelta):
-        self.__deadline = time.perf_counter() + timeout.total_seconds()
-
-    @property
-    def is_expired(self) -> bool:
-        return time.perf_counter() >= self.__deadline
-
-    @property
-    def time_left(self) -> float:
-        return max(0.0, self.__deadline - time.perf_counter())
-
+from pyservicelib.runtime.serde import Serializer
+from pyservicelib.runtime import DataSource
+from pyservicelib.runtime import DataSink
+from pyservicelib.runtime.telemetry.metrics import Metrics
+from pyservicelib.runtime.context import Context
 
 class DataConnector(ABC):
     @property
@@ -125,8 +114,66 @@ class TypedStream[T](Stream):
     def serde(self):
         pass
 
+
+class TypedConsumedStream[T](TypedStream[T], Consumer[T], ABC):
+    pass
+
+
+class TypedTransformConsumedStream[T, R](TypedStream[R], Consumer[T], ABC):
+    pass
+
+
 class StreamExecutionEnvironment(ABC):
 
     @abstractmethod
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
+        pass
+
+    @abstractmethod
+    def get_serde(self, value_type: type) -> Serializer:
+        pass
+
+    @abstractmethod
+    def streams_init(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    def start(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    def stop(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    def add_datasource(self, datasource: DataSource) -> None:
+        pass
+
+    @abstractmethod
+    def get_datasource(self, id_datasource: int) -> DataSource:
+        pass
+
+    @abstractmethod
+    def add_datasink(self, datasink: DataSink) -> None:
+        pass
+
+    @abstractmethod
+    def get_datasink(self, id_datasink: int) -> DataSink:
+        pass
+
+    @abstractmethod
+    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, value_type: type) -> EndpointReader:
+        pass
+
+    @abstractmethod
+    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, value_type: type) -> EndpointWriter:
+        pass
+
+    @property
+    @abstractmethod
+    def metrics(self) -> Metrics:
+        pass
+
+    @abstractmethod
+    def set_config(self, config: Config) -> None:
         pass

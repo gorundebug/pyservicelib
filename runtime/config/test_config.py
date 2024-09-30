@@ -10,7 +10,7 @@ import unittest
 from typing import Any, Dict
 import yaml
 
-from pyservicelib.runtime.config import StreamAppConfig, replace_placeholders
+from pyservicelib.runtime.config import ServiceAppConfig, replace_placeholders
 
 class ConfigLoadTestCase(unittest.TestCase):
     """Tests for the StreamAppConfig class."""
@@ -24,7 +24,7 @@ class ConfigLoadTestCase(unittest.TestCase):
             values_data: Dict[str, Any] = yaml.safe_load(file)
 
         result_config: Dict[str, Any] = replace_placeholders(config_data, values_data)
-        StreamAppConfig.from_dict(result_config)
+        ServiceAppConfig.from_dict(result_config)
 
 if __name__ == '__main__':
     unittest.main()
