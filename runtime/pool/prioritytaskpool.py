@@ -11,6 +11,7 @@ from typing import Callable
 class PriorityTask:
     pass
 
+
 class PriorityTaskPool(Pool):
 
     @abstractmethod

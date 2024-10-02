@@ -6,16 +6,17 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import List
-from pyservicelib.runtime.config import StreamConfig, Config
-from pyservicelib.runtime import StreamExecutionRuntime
-from pyservicelib.runtime.serde import Serializer
-from pyservicelib.runtime import DataSource
-from pyservicelib.runtime import DataSink
+from typing import List, Optional
+
+from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
+from pyservicelib.runtime.serde import Serializer, StreamSerializer
+from pyservicelib.runtime.store import Storage
+from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.context import Context
 from collections.abc import Hashable
 from pyservicelib.runtime.datastruct import KeyValue
+from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 
 class DataConnector(ABC):
     @property
@@ -45,11 +46,149 @@ class Endpoint(ABC):
     def data_connector(self) -> DataConnector:
         pass
 
+class DataSource(DataConnector):
+
+    @abstractmethod
+    def start(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    def stop(self, ctx: Context) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def data_connector(self) -> DataConnectorConfig:
+        pass
+
+    @property
+    @abstractmethod
+    def runtime(self) -> "StreamExecutionRuntime":
+        pass
+
+    @abstractmethod
+    def add_endpoint(self, endpoint: "InputEndpoint") -> None:
+        pass
+
+    @abstractmethod
+    def get_endpoint(self, id_endpoint: int) -> "InputEndpoint":
+        pass
+
+    @property
+    @abstractmethod
+    def endpoints(self) -> List["InputEndpoint"]:
+        pass
+
+class InputEndpointConsumer(ABC):
+
+    @property
+    @abstractmethod
+    def endpoint(self) -> "InputEndpoint":
+        pass
+
+
+class InputEndpoint(Endpoint):
+
+    @property
+    @abstractmethod
+    def config(self) -> EndpointConfig:
+        pass
+
+    @property
+    @abstractmethod
+    def runtime(self) -> "StreamExecutionRuntime":
+        pass
+
+    @property
+    @abstractmethod
+    def datasource(self) -> DataSource:
+        pass
+
+    @abstractmethod
+    def add_endpoint_consumer(self, consumer: InputEndpointConsumer) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def endpoint_consumers(self) -> List[InputEndpointConsumer]:
+        pass
+
+
+class DataSink(DataConnector):
+
+    @abstractmethod
+    def start(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    def stop(self, ctx: Context) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def data_connector(self) -> DataConnectorConfig:
+        pass
+
+    @property
+    @abstractmethod
+    def runtime(self) -> "StreamExecutionRuntime":
+        pass
+
+    @abstractmethod
+    def add_endpoint(self, endpoint: "SinkEndpoint") -> None:
+        pass
+
+    @abstractmethod
+    def get_endpoint(self, id_endpoint: int) -> "SinkEndpoint":
+        pass
+
+    @property
+    @abstractmethod
+    def endpoints(self) -> List["SinkEndpoint"]:
+        pass
+
+class OutputEndpointConsumer(ABC):
+
+    @property
+    @abstractmethod
+    def endpoint(self) -> "SinkEndpoint":
+        pass
+
+
+class SinkEndpoint(Endpoint):
+
+    @property
+    @abstractmethod
+    def config(self) -> EndpointConfig:
+        pass
+
+    @property
+    @abstractmethod
+    def runtime(self) -> "StreamExecutionRuntime":
+        pass
+
+    @property
+    @abstractmethod
+    def datasource(self) -> DataSink:
+        pass
+
+    @abstractmethod
+    def add_endpoint_consumer(self, consumer: OutputEndpointConsumer) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def endpoint_consumers(self) -> List[OutputEndpointConsumer]:
+        pass
+
+
 class EndpointReader(ABC):
     pass
 
+
 class EndpointWriter(ABC):
     pass
+
 
 class Stream(ABC):
 
@@ -80,8 +219,9 @@ class Stream(ABC):
 
     @property
     @abstractmethod
-    def runtime(self) -> StreamExecutionRuntime:
+    def runtime(self) -> "StreamExecutionRuntime":
         pass
+
 
 class ServiceStream(Stream):
 
@@ -90,10 +230,12 @@ class ServiceStream(Stream):
     def consumers(self) -> List[Stream]:
         pass
 
+
 class Consumer[T](ABC):
     @abstractmethod
     def consume(self, item: T) -> None:
         pass
+
 
 class TypedStreamConsumer[T](Stream, Consumer[T], ABC):
     pass
@@ -187,14 +329,13 @@ class TypedBinaryKVSplitStream[T](TypedBinaryKVConsumedStream[T]):
         pass
 
 
-class StreamExecutionEnvironment(ABC):
-
+class StreamExecutionEnvironment(ServiceEnvironmentConfig):
     @abstractmethod
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
         pass
 
     @abstractmethod
-    def get_serde(self, value_type: type) -> Serializer:
+    def get_serde(self, value_type: type) -> Optional[Serializer]:
         pass
 
     @abstractmethod
@@ -226,11 +367,11 @@ class StreamExecutionEnvironment(ABC):
         pass
 
     @abstractmethod
-    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, value_type: type) -> EndpointReader:
+    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointReader]:
         pass
 
     @abstractmethod
-    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, value_type: type) -> EndpointWriter:
+    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointWriter]:
         pass
 
     @property
@@ -240,4 +381,64 @@ class StreamExecutionEnvironment(ABC):
 
     @abstractmethod
     def set_config(self, config: Config) -> None:
+        pass
+
+class Caller[T](ABC):
+
+    @abstractmethod
+    def consume(self, value: T) ->None:
+        pass
+
+class ConsumeStatistics(ABC):
+
+    @property
+    @abstractmethod
+    def count(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def link_id(self) -> LinkId:
+        pass
+
+class StreamExecutionRuntime(StreamExecutionEnvironment):
+
+    @abstractmethod
+    def _reload_config(self, config: Config) -> None:
+        pass
+
+    @abstractmethod
+    def _service_init(self, name: str,  config: Config) -> None:
+        pass
+
+    @abstractmethod
+    def _get_serde(self, value_type: type) -> Serializer:
+        pass
+
+    @abstractmethod
+    def _register_stream(self, stream: ServiceStream) -> None:
+        pass
+
+    @abstractmethod
+    def _register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
+        pass
+
+    @abstractmethod
+    def _get_registered_serde(self, value_type: type) -> StreamSerializer:
+        pass
+
+    @abstractmethod
+    def _register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
+        pass
+
+    @abstractmethod
+    def _register_storage(self, storage: Storage) -> None:
+        pass
+
+    @abstractmethod
+    def _get_task_pool(self, name: str) -> TaskPool:
+        pass
+
+    @abstractmethod
+    def _get_priority_task_pool(self, name: str) -> PriorityTaskPool:
         pass

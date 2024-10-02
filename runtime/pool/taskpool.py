@@ -11,6 +11,7 @@ from typing import Callable
 class Task:
     pass
 
+
 class TaskPool(Pool):
 
     @abstractmethod
