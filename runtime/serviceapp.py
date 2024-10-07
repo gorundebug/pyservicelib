@@ -8,10 +8,11 @@ from typing import Dict
 
 from typing_extensions import Optional
 
-from environment import StreamExecutionRuntime
+from environment import ServiceExecutionRuntime
+from pyservicelib.runtime import ServiceExecutionEnvironment
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.environment import  Endpoint, Stream, EndpointWriter, EndpointReader
-from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics, ServiceStream
+from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics
 from pyservicelib.runtime.serde import Serializer, StreamSerializer
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.store import Storage
@@ -19,17 +20,16 @@ from pyservicelib.runtime.pool  import PriorityTaskPool, TaskPool
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
 
 
-class ServiceApp(StreamExecutionRuntime):
+class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _dataSources: Dict[int, DataSource]
     _dataSinks: Dict[int, DataSink]
     _metrics: Metrics
     _config: ServiceAppConfig
     _serviceConfig: ServiceConfig
-    _streams: Dict[int, ServiceStream]
+    _streams: Dict[int, Stream]
     _serdes: Dict[type, StreamSerializer]
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
-
 
     def __init__(self):
         self._dataSources = {}
@@ -39,38 +39,38 @@ class ServiceApp(StreamExecutionRuntime):
         self._task_pools = {}
         self._priority_task_pools = {}
 
-    def _reload_config(self, config: Config) -> None:
+    def reload_config(self, config: Config) -> None:
         pass
 
-    def _service_init(self, name: str, config: Config) -> None:
+    def service_init(self, name: str, config: Config) -> None:
         pass
 
-    def _get_serde(self, value_type: type) -> Serializer:
+    def get_type_serde(self, value_type: type) -> Serializer:
         ser = self.get_serde(value_type)
         if ser is not None:
             return ser
 
         raise ValueError(f"Serde for type '{value_type.__name__}' not found")
 
-    def _register_stream(self, stream: ServiceStream) -> None:
+    def register_stream(self, stream: Stream) -> None:
         self._streams[stream.id] = stream
 
-    def _register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
+    def register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
         self._serdes[value_type] = serializer
 
-    def _get_registered_serde(self, value_type: type) -> StreamSerializer:
+    def get_registered_serde(self, value_type: type) -> StreamSerializer:
         return self._serdes[value_type]
 
-    def _register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
+    def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
         pass
 
-    def _register_storage(self, storage: Storage) -> None:
+    def register_storage(self, storage: Storage) -> None:
         pass
 
-    def _get_task_pool(self, name: str) -> TaskPool:
+    def get_task_pool(self, name: str) -> TaskPool:
         return self._task_pools[name]
 
-    def _get_priority_task_pool(self, name: str) -> PriorityTaskPool:
+    def get_priority_task_pool(self, name: str) -> PriorityTaskPool:
         return self._priority_task_pools[name]
 
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
@@ -123,3 +123,7 @@ class ServiceApp(StreamExecutionRuntime):
     @property
     def service_config(self) -> ServiceConfig:
         return self._serviceConfig
+
+    @property
+    def runtime(self) -> "ServiceExecutionRuntime":
+        return self

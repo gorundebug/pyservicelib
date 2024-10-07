@@ -4,12 +4,23 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from stream import ConsumedStream
-from environment import StreamExecutionRuntime
+from pyservicelib.runtime.environment import ServiceExecutionEnvironment, TypedConsumedStream
+from pyservicelib.runtime.runtime import RuntimeTypeHelpers
 
-class InputStream[T](ConsumedStream[T]):
+class InputStream[T](TypedConsumedStream[T]):
+    def __init__(self, name: str, env: ServiceExecutionEnvironment):
+        super().__init__(name, RuntimeTypeHelpers[T](env.runtime).make_serde(), env)
 
-    def __init__(self, name: str, runtime: StreamExecutionRuntime):
-        super().__init__(name, runtime)
+    @property
+    def endpoint_id(self):
+        return self.config.id_endpoint
+
+    def consume(self, value: T) -> None:
+        if self._caller is not None:
+            self._caller.consume(value)
+
+
+
+
 
 

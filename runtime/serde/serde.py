@@ -69,3 +69,8 @@ class StreamKeyValueSerde[T](StreamSerde):
     @abstractmethod
     def value_serializer(self):
         pass
+
+
+class SerdeTypeHelper[T]:
+    def get_type(self) -> type:
+        return self.__orig_class__.__args__[0] #pyright: ignore

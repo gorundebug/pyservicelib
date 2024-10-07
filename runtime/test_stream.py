@@ -8,14 +8,14 @@
 
 import unittest
 
-from pyservicelib.runtime.stream import StreamBase
+from pyservicelib.runtime.environment import TypedStream
 
 class StreamBaseTypeCase(unittest.TestCase):
     """Tests for the StreamBase class."""
 
     def test_stream_base_type_name(self):
         """Test generic type name."""
-        stream = StreamBase[int](None, None) #pyright: ignore
+        stream = TypedStream[int]("test", None, None) #pyright: ignore
         self.assertEqual(stream.type_name, "int")
 
 if __name__ == '__main__':

@@ -9,13 +9,11 @@ from datetime import timedelta
 from typing import List, Optional
 
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
-from pyservicelib.runtime.serde import Serializer, StreamSerializer
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, StreamSerde, SerdeTypeHelper
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.context import Context
-from collections.abc import Hashable
-from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 
 class DataConnector(ABC):
@@ -63,7 +61,7 @@ class DataSource(DataConnector):
 
     @property
     @abstractmethod
-    def runtime(self) -> "StreamExecutionRuntime":
+    def runtime(self) -> "ServiceExecutionRuntime":
         pass
 
     @abstractmethod
@@ -96,7 +94,7 @@ class InputEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def runtime(self) -> "StreamExecutionRuntime":
+    def runtime(self) -> "ServiceExecutionRuntime":
         pass
 
     @property
@@ -131,7 +129,7 @@ class DataSink(DataConnector):
 
     @property
     @abstractmethod
-    def runtime(self) -> "StreamExecutionRuntime":
+    def runtime(self) -> "ServiceExecutionRuntime":
         pass
 
     @abstractmethod
@@ -164,7 +162,7 @@ class SinkEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def runtime(self) -> "StreamExecutionRuntime":
+    def runtime(self) -> "ServiceExecutionRuntime":
         pass
 
     @property
@@ -191,145 +189,124 @@ class EndpointWriter(ABC):
 
 
 class Stream(ABC):
+    _config: StreamConfig
+    _environment: "ServiceExecutionEnvironment"
+
+    def __init__(self, name: str, env: "ServiceExecutionEnvironment"):
+        cfg = env.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"Stream configuration with name '{name}' not found")
+        self._config = cfg
+        self._environment = env
+        env.runtime.register_stream(self)
 
     @property
-    @abstractmethod
     def name(self) -> str:
-        pass
+        return self._config.name
 
     @property
-    @abstractmethod
     def transformation_name(self) -> str:
-        pass
+        return self.transformation_name
 
     @property
     @abstractmethod
     def type_name(self) -> str:
-        pass
+       pass
 
     @property
-    @abstractmethod
     def id(self) -> int:
-        pass
+        return self._config.id
 
     @property
-    @abstractmethod
     def config(self) -> StreamConfig:
-        pass
+        return self._config
+
+    @property
+    def environment(self) -> "ServiceExecutionEnvironment":
+        return self._environment
 
     @property
     @abstractmethod
-    def runtime(self) -> "StreamExecutionRuntime":
-        pass
-
-
-class ServiceStream(Stream):
-
-    @property
-    @abstractmethod
-    def consumers(self) -> List[Stream]:
+    def consumers(self) -> List["Stream"]:
         pass
 
 
 class Consumer[T](ABC):
     @abstractmethod
-    def consume(self, item: T) -> None:
+    def consume(self, value: T) -> None:
         pass
 
 
-class TypedStreamConsumer[T](Stream, Consumer[T], ABC):
-    pass
+class StreamConsumer[T](Consumer[T], ABC):
+    _stream:  Stream
+
+    def __init__(self, stream: Stream):
+        self._stream = stream
+
+    @property
+    def stream(self) -> Stream:
+        return self._stream
 
 
 class TypedStream[T](Stream):
+    _consumer: Optional[StreamConsumer[T]]
+    _serde:  StreamSerde[T]
+
+    def __init__(self, name: str, serde: StreamSerde[T], env: "ServiceExecutionEnvironment"):
+        super().__init__(name, env)
+        self._consumer = None
+        self._serde = serde
 
     @property
-    @abstractmethod
-    def consumer(self):
-        pass
+    def consumer(self) -> Optional[StreamConsumer[T]]:
+        return self._consumer
 
     @consumer.setter
-    @abstractmethod
-    def consumer(self, value):
-        pass
+    def consumer(self, value: StreamConsumer[T]):
+        self._consumer = value
 
     @property
-    @abstractmethod
-    def serde(self):
-        pass
+    def serde(self) -> StreamSerde[T]:
+        return self._serde
+
+    @property
+    def consumers(self) -> List[Stream]:
+        if self._consumer is None:
+            return []
+        return [self._consumer.stream]
+
+    @property
+    def type_name(self) -> str:
+        genetic_type = SerdeTypeHelper[T]().get_type() #pyright: ignore
+        return genetic_type.__name__
 
 
-class TypedConsumedStream[T](TypedStream[T], Consumer[T], ABC):
+class Caller[T](Consumer[T], ABC):
     pass
 
 
-class TypedTransformConsumedStream[T, R](TypedStream[R], Consumer[T], ABC):
-    pass
+class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
+    _caller: Optional[Caller[T]]
+
+    def __init__(self, name: str, serde: StreamSerde[T], env: "ServiceExecutionEnvironment"):
+        ABC.__init__(self)
+        TypedStream[T].__init__(self, name, serde, env)
+        StreamConsumer[T].__init__(self, self)
+
+        self._caller = None
 
 
-class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K, T1], R]):
+class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
+    _caller: Optional[Caller[R]]
 
-    @abstractmethod
-    def consume_right(self, kv: KeyValue[K, T2]) -> None:
-        pass
-
-
-class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStream[KeyValue[K, T], R]):
-
-    @abstractmethod
-    def consume_right(self, kv: KeyValue[K, T]) -> None:
-        pass
-
-class TypedLinkStream[T](TypedStream[T], Consumer[T]):
-
-    @abstractmethod
-    def set_source(self, stream: TypedConsumedStream[T]) -> None:
-        pass
+    def __init__(self, name: str, serde: StreamSerde[R], env: "ServiceExecutionEnvironment"):
+        ABC.__init__(self)
+        TypedStream[R].__init__(self, name, serde, env)
+        StreamConsumer[T].__init__(self, self)
+        self._caller = None
 
 
-class TypedSplitStream[T](TypedConsumedStream[T]):
-
-    @abstractmethod
-    def add_stream(self) -> TypedConsumedStream[T]:
-        pass
-
-class BinaryConsumer(ABC):
-
-    @abstractmethod
-    def consume_binary(self, data: bytes) -> None:
-        pass
-
-
-class BinaryKVConsumer(ABC):
-
-    @abstractmethod
-    def consume_binary(self, key_data: bytes, value_data: bytes) -> None:
-        pass
-
-
-class TypedBinaryConsumedStream[T](TypedConsumedStream[T], BinaryConsumer, ABC):
-   pass
-
-
-class TypedBinaryKVConsumedStream[T](TypedConsumedStream[T], BinaryKVConsumer, ABC):
-    pass
-
-
-class TypedBinarySplitStream[T](TypedBinaryConsumedStream[T]):
-
-    @abstractmethod
-    def add_stream(self) -> TypedConsumedStream[T]:
-        pass
-
-
-class TypedBinaryKVSplitStream[T](TypedBinaryKVConsumedStream[T]):
-
-    @abstractmethod
-    def add_stream(self) -> TypedConsumedStream[T]:
-        pass
-
-
-class StreamExecutionEnvironment(ServiceEnvironmentConfig):
+class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
     @abstractmethod
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
         pass
@@ -383,11 +360,11 @@ class StreamExecutionEnvironment(ServiceEnvironmentConfig):
     def set_config(self, config: Config) -> None:
         pass
 
-class Caller[T](ABC):
-
+    @property
     @abstractmethod
-    def consume(self, value: T) ->None:
+    def runtime(self) -> "ServiceExecutionRuntime":
         pass
+
 
 class ConsumeStatistics(ABC):
 
@@ -401,44 +378,43 @@ class ConsumeStatistics(ABC):
     def link_id(self) -> LinkId:
         pass
 
-class StreamExecutionRuntime(StreamExecutionEnvironment):
-
+class ServiceExecutionRuntime(ABC):
     @abstractmethod
-    def _reload_config(self, config: Config) -> None:
+    def reload_config(self, config: Config) -> None:
         pass
 
     @abstractmethod
-    def _service_init(self, name: str,  config: Config) -> None:
+    def service_init(self, name: str,  config: Config) -> None:
         pass
 
     @abstractmethod
-    def _get_serde(self, value_type: type) -> Serializer:
+    def get_type_serde(self, value_type: type) -> Serializer:
         pass
 
     @abstractmethod
-    def _register_stream(self, stream: ServiceStream) -> None:
+    def register_stream(self, stream: Stream) -> None:
         pass
 
     @abstractmethod
-    def _register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
+    def register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
         pass
 
     @abstractmethod
-    def _get_registered_serde(self, value_type: type) -> StreamSerializer:
+    def get_registered_serde(self, value_type: type) -> StreamSerializer:
         pass
 
     @abstractmethod
-    def _register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
+    def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
         pass
 
     @abstractmethod
-    def _register_storage(self, storage: Storage) -> None:
+    def register_storage(self, storage: Storage) -> None:
         pass
 
     @abstractmethod
-    def _get_task_pool(self, name: str) -> TaskPool:
+    def get_task_pool(self, name: str) -> TaskPool:
         pass
 
     @abstractmethod
-    def _get_priority_task_pool(self, name: str) -> PriorityTaskPool:
+    def get_priority_task_pool(self, name: str) -> PriorityTaskPool:
         pass
