@@ -7,6 +7,7 @@
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from typing import List, Optional
+from typing import cast
 
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, StreamSerde, SerdeTypeHelper
@@ -15,6 +16,35 @@ from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
+
+class Consumer[T](ABC):
+    @abstractmethod
+    def consume(self, value: T) -> None:
+        pass
+
+class Caller[T](Consumer[T], ABC):
+    pass
+
+class DirectCaller[T](Caller[T]):
+
+    def consume(self, value: T):
+        pass
+
+class RuntimeTypeHelpers[T]:
+    _environment: "ServiceExecutionEnvironment"
+
+    def __init__(self, env: "ServiceExecutionEnvironment"):
+        self._environment = env
+
+    def get_registered_serde(self) -> StreamSerde[T]:
+        return cast(StreamSerde[T], self._environment.runtime.get_registered_serde(SerdeTypeHelper[T]().get_type()))
+
+    def make_serde(self) -> StreamSerde[T]:
+        return self.get_registered_serde()
+
+    def make_caller(self, source: "TypedStream[T]") -> Caller[T]:
+        return DirectCaller[T]()
+
 
 class DataConnector(ABC):
     @property
@@ -231,12 +261,6 @@ class Stream(ABC):
         pass
 
 
-class Consumer[T](ABC):
-    @abstractmethod
-    def consume(self, value: T) -> None:
-        pass
-
-
 class StreamConsumer[T](Consumer[T], ABC):
     _stream:  Stream
 
@@ -281,10 +305,6 @@ class TypedStream[T](Stream):
         return genetic_type.__name__
 
 
-class Caller[T](Consumer[T], ABC):
-    pass
-
-
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
 
@@ -295,6 +315,15 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
 
         self._caller = None
 
+    @property
+    def consumer(self) -> Optional[StreamConsumer[T]]:
+        return super().consumer
+
+    @consumer.setter
+    def consumer(self, value: StreamConsumer[T]):
+        self._caller = RuntimeTypeHelpers[T](self.environment).make_caller(self)
+        super().consumer = value
+
 
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
@@ -304,6 +333,15 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
         TypedStream[R].__init__(self, name, serde, env)
         StreamConsumer[T].__init__(self, self)
         self._caller = None
+
+    @property
+    def consumer(self) -> Optional[StreamConsumer[R]]:
+        return super().consumer
+
+    @consumer.setter
+    def consumer(self, value: StreamConsumer[R]):
+        self._caller = RuntimeTypeHelpers[R](self.environment).make_caller(self)
+        super().consumer = value
 
 
 class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
@@ -418,3 +456,5 @@ class ServiceExecutionRuntime(ABC):
     @abstractmethod
     def get_priority_task_pool(self, name: str) -> PriorityTaskPool:
         pass
+
+
