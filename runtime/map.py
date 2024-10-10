@@ -4,12 +4,36 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime.environment import TypedStream, TypedTransformConsumedStream, RuntimeTypeHelpers
+from pyservicelib.runtime.environment import StreamFunction, StreamSerde
+from pyservicelib.runtime.environment import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from pyservicelib.runtime.stream import MapFunction
+
+class MapFunctionContext[T, R](StreamFunction[R]):
+    _fn: MapFunction[T, R]
+
+    def __init__(self, context: TypedStream[R], fn: MapFunction[T, R]):
+        super().__init__(context)
+        self._fn = fn
+
+    def call(self, value: T) -> R:
+        self.before_call()
+        result = self._fn.map(self._context, value)
+        self.after_call()
+        return result
+
 
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
-    def __init__(self, name: str, stream: TypedStream[T]):
-        super().__init__(name, RuntimeTypeHelpers[R](stream.environment).make_serde(), stream.environment)
+    _source: TypedStream[T]
+    _serdeIn: StreamSerde[T]
+    _f: MapFunctionContext[T, R]
+
+    def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
+        super().__init__(name, RuntimeHelpers[R](stream.environment).make_serde(), stream.environment)
+        self._source = stream
+        self._serdeIn = stream.serde
+        self._f = MapFunctionContext(self, fn)
         stream.consumer = self
 
     def consume(self, value: T) -> None:
-        pass
+        if self._caller is not None:
+            self._caller.consume(self._f.call(value))

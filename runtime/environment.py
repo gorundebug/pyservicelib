@@ -10,7 +10,7 @@ from typing import List, Optional
 from typing import cast
 
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, StreamSerde, SerdeTypeHelper
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, StreamSerde, SerdeHelpers
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.telemetry.metrics import Metrics
@@ -30,14 +30,14 @@ class DirectCaller[T](Caller[T]):
     def consume(self, value: T):
         pass
 
-class RuntimeTypeHelpers[T]:
+class RuntimeHelpers[T]:
     _environment: "ServiceExecutionEnvironment"
 
     def __init__(self, env: "ServiceExecutionEnvironment"):
         self._environment = env
 
     def get_registered_serde(self) -> StreamSerde[T]:
-        return cast(StreamSerde[T], self._environment.runtime.get_registered_serde(SerdeTypeHelper[T]().get_type()))
+        return cast(StreamSerde[T], self._environment.runtime.get_registered_serde(SerdeHelpers[T]().get_type()))
 
     def make_serde(self) -> StreamSerde[T]:
         return self.get_registered_serde()
@@ -301,7 +301,7 @@ class TypedStream[T](Stream):
 
     @property
     def type_name(self) -> str:
-        genetic_type = SerdeTypeHelper[T]().get_type() #pyright: ignore
+        genetic_type = SerdeHelpers[T]().get_type() #pyright: ignore
         return genetic_type.__name__
 
 
@@ -321,7 +321,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[T]):
-        self._caller = RuntimeTypeHelpers[T](self.environment).make_caller(self)
+        self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
         super().consumer = value
 
 
@@ -340,7 +340,7 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[R]):
-        self._caller = RuntimeTypeHelpers[R](self.environment).make_caller(self)
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
         super().consumer = value
 
 
@@ -458,3 +458,14 @@ class ServiceExecutionRuntime(ABC):
         pass
 
 
+class StreamFunction[T]:
+    _context: TypedStream[T]
+
+    def __init__(self, context: TypedStream[T]):
+        self._context = context
+
+    def before_call(self):
+        pass
+
+    def after_call(self):
+        pass
