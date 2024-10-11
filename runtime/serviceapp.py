@@ -8,8 +8,7 @@ from typing import Dict
 
 from typing_extensions import Optional
 
-from environment import ServiceExecutionRuntime
-from pyservicelib.runtime import ServiceExecutionEnvironment
+from pyservicelib.runtime.environment import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from pyservicelib.runtime.telemetry.metrics import Metrics
 from pyservicelib.runtime.environment import  Endpoint, Stream, EndpointWriter, EndpointReader
 from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics

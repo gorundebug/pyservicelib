@@ -10,7 +10,7 @@ from typing import List, Optional
 from typing import cast
 
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, StreamSerde, SerdeHelpers
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, SerdeHelpers
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.telemetry.metrics import Metrics
@@ -36,10 +36,10 @@ class RuntimeHelpers[T]:
     def __init__(self, env: "ServiceExecutionEnvironment"):
         self._environment = env
 
-    def get_registered_serde(self) -> StreamSerde[T]:
-        return cast(StreamSerde[T], self._environment.runtime.get_registered_serde(SerdeHelpers[T]().get_type()))
+    def get_registered_serde(self) -> TypedStreamSerde[T]:
+        return cast(TypedStreamSerde[T], self._environment.runtime.get_registered_serde(SerdeHelpers[T]().get_type()))
 
-    def make_serde(self) -> StreamSerde[T]:
+    def make_serde(self) -> TypedStreamSerde[T]:
         return self.get_registered_serde()
 
     def make_caller(self, source: "TypedStream[T]") -> Caller[T]:
@@ -274,9 +274,9 @@ class StreamConsumer[T](Consumer[T], ABC):
 
 class TypedStream[T](Stream):
     _consumer: Optional[StreamConsumer[T]]
-    _serde:  StreamSerde[T]
+    _serde:  TypedStreamSerde[T]
 
-    def __init__(self, name: str, serde: StreamSerde[T], env: "ServiceExecutionEnvironment"):
+    def __init__(self, name: str, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
         super().__init__(name, env)
         self._consumer = None
         self._serde = serde
@@ -290,7 +290,7 @@ class TypedStream[T](Stream):
         self._consumer = value
 
     @property
-    def serde(self) -> StreamSerde[T]:
+    def serde(self) -> TypedStreamSerde[T]:
         return self._serde
 
     @property
@@ -308,7 +308,7 @@ class TypedStream[T](Stream):
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
 
-    def __init__(self, name: str, serde: StreamSerde[T], env: "ServiceExecutionEnvironment"):
+    def __init__(self, name: str, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
         ABC.__init__(self)
         TypedStream[T].__init__(self, name, serde, env)
         StreamConsumer[T].__init__(self, self)
@@ -328,7 +328,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
 
-    def __init__(self, name: str, serde: StreamSerde[R], env: "ServiceExecutionEnvironment"):
+    def __init__(self, name: str, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
         ABC.__init__(self)
         TypedStream[R].__init__(self, name, serde, env)
         StreamConsumer[T].__init__(self, self)

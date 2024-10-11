@@ -6,6 +6,7 @@
 
 from pyservicelib.runtime.environment import ServiceExecutionEnvironment, TypedConsumedStream, RuntimeHelpers
 
+
 class InputStream[T](TypedConsumedStream[T]):
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
         super().__init__(name, RuntimeHelpers[T](env).make_serde(), env)
@@ -17,9 +18,3 @@ class InputStream[T](TypedConsumedStream[T]):
     def consume(self, value: T) -> None:
         if self._caller is not None:
             self._caller.consume(value)
-
-
-
-
-
-

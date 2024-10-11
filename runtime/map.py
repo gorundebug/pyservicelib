@@ -4,9 +4,10 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime.environment import StreamFunction, StreamSerde
+from pyservicelib.runtime.environment import StreamFunction, TypedStreamSerde
 from pyservicelib.runtime.environment import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from pyservicelib.runtime.stream import MapFunction
+
 
 class MapFunctionContext[T, R](StreamFunction[R]):
     _fn: MapFunction[T, R]
@@ -24,7 +25,7 @@ class MapFunctionContext[T, R](StreamFunction[R]):
 
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
-    _serdeIn: StreamSerde[T]
+    _serdeIn: TypedStreamSerde[T]
     _f: MapFunctionContext[T, R]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
