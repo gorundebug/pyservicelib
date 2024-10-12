@@ -58,6 +58,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._serdes[value_type] = serializer
 
     def get_registered_serde(self, value_type: type, stream_name: str) -> StreamSerializer:
+        cfg = self._config.get_stream_config_by_name(stream_name)
+        if cfg is None:
+            raise ValueError(f"Stream configuration with name '{stream_name}' not found")
         return self._serdes[value_type]
 
     def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:

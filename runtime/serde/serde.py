@@ -10,6 +10,7 @@ from typing import Any, List, Tuple, cast, Hashable, Optional, Dict
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
+from pyservicelib.api.models.data_type import DataType
 
 UINT_SIZE = 4 if sys.maxsize <= 2**32 else 8
 PACK_FORMAT = '<I' if UINT_SIZE == 4 else '<Q'
@@ -296,11 +297,11 @@ class StringSerde(Serde[str]):
         return data_view[UINT_SIZE:UINT_SIZE + length].tobytes().decode('utf-8')
 
 
-class ListSerde[T](Serde[List[T]]):
+class ListSerde(Serde[List[Any]]):
     _list_type: type
-    _value_serde: Serde[T]
+    _value_serde: Serializer
 
-    def __init__(self, list_type: type, value_serde: Serde[T]):
+    def __init__(self, list_type: type, value_serde: Serializer):
         if list_type is not list:
             raise ValueError(f"list_type is not list type {list_type.__name__}")
 
@@ -343,26 +344,25 @@ class ListSerde[T](Serde[List[T]]):
             if len(data_view) < element_length:
                 raise ValueError("DeserializeObj ListSerde error (invalid element data)")
 
-            element_data = data_view[:element_length]
-            element = self._value_serde.deserialize_obj(cast(bytes, element_data))
+            element = self._value_serde.deserialize_obj(cast(bytes, data_view[:element_length]))
             result[i] = element
 
             data_view = data_view[element_length:]
 
         return result
 
-    def serialize(self, obj: List[T]) -> bytes:
+    def serialize(self, obj: List[Any]) -> bytes:
         return self.serialize_obj(obj)
 
-    def deserialize(self, data: bytes) -> List[T]:
-        return cast(List[T], self.deserialize_obj(data))
+    def deserialize(self, data: bytes) -> List[Any]:
+        return cast(List[Any], self.deserialize_obj(data))
 
 
-class TupleSerde[T](Serde[Tuple[T, ...]]):
+class TupleSerde(Serde[Tuple[Any, ...]]):
     _tuple_type: type
-    _value_serde: Serde[T]
+    _value_serde: Serializer
 
-    def __init__(self, tuple_type: type, value_serde: Serde[T]):
+    def __init__(self, tuple_type: type, value_serde: Serializer):
         if tuple_type is not tuple:
             raise ValueError(f"tuple_type is not list type {tuple_type.__name__}")
 
@@ -405,27 +405,26 @@ class TupleSerde[T](Serde[Tuple[T, ...]]):
             if len(data_view) < element_length:
                 raise ValueError("DeserializeObj TupleSerde error (invalid element data)")
 
-            element_data = data_view[:element_length]
-            element = self._value_serde.deserialize_obj(cast(bytes, element_data))
+            element = self._value_serde.deserialize_obj(cast(bytes, data_view[:element_length]))
             result[i] = element
 
             data_view = data_view[element_length:]
 
         return tuple(result)
 
-    def serialize(self, obj: Tuple[T, ...]) -> bytes:
+    def serialize(self, obj: Tuple[Any, ...]) -> bytes:
         return self.serialize_obj(obj)
 
-    def deserialize(self, data: bytes) -> Tuple[T, ...]:
-        return cast(Tuple[T, ...], self.deserialize_obj(data))
+    def deserialize(self, data: bytes) -> Tuple[Any, ...]:
+        return cast(Tuple[Any, ...], self.deserialize_obj(data))
 
 
-class DictSerde[K: Hashable, V](Serde[Dict[K, V]]):
+class DictSerde(Serde[Dict[Any, Any]]):
     _dict_type: type
-    _key_serde: Serde[K]
-    _value_serde: Serde[V]
+    _key_serde: Serializer
+    _value_serde: Serializer
 
-    def __init__(self, dict_type: type, key_serde: Serde[K], value_serde: Serde[V]):
+    def __init__(self, dict_type: type, key_serde: Serde[Any], value_serde: Serde[Any]):
         if dict_type is not tuple:
             raise ValueError(f"dict_type is not dict type {dict_type.__name__}")
 
@@ -433,23 +432,104 @@ class DictSerde[K: Hashable, V](Serde[Dict[K, V]]):
         self._key_serde = key_serde
         self._value_serde = value_serde
 
-    def serialize(self, obj: Dict[K, V]) -> bytes:
+    def serialize(self, obj: Dict[Any, Any]) -> bytes:
         return self.serialize_obj(obj)
 
-    def deserialize(self, data: bytes) -> Dict[K, V]:
-        return cast(Dict[K, V], self.deserialize_obj(data))
+    def deserialize(self, data: bytes) -> Dict[Any, Any]:
+        return cast(Dict[Any, Any], self.deserialize_obj(data))
+
+    def serialize_obj(self, obj: Any) -> bytes:
+        if not isinstance(obj, self._dict_type):
+            raise ValueError(f"value is not of type {self._dict_type.__name__}")
+
+        dict_value: Dict[Any, Any] = cast(Dict[Any, Any], obj)
+        result = bytearray()
+        result.extend(struct.pack(PACK_FORMAT, len(dict_value)))
+
+        for key, val in dict_value.items():
+            key_bytes = self._key_serde.serialize_obj(key)
+            result.extend(struct.pack(PACK_FORMAT, len(key_bytes)))
+            result.extend(key_bytes)
+
+            value_bytes = self._value_serde.serialize_obj(val)
+            result.extend(struct.pack(PACK_FORMAT, len(value_bytes)))
+            result.extend(value_bytes)
+
+        return bytes(result)
+
+    def deserialize_obj(self, data: bytes) -> Any:
+        data_view = memoryview(data)
+
+        if len(data_view) < UINT_SIZE:
+            raise ValueError("deserialization error DictSerde.deserialize invalid data size")
+
+        count = struct.unpack_from(PACK_FORMAT, data_view)[0]
+        data_view = data_view[UINT_SIZE:]
+
+        result: Dict[Any, Any] = {}
+        for _ in range(count):
+            if len(data_view) < UINT_SIZE:
+                raise ValueError("DeserializeObj DictSerde error (invalid key length data)")
+
+            key_length = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
+            data_view = data_view[UINT_SIZE:]
+
+            if len(data_view) < key_length:
+                raise ValueError("DeserializeObj DictSerde error (invalid key data)")
+
+            key = self._key_serde.deserialize_obj(cast(bytes, data_view[:key_length]))
+            data_view = data_view[key_length:]
+
+            if len(data_view) < UINT_SIZE:
+                raise ValueError("DeserializeObj DictSerde error (invalid value length data)")
+
+            value_len = struct.unpack_from(PACK_FORMAT, data_view[:UINT_SIZE])[0]
+            data_view = data_view[UINT_SIZE:]
+
+            if len(data_view) < key_length:
+                raise ValueError("DeserializeObj DictSerde error (invalid value data)")
+
+            value = self._value_serde.deserialize_obj(cast(bytes, data_view[:value_len]))
+            data_view = data_view[value_len:]
+
+            result[key] = value
+
+        return result
+
+def python_type_by_type(type_name: str) -> Optional[str]:
+    type_mapping = {
+        DataType.INT: 'int',
+        DataType.UINT: 'int',
+        DataType.BYTE: 'int',
+        DataType.CHAR: 'int',
+        DataType.BOOLEAN: 'bool',
+        DataType.UNICODE_CHAR: 'str',
+        DataType.STRING: 'str',
+        DataType.UNICODE_STRING: 'str',
+        DataType.FLOAT: 'float,',
+        DataType.DOUBLE: 'float',
+        DataType.INT8: 'int',
+        DataType.INT16: 'int',
+        DataType.INT32: 'int',
+        DataType.INT64: 'int',
+        DataType.UINT8: 'int',
+        DataType.UINT16: 'int',
+        DataType.UINT32: 'int',
+        DataType.UINT64: 'int'
+    }
+    return type_mapping.get(cast(DataType, type_name), None)
 
 
-def make_default_serde(value_type: type) -> Serializer:
-    if value_type == int:
+def make_default_serde(type_name: str) -> Serializer:
+    if type_name == 'int':
         return IntSerde()
-    elif value_type == str:
+    elif type_name == 'str':
         return StringSerde()
-    elif value_type == bool:
+    elif type_name == 'bool':
         return BoolSerde()
-    elif value_type == float:
+    elif type_name == 'float':
         return FloatSerde()
-    elif value_type == bytes:
+    elif type_name == 'bytes':
         return BytesSerde()
 
-    raise ValueError(f"make_default_serde unsupported type: {value_type}")
+    raise ValueError(f"make_default_serde unsupported type: {type_name}")
