@@ -36,11 +36,13 @@ class RuntimeHelpers[T]:
     def __init__(self, env: "ServiceExecutionEnvironment"):
         self._environment = env
 
-    def get_registered_serde(self) -> TypedStreamSerde[T]:
-        return cast(TypedStreamSerde[T], self._environment.runtime.get_registered_serde(SerdeHelpers[T]().get_type()))
+    def get_registered_serde(self, stream_name: str) -> TypedStreamSerde[T]:
+        return cast(TypedStreamSerde[T],
+                    self._environment.runtime.get_registered_serde(SerdeHelpers[T]().get_type(),
+                                                                   stream_name))
 
-    def make_serde(self) -> TypedStreamSerde[T]:
-        return self.get_registered_serde()
+    def make_serde(self, stream_name: str) -> TypedStreamSerde[T]:
+        return self.get_registered_serde(stream_name)
 
     def make_caller(self, source: "TypedStream[T]") -> Caller[T]:
         return DirectCaller[T]()
@@ -350,7 +352,7 @@ class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
         pass
 
     @abstractmethod
-    def get_serde(self, value_type: type) -> Optional[Serializer]:
+    def get_serde(self, value_type: type, stream_name: str) -> Optional[Serializer]:
         pass
 
     @abstractmethod
@@ -426,7 +428,7 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def get_type_serde(self, value_type: type) -> Serializer:
+    def get_type_serde(self, value_type: type, stream_name: str) -> Serializer:
         pass
 
     @abstractmethod
@@ -434,11 +436,11 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
+    def register_serde(self, value_type: type, stream_name: str, serializer: StreamSerializer) -> None:
         pass
 
     @abstractmethod
-    def get_registered_serde(self, value_type: type) -> StreamSerializer:
+    def get_registered_serde(self, value_type: type, stream_name: str) -> StreamSerializer:
         pass
 
     @abstractmethod

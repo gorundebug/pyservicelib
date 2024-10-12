@@ -29,7 +29,9 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _f: MapFunctionContext[T, R]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
-        super().__init__(name, RuntimeHelpers[R](stream.environment).make_serde(), stream.environment)
+        super().__init__(name=name,
+                         serde=RuntimeHelpers[R](stream.environment).make_serde(stream_name=name),
+                         env=stream.environment)
         self._source = stream
         self._serdeIn = stream.serde
         self._f = MapFunctionContext(self, fn)

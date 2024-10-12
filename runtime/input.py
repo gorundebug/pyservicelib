@@ -9,7 +9,9 @@ from pyservicelib.runtime.environment import ServiceExecutionEnvironment, TypedC
 
 class InputStream[T](TypedConsumedStream[T]):
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
-        super().__init__(name, RuntimeHelpers[T](env).make_serde(), env)
+        super().__init__(name=name,
+                         serde=RuntimeHelpers[T](env).make_serde(stream_name=name),
+                         env=env)
 
     @property
     def endpoint_id(self):

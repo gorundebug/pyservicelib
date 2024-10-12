@@ -44,20 +44,20 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def service_init(self, name: str, config: Config) -> None:
         pass
 
-    def get_type_serde(self, value_type: type) -> Serializer:
-        ser = self.get_serde(value_type)
+    def get_type_serde(self, value_type: type, stream_name: str) -> Serializer:
+        ser = self.get_serde(value_type, stream_name)
         if ser is not None:
             return ser
 
-        raise ValueError(f"Serde for type '{value_type.__name__}' not found")
+        raise ValueError(f"Serde for type '{value_type.__name__}' and stream '{stream_name}' not found")
 
     def register_stream(self, stream: Stream) -> None:
         self._streams[stream.id] = stream
 
-    def register_serde(self, value_type: type, serializer: StreamSerializer) -> None:
+    def register_serde(self, value_type: type, stream_name: str, serializer: StreamSerializer) -> None:
         self._serdes[value_type] = serializer
 
-    def get_registered_serde(self, value_type: type) -> StreamSerializer:
+    def get_registered_serde(self, value_type: type, stream_name: str) -> StreamSerializer:
         return self._serdes[value_type]
 
     def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
@@ -78,7 +78,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             return timedelta(seconds=self._serviceConfig.default_grpc_timeout / 1000)
         return timedelta(seconds=link.timeout / 1000)
 
-    def get_serde(self, value_type: type) -> Optional[Serializer]:
+    def get_serde(self, value_type: type, stream_name: str) -> Optional[Serializer]:
         return None
 
     def streams_init(self, ctx: Context) -> None:
