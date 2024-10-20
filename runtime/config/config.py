@@ -15,7 +15,7 @@ from pyservicelib.api.models.link import Link
 from pyservicelib.api.models.project_settings import ProjectSettings as ApiProjectSettings
 from pyservicelib.api.models.stream_app import StreamApp
 from typing import Any, Dict, List, Union, Self, cast, Optional
-from pydantic import Field
+from pydantic import Field, ConfigDict
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -194,8 +194,7 @@ class ServiceAppConfig(StreamApp, Config):
         self.runtime_config = RuntimeConfig()
         self.init_runtime_config()
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:

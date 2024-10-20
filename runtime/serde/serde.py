@@ -6,23 +6,40 @@
 
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, List, Tuple, cast, Hashable, Optional, Dict
+from typing import Any, List, Tuple, cast, Hashable, Optional, Dict, Union
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.api.models.data_type import DataType
 
+BytesBuffer = Union[bytes, bytearray, memoryview]
+
+
 UINT_SIZE = 4 if sys.maxsize <= 2**32 else 8
+MAX_SIZE_LENGTH = UINT_SIZE
 PACK_FORMAT = '<I' if UINT_SIZE == 4 else '<Q'
+
+
+def set_size(b: Union[bytearray, memoryview], offset: int, size: int) -> int:
+    struct.pack_into(PACK_FORMAT, b, offset, size)
+    return UINT_SIZE
+
+
+def get_size(b: Union[bytearray, memoryview], offset: int) -> Tuple[int, int]:
+    if len(b) < UINT_SIZE:
+        raise ValueError("get_size: size length error")
+    return struct.unpack_from(PACK_FORMAT, b, offset)[0], UINT_SIZE
+
 
 class Serializer(ABC):
     @abstractmethod
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         pass
 
     @abstractmethod
-    def deserialize_obj(self, data: bytes) -> Any:
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         pass
+
 
 class StreamSerializer(ABC):
 
@@ -35,37 +52,39 @@ class StreamSerializer(ABC):
 class Serde[T](Serializer):
 
     @abstractmethod
-    def serialize(self, obj: T) -> bytes:
+    def serialize(self, obj: T, b: BytesBuffer) -> bytearray:
         pass
 
     @abstractmethod
-    def deserialize(self, data: bytes) -> T:
+    def deserialize(self, data: BytesBuffer) -> T:
         pass
 
 
 class TypedStreamSerde[T](StreamSerializer):
 
     @abstractmethod
-    def serialize(self, obj: T) -> bytes:
+    def serialize(self, obj: T) -> bytearray:
         pass
 
     @abstractmethod
-    def deserialize(self, data: bytes) -> T:
+    def deserialize(self, data: BytesBuffer) -> T:
        pass
 
 
 class TypedStreamKeyValueSerde[T](TypedStreamSerde[T]):
 
     @abstractmethod
-    def serialize_key(self, obj: T) -> bytes:
+    def serialize_key(self, obj: T) -> bytearray:
         pass
 
     @abstractmethod
-    def serialize_value(self, obj: T) -> bytes:
+    def serialize_value(self, obj: T) -> bytearray:
         pass
 
     @abstractmethod
-    def deserialize_key_value(self, key_data: bytes, value_data: bytes) -> T:
+    def deserialize_key_value(self,
+                              key_data: BytesBuffer,
+                              value_data: BytesBuffer) -> T:
         pass
 
     @property
@@ -90,10 +109,10 @@ class StreamSerde[T](TypedStreamSerde[T]):
     def is_key_value(self) -> bool:
         return False
 
-    def serialize(self, obj: T) -> bytes:
-        return self._serde.serialize(obj)
+    def serialize(self, obj: T) -> bytearray:
+        return self._serde.serialize(obj, bytearray())
 
-    def deserialize(self, data: bytes) -> T:
+    def deserialize(self, data: BytesBuffer) -> T:
         return self._serde.deserialize(data)
 
 
@@ -110,61 +129,58 @@ class StreamKeyValueSerde[K: Hashable, V](TypedStreamKeyValueSerde[KeyValue[K, V
     def is_key_value(self) -> bool:
         return True
 
-    def serialize(self, obj: KeyValue[K, V]) -> bytes:
+    def serialize(self, obj: KeyValue[K, V]) -> bytearray:
 
-        key_bytes = self._serde_key.serialize(obj.key)
-        key_len_bytes = struct.pack(PACK_FORMAT, len(key_bytes))
+        b = bytearray(MAX_SIZE_LENGTH)
+        b = self._serde_key.serialize(obj.key, b)
+        key_bytes_length = len(b) - MAX_SIZE_LENGTH
+        n = set_size(b, 0, key_bytes_length)
+        if n != MAX_SIZE_LENGTH:
+            b[n:n + key_bytes_length] = b[MAX_SIZE_LENGTH:MAX_SIZE_LENGTH + key_bytes_length]
+            del b[n + key_bytes_length:]
 
-        value_bytes = self._serde_value.serialize(obj.value)
-        value_len_bytes = struct.pack(PACK_FORMAT, len(value_bytes))
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        b = self._serde_value.serialize(obj.value, b)
+        value_bytes_length = len(b) - b_length - MAX_SIZE_LENGTH
+        n = set_size(b, b_length, value_bytes_length)
+        if n != MAX_SIZE_LENGTH:
+            b[b_length + n:b_length + n + value_bytes_length] = b[b_length + MAX_SIZE_LENGTH:b_length +
+                                                                                             MAX_SIZE_LENGTH +
+                                                                                             value_bytes_length]
+            del b[b_length + n + value_bytes_length:]
 
-        data = bytearray(len(key_len_bytes) + len(key_bytes) + len(value_len_bytes) + len(value_bytes))
+        return b
 
-        offset = 0
-        data[offset:offset + len(key_len_bytes)] = key_len_bytes
-        offset += len(key_len_bytes)
-        data[offset:offset + len(key_bytes)] = key_bytes
-        offset += len(key_bytes)
-        data[offset:offset + len(value_len_bytes)] = value_len_bytes
-        offset += len(value_len_bytes)
-        data[offset:offset + len(value_bytes)] = value_bytes
+    def deserialize(self, data: BytesBuffer) -> KeyValue[K, V]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
 
-        return bytes(data)
+        key_len, n = get_size(data, 0)
+        data = data[n:]
 
-    def deserialize(self, data: bytes) -> KeyValue[K, V]:
-        data_view = memoryview(data)
+        if len(data) < key_len:
+            raise ValueError("streamKeyValueSerde: deserialize key error")
 
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialize key len error streamKeyValueSerde")
+        key = self._serde_key.deserialize(data[:key_len])
+        data = data[key_len:]
 
-        key_len = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-        data_view = data_view[UINT_SIZE:]
+        value_len, n = get_size(data, 0)
+        data = data[n:]
 
-        if len(data_view) < key_len:
-            raise ValueError("deserialize key error streamKeyValueSerde")
+        if len(data) < value_len:
+            raise ValueError("streamKeyValueSerde: deserialize value error")
 
-        key = self._serde_key.deserialize(cast(bytes, data_view[:key_len]))
-        data_view = data_view[key_len:]
-
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialize value len error streamKeyValueSerde")
-
-        value_len = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-        data_view = data_view[UINT_SIZE:]
-
-        if len(data_view) < value_len:
-            raise ValueError("deserialize value error streamKeyValueSerde")
-
-        value = self._serde_value.deserialize(cast(bytes, data_view[:value_len]))
+        value = self._serde_value.deserialize(data[:value_len])
         return KeyValue[K, V](key=key, value=value)
 
-    def serialize_key(self, obj: KeyValue[K, V]) -> bytes:
-        return self._serde_key.serialize(obj.key)
+    def serialize_key(self, obj: KeyValue[K, V]) -> bytearray:
+        return self._serde_key.serialize(obj.key, bytearray())
 
-    def serialize_value(self, obj: KeyValue[K, V]) -> bytes:
-        return self._serde_value.serialize(obj.value)
+    def serialize_value(self, obj: KeyValue[K, V]) -> bytearray:
+        return self._serde_value.serialize(obj.value, bytearray())
 
-    def deserialize_key_value(self, key_data: bytes, value_data: bytes) -> KeyValue[K, V]:
+    def deserialize_key_value(self, key_data: BytesBuffer, value_data: BytesBuffer) -> KeyValue[K, V]:
         return KeyValue[K, V](self._serde_key.deserialize(key_data), self._serde_value.deserialize(value_data))
 
     @property
@@ -182,119 +198,295 @@ class SerdeHelpers[T]:
 
 
 class BytesSerde(Serde[bytes]):
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, bytes):
-            raise ValueError("obj is not int")
-        return self.serialize(cast(bytes, obj))
+            raise ValueError("BytesSerde: obj is not bytes")
+        return self.serialize(cast(bytes, obj), b)
 
-    def deserialize_obj(self, data: bytes) -> Any:
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: bytes) -> bytes:
-        length = len(obj)
-        data = bytearray(length + UINT_SIZE)
-        data[:UINT_SIZE] = struct.pack(PACK_FORMAT, length)
-        data[UINT_SIZE:UINT_SIZE + length] = obj
-        return bytes(data)
+    def serialize(self, obj: bytes, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
 
-    def deserialize(self, data: bytes) -> bytes:
-        if len(data) < UINT_SIZE:
-            raise ValueError("deserialization error BytesSerde.deserialize")
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, len(obj))
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(obj)
+        return b
 
-        length = struct.unpack(PACK_FORMAT, data)[0]
+    def deserialize(self, data: BytesBuffer) -> bytes:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+        length, n = get_size(data, 0)
+        data = data[n:]
+        if len(data) < length:
+            raise ValueError("BytesSerde: deserialization error: not enough data")
+        return data.tobytes()
 
-        if len(data) < UINT_SIZE + length:
-            raise ValueError("deserialization error BytesSerde.deserialize: not enough data")
 
-        return data[UINT_SIZE:UINT_SIZE + length]
-
-
-class IntSerde(Serde[int]):
-    def serialize_obj(self, obj: Any) -> bytes:
+class NumberSerde(Serde[int]):
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, int):
             raise ValueError("obj is not int")
-        return self.serialize(cast(int, obj))
+        return self.serialize(cast(int, obj), b)
 
-    def deserialize_obj(self, data: bytes) -> Any:
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: int) -> bytes:
-        num_bytes = (-obj).bit_length() // 8 + 1 if obj < 0 else (obj.bit_length() + 7) // 8
-        if num_bytes < UINT_SIZE:
-            num_bytes = UINT_SIZE
-        return obj.to_bytes(num_bytes, byteorder='little', signed=True)
+    def serialize(self, obj: int, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
 
-    def deserialize(self, data: bytes) -> int:
-        if len(data) < UINT_SIZE:
-            raise ValueError("deserialization error IntSerde.deserialize")
+        num_bytes = (-obj).bit_length() // 8 + 1 if obj < 0 else (obj.bit_length() + 7) // 8
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, num_bytes)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(obj.to_bytes(num_bytes, byteorder='little', signed=True))
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> int:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+        length, n = get_size(data, 0)
+        data = data[n:]
+        if len(data) < length:
+            raise ValueError("NumberSerde: deserialization error: not enough data")
         return int.from_bytes(data, byteorder='little', signed=True)
 
 
-class FloatSerde(Serde[float]):
-    def serialize_obj(self, obj: Any) -> bytes:
-        if not isinstance(obj, float):
-            raise ValueError("obj is not float")
-        return self.serialize(cast(int, obj))
+class IntSerde(Serde[int]):
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, int):
+            raise ValueError("obj is not int")
+        return self.serialize(cast(int, obj), b)
 
-    def deserialize_obj(self, data: bytes) -> Any:
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: float) -> bytes:
-        return struct.pack('<d', obj)
+    def serialize(self, obj: int, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+        b.extend(struct.pack('<i' if UINT_SIZE == 4 else '<q', obj))
+        return b
 
-    def deserialize(self, data: bytes) -> float:
+    def deserialize(self, data: BytesBuffer) -> int:
+        if len(data) < UINT_SIZE:
+            raise ValueError("IntSerde deserialization error")
+        return struct.unpack('<i' if UINT_SIZE == 4 else '<q', data)[0]
+
+
+class FloatSerde(Serde[float]):
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, float):
+            raise ValueError("FloatSerde: obj is not float")
+        return self.serialize(cast(float, obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize(data)
+
+    def serialize(self, obj: float, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+        b.extend(struct.pack('<f', obj))
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> float:
         if len(data) < 8:
-            raise ValueError("deserialization error FloatSerde.deserialize")
-        return struct.unpack('<d', data)[0]
+            raise ValueError("FloatSerde: deserialization error")
+        return struct.unpack('<f', data)[0]
 
 
 class BoolSerde(Serde[bool]):
-    def serialize_obj(self, obj: Any) -> bytes:
-        if not isinstance(obj, bool):
-            raise ValueError("obj is not bool")
-        return self.serialize(cast(bool, obj))
 
-    def deserialize_obj(self, data: bytes) -> Any:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, bool):
+            raise ValueError("BoolSerde: obj is not bool")
+        return self.serialize(cast(bool, obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: bool) -> bytes:
-        return bytes([1 if obj else 0])
+    def serialize(self, obj: bool, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+        b.extend([1 if obj else 0])
+        return b
 
-    def deserialize(self, data: bytes) -> bool:
-        if len(data) != 1:
-            raise ValueError("deserialization error BoolSerde.deserialize: expected 1 byte")
-        return data[0] == 1
+    def deserialize(self, data: BytesBuffer) -> bool:
+        if len(data) < 1:
+            raise ValueError("BoolSerde: deserialization error")
+        return data[0] != 0
 
 
 class StringSerde(Serde[str]):
 
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, str):
-            raise ValueError("obj is not string")
-        return self.serialize(cast(str, obj))
+            raise ValueError("StringSerde: obj is not string")
+        return self.serialize(cast(str, obj), b)
 
-    def deserialize_obj(self, data: bytes) -> Any:
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: str) -> bytes:
+    def serialize(self, obj: str, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
         encoded_value = obj.encode('utf-8')
-        length = len(encoded_value)
-        data = bytearray(length + UINT_SIZE)
-        data[:UINT_SIZE] = struct.pack(PACK_FORMAT, length)
-        data[UINT_SIZE:UINT_SIZE + length] = encoded_value
-        return bytes(data)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, len(encoded_value))
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(encoded_value)
+        return b
 
-    def deserialize(self, data: bytes) -> str:
-        data_view = memoryview(data)
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialization error StringSerde.deserialize")
+    def deserialize(self, data: BytesBuffer) -> str:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
 
-        length = struct.unpack(PACK_FORMAT, data_view)[0]
+        length, n = get_size(data, 0)
+        data = data[n:]
+        if len(data) < length:
+            raise ValueError("StringSerde: deserialization error: not enough data")
+        return data[:length].tobytes().decode('utf-8')
 
-        if len(data_view) < UINT_SIZE + length:
-            raise ValueError("deserialization error StringSerde.deserialize: not enough data")
 
-        return data_view[UINT_SIZE:UINT_SIZE + length].tobytes().decode('utf-8')
+class IntsSerde(Serde[List[int]]):
+    def __init__(self):
+        pass
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"value is not of type list")
+        return self.serialize(cast(List[int], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[int], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(bytearray(UINT_SIZE * count))
+        n += b_length
+        struct.pack_into(f'<{count}i' if UINT_SIZE == 4 else f'<{count}q', b, n, *obj)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[int]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        if len(data) < count * UINT_SIZE + n:
+            raise ValueError("IntsSerde: deserialization error: not enough data")
+        return list(struct.unpack_from(f'<{count}i' if UINT_SIZE == 4 else f'<{count}q', data, n))
+
+
+class IntsSerde2(Serde[List[int]]):
+    def __init__(self):
+        pass
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"value is not of type list")
+        return self.serialize(cast(List[int], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[int], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(bytearray(UINT_SIZE * count))
+        n += b_length
+        struct.pack_into(f'<{count}i' if UINT_SIZE == 4 else f'<{count}q', b, n, *obj)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[int]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        if len(data) < count * UINT_SIZE + n:
+            raise ValueError("IntsSerde: deserialization error: not enough data")
+        result: List[int] = [0] * count
+
+        for i in range(count):
+            if len(data) < UINT_SIZE:
+                raise ValueError("DeserializeObj IntsSerde error (invalid element data)")
+            result[i] = struct.unpack_from(f'<i' if UINT_SIZE == 4 else f'<q', data, n)[0]
+            n += UINT_SIZE
+
+        return result
+
+
+class IntsSerde3(Serde[List[int]]):
+    def __init__(self):
+        pass
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"value is not of type list")
+        return self.serialize(cast(List[int], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[int], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        buf = bytearray(UINT_SIZE)
+        n += b_length
+        fmt = '<i' if UINT_SIZE == 4 else '<q'
+        for v in obj:
+            struct.pack_into(fmt, buf, 0, v)
+            b.extend(buf)
+            n += UINT_SIZE
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[int]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        if len(data) < count * UINT_SIZE + n:
+            raise ValueError("IntsSerde: deserialization error: not enough data")
+        result: List[int] = [0] * count
+
+        for i in range(count):
+            if len(data) < UINT_SIZE:
+                raise ValueError("DeserializeObj IntsSerde error (invalid element data)")
+            result[i] = struct.unpack_from(f'<i' if UINT_SIZE == 4 else f'<q', data, n)[0]
+            n += UINT_SIZE
+
+        return result
 
 
 class ListSerde(Serde[List[Any]]):
@@ -308,53 +500,63 @@ class ListSerde(Serde[List[Any]]):
         self._list_type = list_type
         self._value_serde = value_serde
 
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, self._list_type):
             raise ValueError(f"value is not of type {self._list_type.__name__}")
 
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
         list_value: List[Any] = cast(List[Any], obj)
 
-        result = bytearray()
-        result.extend(struct.pack(PACK_FORMAT, len(list_value)))
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, len(list_value))
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
 
         for element in list_value:
-            element_bytes = self._value_serde.serialize_obj(element)
-            result.extend(struct.pack(PACK_FORMAT, len(element_bytes)))
-            result.extend(element_bytes)
+            b_length = len(b)
+            b.extend(bytearray(MAX_SIZE_LENGTH))
+            b = self._value_serde.serialize_obj(element, b)
+            value_bytes_length = len(b) - b_length - MAX_SIZE_LENGTH
+            n = set_size(b, b_length, value_bytes_length)
+            if n != MAX_SIZE_LENGTH:
+                b[b_length + n:b_length + n + value_bytes_length] = b[b_length +
+                                                                      MAX_SIZE_LENGTH:b_length +
+                                                                                      MAX_SIZE_LENGTH +
+                                                                                      value_bytes_length]
+                del b[b_length + n + value_bytes_length:]
 
-        return bytes(result)
+        return b
 
-    def deserialize_obj(self, data: bytes) -> Any:
-        data_view = memoryview(data)
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialization error ListSerde.deserialize invalid data size")
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
 
-        count = struct.unpack(PACK_FORMAT, data_view)[0]
-        data_view = data_view[UINT_SIZE:]
+        count, n = get_size(data, 0)
+        data = data[n:]
 
         result: List[Optional[Any]] = [None] * count
 
         for i in range(count):
-            if len(data_view) < UINT_SIZE:
-                raise ValueError("DeserializeObj ListSerde error (invalid element length data)")
+            element_length, n = get_size(data, 0)
+            data = data[n:]
 
-            element_length = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-            data_view = data_view[UINT_SIZE:]
-
-            if len(data_view) < element_length:
+            if len(data) < element_length:
                 raise ValueError("DeserializeObj ListSerde error (invalid element data)")
 
-            element = self._value_serde.deserialize_obj(cast(bytes, data_view[:element_length]))
+            element = self._value_serde.deserialize_obj(data[:element_length])
             result[i] = element
 
-            data_view = data_view[element_length:]
+            data = data[element_length:]
 
         return result
 
-    def serialize(self, obj: List[Any]) -> bytes:
-        return self.serialize_obj(obj)
+    def serialize(self, obj: List[Any], b: BytesBuffer) -> bytearray:
+        return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: bytes) -> List[Any]:
+    def deserialize(self, data: BytesBuffer) -> List[Any]:
         return cast(List[Any], self.deserialize_obj(data))
 
 
@@ -369,132 +571,144 @@ class TupleSerde(Serde[Tuple[Any, ...]]):
         self._tuple_type = tuple_type
         self._value_serde = value_serde
 
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, self._tuple_type):
             raise ValueError(f"value is not of type {self._tuple_type.__name__}")
 
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
         tuple_value: Tuple[Any, ...] = cast(Tuple[Any, ...], obj)
 
-        result = bytearray()
-        result.extend(struct.pack(PACK_FORMAT, len(tuple_value)))
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, len(tuple_value))
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
 
         for element in tuple_value:
-            element_bytes = self._value_serde.serialize_obj(element)
-            result.extend(struct.pack(PACK_FORMAT, len(element_bytes)))
-            result.extend(element_bytes)
+            b_length = len(b)
+            b.extend(bytearray(MAX_SIZE_LENGTH))
+            b = self._value_serde.serialize_obj(element, b)
+            value_bytes_length = len(b) - b_length - MAX_SIZE_LENGTH
+            n = set_size(b, b_length, value_bytes_length)
+            if n != MAX_SIZE_LENGTH:
+                b[b_length + n:b_length + n + value_bytes_length] = b[b_length +
+                                                                      MAX_SIZE_LENGTH:b_length +
+                                                                                      MAX_SIZE_LENGTH +
+                                                                                      value_bytes_length]
+                del b[b_length + n + value_bytes_length:]
 
-        return bytes(result)
+        return b
 
-    def deserialize_obj(self, data: bytes) -> Any:
-        data_view = memoryview(data)
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialization error TupleSerde.deserialize invalid data size")
 
-        count = struct.unpack(PACK_FORMAT, data_view)[0]
-        data_view = data_view[UINT_SIZE:]
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        data = data[n:]
 
         result: List[Optional[Any]] = [None] * count
 
         for i in range(count):
-            if len(data_view) < UINT_SIZE:
-                raise ValueError("DeserializeObj TupleSerde error (invalid element length data)")
+            element_length, n = get_size(data, 0)
+            data = data[n:]
 
-            element_length = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-            data_view = data_view[UINT_SIZE:]
+            if len(data) < element_length:
+                raise ValueError("DeserializeObj ListSerde error (invalid element data)")
 
-            if len(data_view) < element_length:
-                raise ValueError("DeserializeObj TupleSerde error (invalid element data)")
-
-            element = self._value_serde.deserialize_obj(cast(bytes, data_view[:element_length]))
+            element = self._value_serde.deserialize_obj(data[:element_length])
             result[i] = element
 
-            data_view = data_view[element_length:]
+            data = data[element_length:]
 
         return tuple(result)
 
-    def serialize(self, obj: Tuple[Any, ...]) -> bytes:
-        return self.serialize_obj(obj)
+    def serialize(self, obj: Tuple[Any, ...], b: BytesBuffer) -> bytearray:
+        return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: bytes) -> Tuple[Any, ...]:
+    def deserialize(self, data: BytesBuffer) -> Tuple[Any, ...]:
         return cast(Tuple[Any, ...], self.deserialize_obj(data))
 
 
 class DictSerde(Serde[Dict[Any, Any]]):
     _dict_type: type
-    _key_serde: Serializer
-    _value_serde: Serializer
+    _keys_serde: Serializer
+    _values_serde: Serializer
 
-    def __init__(self, dict_type: type, key_serde: Serde[Any], value_serde: Serde[Any]):
+    def __init__(self, dict_type: type, keys_serde: Serde[Any], values_serde: Serde[Any]):
         if dict_type is not tuple:
             raise ValueError(f"dict_type is not dict type {dict_type.__name__}")
 
         self._dict_type = dict_type
-        self._key_serde = key_serde
-        self._value_serde = value_serde
+        self._keys_serde = keys_serde
+        self._values_serde = values_serde
 
-    def serialize(self, obj: Dict[Any, Any]) -> bytes:
-        return self.serialize_obj(obj)
+    def serialize(self, obj: Dict[Any, Any], b: BytesBuffer) -> bytearray:
+        return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: bytes) -> Dict[Any, Any]:
+    def deserialize(self, data: BytesBuffer) -> Dict[Any, Any]:
         return cast(Dict[Any, Any], self.deserialize_obj(data))
 
-    def serialize_obj(self, obj: Any) -> bytes:
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, self._dict_type):
             raise ValueError(f"value is not of type {self._dict_type.__name__}")
 
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
         dict_value: Dict[Any, Any] = cast(Dict[Any, Any], obj)
-        result = bytearray()
-        result.extend(struct.pack(PACK_FORMAT, len(dict_value)))
 
-        for key, val in dict_value.items():
-            key_bytes = self._key_serde.serialize_obj(key)
-            result.extend(struct.pack(PACK_FORMAT, len(key_bytes)))
-            result.extend(key_bytes)
+        keys: List[Any] = list(dict_value.keys())
+        values: List[Any] = list(dict_value.values())
 
-            value_bytes = self._value_serde.serialize_obj(val)
-            result.extend(struct.pack(PACK_FORMAT, len(value_bytes)))
-            result.extend(value_bytes)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        b = self._keys_serde.serialize_obj(keys, b)
+        keys_bytes_length = len(b) - b_length - MAX_SIZE_LENGTH
+        n = set_size(b, b_length, keys_bytes_length)
+        if n != MAX_SIZE_LENGTH:
+            b[b_length + n:b_length + n + keys_bytes_length] = b[b_length + MAX_SIZE_LENGTH:b_length +
+                                                                                            MAX_SIZE_LENGTH +
+                                                                                            keys_bytes_length]
+            del b[b_length + n + keys_bytes_length:]
 
-        return bytes(result)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        b = self._values_serde.serialize_obj(values, b)
+        values_bytes_length = len(b) - b_length - MAX_SIZE_LENGTH
+        n = set_size(b, b_length, values_bytes_length)
+        if n != MAX_SIZE_LENGTH:
+            b[b_length + n:b_length + n + values_bytes_length] = b[b_length + MAX_SIZE_LENGTH:b_length +
+                                                                                              MAX_SIZE_LENGTH +
+                                                                                              values_bytes_length]
+            del b[b_length + n + values_bytes_length:]
 
-    def deserialize_obj(self, data: bytes) -> Any:
-        data_view = memoryview(data)
+        return b
 
-        if len(data_view) < UINT_SIZE:
-            raise ValueError("deserialization error DictSerde.deserialize invalid data size")
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
 
-        count = struct.unpack_from(PACK_FORMAT, data_view)[0]
-        data_view = data_view[UINT_SIZE:]
+        keys_len, n = get_size(data, 0)
+        data = data[n:]
 
-        result: Dict[Any, Any] = {}
-        for _ in range(count):
-            if len(data_view) < UINT_SIZE:
-                raise ValueError("DeserializeObj DictSerde error (invalid key length data)")
+        if len(data) < keys_len:
+            raise ValueError("DictSerde: deserialize keys error")
 
-            key_length = struct.unpack(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-            data_view = data_view[UINT_SIZE:]
+        keys = self._keys_serde.deserialize_obj(data[:keys_len])
+        data = data[keys_len:]
 
-            if len(data_view) < key_length:
-                raise ValueError("DeserializeObj DictSerde error (invalid key data)")
+        values_len, n = get_size(data, 0)
+        data = data[n:]
 
-            key = self._key_serde.deserialize_obj(cast(bytes, data_view[:key_length]))
-            data_view = data_view[key_length:]
+        if len(data) < values_len:
+            raise ValueError("DictSerde: deserialize values error")
 
-            if len(data_view) < UINT_SIZE:
-                raise ValueError("DeserializeObj DictSerde error (invalid value length data)")
+        values = self._values_serde.deserialize_obj(data[:values_len])
 
-            value_len = struct.unpack_from(PACK_FORMAT, data_view[:UINT_SIZE])[0]
-            data_view = data_view[UINT_SIZE:]
-
-            if len(data_view) < key_length:
-                raise ValueError("DeserializeObj DictSerde error (invalid value data)")
-
-            value = self._value_serde.deserialize_obj(cast(bytes, data_view[:value_len]))
-            data_view = data_view[value_len:]
-
-            result[key] = value
-
-        return result
+        return dict(zip(keys, values))
 
 def python_type_by_type(type_name: str) -> Optional[str]:
     type_mapping = {
