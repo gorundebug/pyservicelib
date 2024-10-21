@@ -26,7 +26,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _config: ServiceAppConfig
     _serviceConfig: ServiceConfig
     _streams: Dict[int, Stream]
-    _serdes: Dict[type, StreamSerializer]
+    _serdes: Dict[str, StreamSerializer]
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
 
@@ -44,24 +44,21 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def service_init(self, name: str, config: Config) -> None:
         pass
 
-    def get_type_serde(self, value_type: type, stream_name: str) -> Serializer:
-        ser = self.get_serde(value_type, stream_name)
+    def get_type_serde(self, type_name: str) -> Serializer:
+        ser = self.get_serde(type_name)
         if ser is not None:
             return ser
 
-        raise ValueError(f"Serde for type '{value_type.__name__}' and stream '{stream_name}' not found")
+        raise ValueError(f"Serde for type '{type_name}' not found")
 
     def register_stream(self, stream: Stream) -> None:
         self._streams[stream.id] = stream
 
-    def register_serde(self, value_type: type, stream_name: str, serializer: StreamSerializer) -> None:
-        self._serdes[value_type] = serializer
+    def register_serde(self, type_name: str, serializer: StreamSerializer) -> None:
+        self._serdes[type_name] = serializer
 
-    def get_registered_serde(self, value_type: type, stream_name: str) -> StreamSerializer:
-        cfg = self._config.get_stream_config_by_name(stream_name)
-        if cfg is None:
-            raise ValueError(f"Stream configuration with name '{stream_name}' not found")
-        return self._serdes[value_type]
+    def get_registered_serde(self, type_name: str) -> StreamSerializer:
+        return self._serdes[type_name]
 
     def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
         pass
@@ -81,7 +78,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             return timedelta(seconds=self._serviceConfig.default_grpc_timeout / 1000)
         return timedelta(seconds=link.timeout / 1000)
 
-    def get_serde(self, value_type: type, stream_name: str) -> Optional[Serializer]:
+    def get_serde(self, type_name: str) -> Optional[Serializer]:
         return None
 
     def streams_init(self, ctx: Context) -> None:

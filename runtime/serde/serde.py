@@ -40,6 +40,9 @@ class Serializer(ABC):
     def deserialize_obj(self, data: BytesBuffer) -> Any:
         pass
 
+    @property
+    def is_stub(self) -> bool:
+        return False
 
 class StreamSerializer(ABC):
 
@@ -260,10 +263,63 @@ class NumberSerde(Serde[int]):
         return int.from_bytes(data, byteorder='little', signed=True)
 
 
+class StubSerde(Serde[Any]):
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        return self.serialize(obj, b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize(data)
+
+    def serialize(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> Any:
+        return None
+
+
 class IntSerde(Serde[int]):
+    _fmt: str
+    _size: int
+
+    def __init__(self, type_name: str):
+        if type_name == 'int':
+            self._fmt = '<i' if UINT_SIZE == 4 else '<q'
+            self._size = UINT_SIZE
+        elif type_name == 'uint':
+            self._fmt = '<I' if UINT_SIZE == 4 else '<Q'
+            self._size = UINT_SIZE
+        elif type_name == 'int8':
+            self._fmt = '<b'
+            self._size = 1
+        elif type_name == 'uint8':
+            self._fmt = '<B'
+            self._size = 1
+        elif type_name == 'int16':
+            self._fmt = '<h'
+            self._size = 2
+        elif type_name == 'uint16':
+            self._fmt = '<H'
+            self._size = 2
+        elif type_name == 'int32':
+            self._fmt = '<i'
+            self._size = 4
+        elif type_name == 'uint32':
+            self._fmt = '<I'
+            self._size = 4
+        elif type_name == 'int64':
+            self._fmt = '<q'
+            self._size = 8
+        elif type_name == 'uint64':
+            self._fmt = '<Q'
+            self._size = 8
+        else:
+            raise ValueError(f"IntSerde: invalid type {type_name}")
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, int):
-            raise ValueError("obj is not int")
+            raise ValueError("IntSerde: obj is not int")
         return self.serialize(cast(int, obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
@@ -272,16 +328,29 @@ class IntSerde(Serde[int]):
     def serialize(self, obj: int, b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
-        b.extend(struct.pack('<i' if UINT_SIZE == 4 else '<q', obj))
+        b.extend(struct.pack(self._fmt, obj))
         return b
 
     def deserialize(self, data: BytesBuffer) -> int:
-        if len(data) < UINT_SIZE:
+        if len(data) < self._size:
             raise ValueError("IntSerde deserialization error")
-        return struct.unpack('<i' if UINT_SIZE == 4 else '<q', data)[0]
+        return struct.unpack(self._fmt, data)[0]
 
 
 class FloatSerde(Serde[float]):
+    _fmt: str
+    _size: int
+
+    def __init__(self, type_name: str):
+        if type_name == 'float32':
+            self._fmt = '<f'
+            self._size = 4
+        elif type_name == 'float64':
+            self._fmt = '<d'
+            self._size = 8
+        else:
+            raise ValueError(f"FloatSerde: invalid type {type_name}")
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, float):
             raise ValueError("FloatSerde: obj is not float")
@@ -293,13 +362,13 @@ class FloatSerde(Serde[float]):
     def serialize(self, obj: float, b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
-        b.extend(struct.pack('<f', obj))
+        b.extend(struct.pack(self._fmt, obj))
         return b
 
     def deserialize(self, data: BytesBuffer) -> float:
-        if len(data) < 8:
+        if len(data) < self._size:
             raise ValueError("FloatSerde: deserialization error")
-        return struct.unpack('<f', data)[0]
+        return struct.unpack(self._fmt, data)[0]
 
 
 class BoolSerde(Serde[bool]):
@@ -358,13 +427,47 @@ class StringSerde(Serde[str]):
         return data[:length].tobytes().decode('utf-8')
 
 
-class IntsSerde(Serde[List[int]]):
-    def __init__(self):
-        pass
+class IntListSerde(Serde[List[int]]):
+    _fmt: str
+    _size: int
+
+    def __init__(self, type_name: str):
+        if type_name == '[]int':
+            self._fmt = 'i' if UINT_SIZE == 4 else 'q'
+            self._size = UINT_SIZE
+        elif type_name == '[]uint':
+            self._fmt = 'I' if UINT_SIZE == 4 else 'Q'
+            self._size = UINT_SIZE
+        elif type_name == '[]int8':
+            self._fmt = 'b'
+            self._size = 1
+        elif type_name == '[]uint8':
+            self._fmt = 'B'
+            self._size = 1
+        elif type_name == '[]int16':
+            self._fmt = 'h'
+            self._size = 2
+        elif type_name == '[]uint16':
+            self._fmt = 'H'
+            self._size = 2
+        elif type_name == '[]int32':
+            self._fmt = 'i'
+            self._size = 4
+        elif type_name == '[]uint32':
+            self._fmt = 'I'
+            self._size = 4
+        elif type_name == '[]int64':
+            self._fmt = 'q'
+            self._size = 8
+        elif type_name == '[]uint64':
+            self._fmt = 'Q'
+            self._size = 8
+        else:
+            raise ValueError(f"IntListSerde: invalid type {type_name}")
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
-            raise ValueError(f"value is not of type list")
+            raise ValueError(f"IntListSerde: obj is not list")
         return self.serialize(cast(List[int], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
@@ -380,9 +483,9 @@ class IntsSerde(Serde[List[int]]):
         n = set_size(b, b_length, count)
         if n != MAX_SIZE_LENGTH:
             del b[b_length + n:]
-        b.extend(bytearray(UINT_SIZE * count))
+        b.extend(bytearray(self._size * count))
         n += b_length
-        struct.pack_into(f'<{count}i' if UINT_SIZE == 4 else f'<{count}q', b, n, *obj)
+        struct.pack_into(f'<{count}{self._fmt}', b, n, *obj)
         return b
 
     def deserialize(self, data: BytesBuffer) -> List[int]:
@@ -390,10 +493,147 @@ class IntsSerde(Serde[List[int]]):
             data = memoryview(data)
 
         count, n = get_size(data, 0)
-        if len(data) < count * UINT_SIZE + n:
-            raise ValueError("IntsSerde: deserialization error: not enough data")
-        return list(struct.unpack_from(f'<{count}i' if UINT_SIZE == 4 else f'<{count}q', data, n))
+        if len(data) < count * self._size + n:
+            raise ValueError("IntListSerde: deserialization error: not enough data")
+        return list(struct.unpack_from(f'<{count}{self._fmt}', data, n))
 
+
+class FloatListSerde(Serde[List[float]]):
+    _fmt: str
+    _size: int
+
+    def __init__(self, type_name: str):
+        if type_name == '[]float32':
+            self._fmt = 'f'
+            self._size = 4
+        elif type_name == '[]float64':
+            self._fmt = 'd'
+            self._size = 8
+        else:
+            raise ValueError(f"FloatListSerde: invalid type {type_name}")
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"FloatListSerde: obj is not list")
+        return self.serialize(cast(List[float], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[float], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(bytearray(self._size * count))
+        n += b_length
+        struct.pack_into(f'<{count}{self._fmt}', b, n, *obj)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[float]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        if len(data) < count * self._size + n:
+            raise ValueError("FloatListSerde: deserialization error: not enough data")
+        return list(struct.unpack_from(f'<{count}{self._fmt}', data, n))
+
+
+class BoolListSerde(Serde[List[bool]]):
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"BoolListSerde: obj is not list")
+        return self.serialize(cast(List[bool], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[bool], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+        b.extend(bytearray(count))
+        n += b_length
+        struct.pack_into(f'<{count}?', b, n, *obj)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[bool]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        if len(data) < count + n:
+            raise ValueError("BoolListSerde: deserialization error: not enough data")
+        return list(struct.unpack_from(f'<{count}?', data, n))
+
+
+class StringListSerde(Serde[List[str]]):
+
+    def __init__(self):
+        self._value_serde = StringSerde()
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        if not isinstance(obj, list):
+            raise ValueError(f"StringListSerde: obj is not list")
+        return self.serialize(cast(List[str], obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize_obj(data)
+
+    def serialize(self, obj: List[str], b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+
+        count = len(obj)
+        b_length = len(b)
+        b.extend(bytearray(MAX_SIZE_LENGTH))
+        n = set_size(b, b_length, count)
+        if n != MAX_SIZE_LENGTH:
+            del b[b_length + n:]
+
+        for v in obj:
+            encoded_value = v.encode('utf-8')
+            b_length = len(b)
+            b.extend(bytearray(MAX_SIZE_LENGTH))
+            n = set_size(b, b_length, len(encoded_value))
+            if n != MAX_SIZE_LENGTH:
+                del b[b_length + n:]
+            b.extend(encoded_value)
+
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> List[str]:
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
+
+        count, n = get_size(data, 0)
+        data = data[n:]
+        result = [''] * count
+
+        for i in range(count):
+            length, n = get_size(data, 0)
+            data = data[n:]
+
+            if len(data) < length:
+                raise ValueError("StringListSerde: deserialization error: not enough data")
+
+            result[i] = data[:length].tobytes().decode('utf-8')
+            data = data[length:]
+
+        return result
 
 
 class ListSerde(Serde[List[Any]]):
@@ -620,36 +860,84 @@ class DictSerde(Serde[Dict[Any, Any]]):
 def python_type_by_type(type_name: str) -> Optional[str]:
     type_mapping = {
         DataType.INT: 'int',
-        DataType.UINT: 'int',
-        DataType.BYTE: 'int',
-        DataType.CHAR: 'int',
+        DataType.UINT: 'uint',
+        DataType.BYTE: 'int8',
+        DataType.CHAR: 'int32',
         DataType.BOOLEAN: 'bool',
         DataType.UNICODE_CHAR: 'str',
         DataType.STRING: 'str',
         DataType.UNICODE_STRING: 'str',
-        DataType.FLOAT: 'float,',
-        DataType.DOUBLE: 'float',
-        DataType.INT8: 'int',
-        DataType.INT16: 'int',
-        DataType.INT32: 'int',
-        DataType.INT64: 'int',
-        DataType.UINT8: 'int',
-        DataType.UINT16: 'int',
-        DataType.UINT32: 'int',
-        DataType.UINT64: 'int'
+        DataType.FLOAT: 'float32,',
+        DataType.DOUBLE: 'float64',
+        DataType.INT8: 'int8',
+        DataType.INT16: 'int16',
+        DataType.INT32: 'int32',
+        DataType.INT64: 'int64',
+        DataType.UINT8: 'uint8',
+        DataType.UINT16: 'uint16',
+        DataType.UINT32: 'uint32',
+        DataType.UINT64: 'uint64'
     }
     return type_mapping.get(cast(DataType, type_name), None)
 
 
 def make_default_serde(type_name: str) -> Serializer:
     if type_name == 'int':
-        return IntSerde()
+        return IntSerde(type_name)
+    elif type_name == 'uint':
+        return IntSerde(type_name)
+    elif type_name == 'int8':
+        return IntSerde(type_name)
+    elif type_name == 'uint8':
+        return IntSerde(type_name)
+    elif type_name == 'int16':
+        return IntSerde(type_name)
+    elif type_name == 'uint16':
+        return IntSerde(type_name)
+    elif type_name == 'int32':
+        return IntSerde(type_name)
+    elif type_name == 'uint32':
+        return IntSerde(type_name)
+    elif type_name == 'int64':
+        return IntSerde(type_name)
+    elif type_name == 'uint64':
+        return IntSerde(type_name)
     elif type_name == 'str':
         return StringSerde()
     elif type_name == 'bool':
         return BoolSerde()
-    elif type_name == 'float':
-        return FloatSerde()
+    elif type_name == 'float32':
+        return FloatSerde(type_name)
+    elif type_name == 'float64':
+        return FloatSerde(type_name)
+    if type_name == '[]int':
+        return IntListSerde(type_name)
+    elif type_name == '[]uint':
+        return IntListSerde(type_name)
+    elif type_name == '[]int8':
+        return IntListSerde(type_name)
+    elif type_name == '[]uint8':
+        return IntListSerde(type_name)
+    elif type_name == '[]int16':
+        return IntListSerde(type_name)
+    elif type_name == '[]uint16':
+        return IntListSerde(type_name)
+    elif type_name == '[]int32':
+        return IntListSerde(type_name)
+    elif type_name == '[]uint32':
+        return IntListSerde(type_name)
+    elif type_name == '[]int64':
+        return IntListSerde(type_name)
+    elif type_name == '[]uint64':
+        return IntListSerde(type_name)
+    elif type_name == '[]str':
+        return StringListSerde()
+    elif type_name == '[]bool':
+        return BoolListSerde()
+    elif type_name == '[]float32':
+        return FloatListSerde(type_name)
+    elif type_name == '[]float64':
+        return FloatListSerde(type_name)
     elif type_name == 'bytes':
         return BytesSerde()
 

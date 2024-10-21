@@ -165,6 +165,7 @@ class RuntimeConfig:
     data_connectors_by_id: Dict[int, DataConnectorConfig]
     endpoints_by_id: Dict[int, EndpointConfig]
     pool_by_name: Dict[str, PoolConfig]
+    types: Dict[str, TypeConfig]
 
     def __init__(self):
         self.streams_by_name = {}
@@ -177,6 +178,7 @@ class RuntimeConfig:
         self.data_connectors_by_id = {}
         self.endpoints_by_id = {}
         self.pool_by_name = {}
+        self.types = {}
 
 
 class Config(ABC):
@@ -240,6 +242,9 @@ class ServiceAppConfig(StreamApp, Config):
         for pool in self.pools:
             self.runtime_config.pool_by_name[pool.name] = cast(PoolConfig, pool)
 
+        for tp in self.types:
+            self.runtime_config.types[tp.name] = cast(TypeConfig, tp)
+
         for link in self.links:
             link_id = LinkId(from_id=link.var_from, to_id=link.to)
             self.runtime_config.links_by_id[link_id] = cast(LinkConfig, link)
@@ -264,6 +269,9 @@ class ServiceAppConfig(StreamApp, Config):
 
     def get_pool_by_name(self, name: str) -> Optional[PoolConfig]:
         return self.runtime_config.pool_by_name.get(name)
+
+    def get_type_by_name(self, name: str) -> Optional[TypeConfig]:
+        return self.runtime_config.types.get(name)
 
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
         link_id = LinkId(from_id=from_id, to_id=to_id)

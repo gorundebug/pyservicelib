@@ -29,8 +29,14 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _f: MapFunctionContext[T, R]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
-        super().__init__(name=name,
-                         serde=RuntimeHelpers[R](stream.environment).make_serde(stream_name=name),
+        cfg = stream.environment.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"MapStream configuration names '{name}' not found")
+        if cfg.value_type is None:
+            raise ValueError(f"The value type of the MapStream with name '{name}' is not defined")
+
+        super().__init__(cfg=cfg,
+                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type),
                          env=stream.environment)
         self._source = stream
         self._serdeIn = stream.serde

@@ -5,12 +5,28 @@
 
 import pytest
 
-from pyservicelib.runtime.serde import IntsSerde, IntSerde, StringSerde
+from pyservicelib.runtime.serde import IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde
 
 
 def test_serde_ints():
     values = [1, 2, 3]
-    ser = IntsSerde()
+    ser = IntListSerde("[]int")
+    data = ser.serialize(values, bytearray())
+    values_copy = ser.deserialize(data)
+    assert values == values_copy
+
+
+def test_serde_bools():
+    values = [True, False, True]
+    ser = BoolListSerde()
+    data = ser.serialize(values, bytearray())
+    values_copy = ser.deserialize(data)
+    assert values == values_copy
+
+
+def test_serde_strings():
+    values = ["test1", "", "test3"]
+    ser = StringListSerde()
     data = ser.serialize(values, bytearray())
     values_copy = ser.deserialize(data)
     assert values == values_copy
@@ -18,7 +34,7 @@ def test_serde_ints():
 
 def test_serde_int():
     value = 100
-    ser = IntSerde()
+    ser = IntSerde("int")
     data = ser.serialize(value, bytearray())
     value_copy = ser.deserialize(data)
     assert value == value_copy
@@ -32,7 +48,7 @@ def test_serde_string():
     assert value == value_copy
 
 
-@pytest.mark.parametrize("serializer", [IntsSerde()])
+@pytest.mark.parametrize("serializer", [IntListSerde("[]int")])
 def test_benchmark_serde_ints(benchmark, serializer):
     values = list(range(1, 40001))
 

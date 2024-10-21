@@ -9,8 +9,14 @@ from pyservicelib.runtime.environment import ServiceExecutionEnvironment, TypedC
 
 class InputStream[T](TypedConsumedStream[T]):
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
-        super().__init__(name=name,
-                         serde=RuntimeHelpers[T](env).make_serde(stream_name=name),
+        cfg = env.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"InputStream configuration named '{name}' not found")
+        if cfg.value_type is None:
+            raise ValueError(f"The value type of the InputStream with name '{name}' is not defined")
+
+        super().__init__(cfg=cfg,
+                         serde=RuntimeHelpers[T](env).make_serde(type_name=cfg.value_type),
                          env=env)
 
     @property
