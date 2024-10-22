@@ -17,18 +17,18 @@ BytesBuffer = Union[bytes, bytearray, memoryview]
 
 UINT_SIZE = 4 if sys.maxsize <= 2**32 else 8
 MAX_SIZE_LENGTH = UINT_SIZE
-PACK_FORMAT = '<I' if UINT_SIZE == 4 else '<Q'
+SIZE_PACK_FORMAT = '<I' if UINT_SIZE == 4 else '<Q'
 
 
 def set_size(b: Union[bytearray, memoryview], offset: int, size: int) -> int:
-    struct.pack_into(PACK_FORMAT, b, offset, size)
+    struct.pack_into(SIZE_PACK_FORMAT, b, offset, size)
     return UINT_SIZE
 
 
 def get_size(b: Union[bytearray, memoryview], offset: int) -> Tuple[int, int]:
     if len(b) < UINT_SIZE:
         raise ValueError("get_size: size length error")
-    return struct.unpack_from(PACK_FORMAT, b, offset)[0], UINT_SIZE
+    return struct.unpack_from(SIZE_PACK_FORMAT, b, offset)[0], UINT_SIZE
 
 
 class Serializer(ABC):
