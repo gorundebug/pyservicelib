@@ -1,0 +1,4 @@
+service1GrpcHost: 0.0.0.0
+service1GrpcPort: 9201
+service1MonitoringHost: 0.0.0.0
+service1MonitoringPort: 9091

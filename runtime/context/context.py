@@ -5,8 +5,15 @@
 
 from datetime import timedelta
 import time
+# from abc import ABC, abstractmethod
 
 class Context:
+    pass
+
+def default_context() -> Context:
+    return Context()
+
+class DeadlineContext:
     __deadline: float
 
     def __init__(self, timeout: timedelta):

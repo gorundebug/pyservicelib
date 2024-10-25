@@ -195,7 +195,7 @@ class StreamKeyValueSerde[K: Hashable, V](TypedStreamKeyValueSerde[KeyValue[K, V
         return self._serde_value
 
 
-class SerdeHelpers[T]:
+class TypeHelpers[T]:
     def get_type(self) -> type:
         return self.__orig_class__.__args__[0] #pyright: ignore
 
@@ -637,19 +637,14 @@ class StringListSerde(Serde[List[str]]):
 
 
 class ListSerde(Serde[List[Any]]):
-    _list_type: type
     _value_serde: Serializer
 
-    def __init__(self, list_type: type, value_serde: Serializer):
-        if list_type is not list:
-            raise ValueError(f"list_type is not list type {list_type.__name__}")
-
-        self._list_type = list_type
+    def __init__(self, value_serde: Serializer):
         self._value_serde = value_serde
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
-        if not isinstance(obj, self._list_type):
-            raise ValueError(f"value is not of type {self._list_type.__name__}")
+        if not isinstance(obj, list):
+            raise ValueError(f"value is not of type list")
 
         if not isinstance(b, bytearray):
             b = bytearray(b)
@@ -706,21 +701,20 @@ class ListSerde(Serde[List[Any]]):
     def deserialize(self, data: BytesBuffer) -> List[Any]:
         return cast(List[Any], self.deserialize_obj(data))
 
+    @property
+    def is_stub(self) -> bool:
+        return self._value_serde.is_stub
+
 
 class TupleSerde(Serde[Tuple[Any, ...]]):
-    _tuple_type: type
     _value_serde: Serializer
 
-    def __init__(self, tuple_type: type, value_serde: Serializer):
-        if tuple_type is not tuple:
-            raise ValueError(f"tuple_type is not list type {tuple_type.__name__}")
-
-        self._tuple_type = tuple_type
+    def __init__(self, value_serde: Serializer):
         self._value_serde = value_serde
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
-        if not isinstance(obj, self._tuple_type):
-            raise ValueError(f"value is not of type {self._tuple_type.__name__}")
+        if not isinstance(obj, tuple):
+            raise ValueError(f"value is not of type tuple")
 
         if not isinstance(b, bytearray):
             b = bytearray(b)
@@ -778,17 +772,16 @@ class TupleSerde(Serde[Tuple[Any, ...]]):
     def deserialize(self, data: BytesBuffer) -> Tuple[Any, ...]:
         return cast(Tuple[Any, ...], self.deserialize_obj(data))
 
+    @property
+    def is_stub(self) -> bool:
+        return self._value_serde.is_stub
+
 
 class DictSerde(Serde[Dict[Any, Any]]):
-    _dict_type: type
     _keys_serde: Serializer
     _values_serde: Serializer
 
-    def __init__(self, dict_type: type, keys_serde: Serde[Any], values_serde: Serde[Any]):
-        if dict_type is not tuple:
-            raise ValueError(f"dict_type is not dict type {dict_type.__name__}")
-
-        self._dict_type = dict_type
+    def __init__(self, keys_serde: Serializer, values_serde: Serializer):
         self._keys_serde = keys_serde
         self._values_serde = values_serde
 
@@ -799,8 +792,8 @@ class DictSerde(Serde[Dict[Any, Any]]):
         return cast(Dict[Any, Any], self.deserialize_obj(data))
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
-        if not isinstance(obj, self._dict_type):
-            raise ValueError(f"value is not of type {self._dict_type.__name__}")
+        if not isinstance(obj, dict):
+            raise ValueError(f"value is not of type dict")
 
         if not isinstance(b, bytearray):
             b = bytearray(b)
@@ -857,88 +850,69 @@ class DictSerde(Serde[Dict[Any, Any]]):
 
         return dict(zip(keys, values))
 
-def python_type_by_type(type_name: str) -> Optional[str]:
-    type_mapping = {
-        DataType.INT: 'int',
-        DataType.UINT: 'uint',
-        DataType.BYTE: 'int8',
-        DataType.CHAR: 'int32',
-        DataType.BOOLEAN: 'bool',
-        DataType.UNICODE_CHAR: 'str',
-        DataType.STRING: 'str',
-        DataType.UNICODE_STRING: 'str',
-        DataType.FLOAT: 'float32,',
-        DataType.DOUBLE: 'float64',
-        DataType.INT8: 'int8',
-        DataType.INT16: 'int16',
-        DataType.INT32: 'int32',
-        DataType.INT64: 'int64',
-        DataType.UINT8: 'uint8',
-        DataType.UINT16: 'uint16',
-        DataType.UINT32: 'uint32',
-        DataType.UINT64: 'uint64'
-    }
-    return type_mapping.get(cast(DataType, type_name), None)
+    @property
+    def is_stub(self) -> bool:
+        return self._values_serde.is_stub or self._keys_serde.is_stub
 
 
-def make_default_serde(type_name: str) -> Serializer:
-    if type_name == 'int':
-        return IntSerde(type_name)
-    elif type_name == 'uint':
-        return IntSerde(type_name)
-    elif type_name == 'int8':
-        return IntSerde(type_name)
-    elif type_name == 'uint8':
-        return IntSerde(type_name)
-    elif type_name == 'int16':
-        return IntSerde(type_name)
-    elif type_name == 'uint16':
-        return IntSerde(type_name)
-    elif type_name == 'int32':
-        return IntSerde(type_name)
-    elif type_name == 'uint32':
-        return IntSerde(type_name)
-    elif type_name == 'int64':
-        return IntSerde(type_name)
-    elif type_name == 'uint64':
-        return IntSerde(type_name)
-    elif type_name == 'str':
+def make_default_serde(serde_type: str) -> Optional[Serializer]:
+    if serde_type == 'int':
+        return IntSerde(serde_type)
+    elif serde_type == 'uint':
+        return IntSerde(serde_type)
+    elif serde_type == 'int8':
+        return IntSerde(serde_type)
+    elif serde_type == 'uint8':
+        return IntSerde(serde_type)
+    elif serde_type == 'int16':
+        return IntSerde(serde_type)
+    elif serde_type == 'uint16':
+        return IntSerde(serde_type)
+    elif serde_type == 'int32':
+        return IntSerde(serde_type)
+    elif serde_type == 'uint32':
+        return IntSerde(serde_type)
+    elif serde_type == 'int64':
+        return IntSerde(serde_type)
+    elif serde_type == 'uint64':
+        return IntSerde(serde_type)
+    elif serde_type == 'str':
         return StringSerde()
-    elif type_name == 'bool':
+    elif serde_type == 'bool':
         return BoolSerde()
-    elif type_name == 'float32':
-        return FloatSerde(type_name)
-    elif type_name == 'float64':
-        return FloatSerde(type_name)
-    if type_name == '[]int':
-        return IntListSerde(type_name)
-    elif type_name == '[]uint':
-        return IntListSerde(type_name)
-    elif type_name == '[]int8':
-        return IntListSerde(type_name)
-    elif type_name == '[]uint8':
-        return IntListSerde(type_name)
-    elif type_name == '[]int16':
-        return IntListSerde(type_name)
-    elif type_name == '[]uint16':
-        return IntListSerde(type_name)
-    elif type_name == '[]int32':
-        return IntListSerde(type_name)
-    elif type_name == '[]uint32':
-        return IntListSerde(type_name)
-    elif type_name == '[]int64':
-        return IntListSerde(type_name)
-    elif type_name == '[]uint64':
-        return IntListSerde(type_name)
-    elif type_name == '[]str':
+    elif serde_type == 'float32':
+        return FloatSerde(serde_type)
+    elif serde_type == 'float64':
+        return FloatSerde(serde_type)
+    if serde_type == '[]int':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]uint':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]int8':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]uint8':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]int16':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]uint16':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]int32':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]uint32':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]int64':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]uint64':
+        return IntListSerde(serde_type)
+    elif serde_type == '[]str':
         return StringListSerde()
-    elif type_name == '[]bool':
+    elif serde_type == '[]bool':
         return BoolListSerde()
-    elif type_name == '[]float32':
-        return FloatListSerde(type_name)
-    elif type_name == '[]float64':
-        return FloatListSerde(type_name)
-    elif type_name == 'bytes':
+    elif serde_type == '[]float32':
+        return FloatListSerde(serde_type)
+    elif serde_type == '[]float64':
+        return FloatListSerde(serde_type)
+    elif serde_type == 'bytes':
         return BytesSerde()
 
-    raise ValueError(f"make_default_serde unsupported type: {type_name}")
+    return None

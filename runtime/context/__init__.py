@@ -4,4 +4,4 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from .context import Context
+from .context import Context, default_context

@@ -10,7 +10,7 @@ from typing import List, Optional
 from typing import cast
 
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, SerdeHelpers
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, TypeHelpers
 from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StubSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
@@ -45,7 +45,7 @@ class RuntimeHelpers[T]:
         ser = self.get_registered_serde(type_name)
         if ser is not None:
             return ser
-        ser = cast(Serde[T], self._environment.get_serde(type_name))
+        ser = cast(Serde[T], self._environment.runtime.get_type_serde(type_name))
         if ser is not None:
             pass
         if ser is None:
@@ -235,21 +235,21 @@ class EndpointWriter(ABC):
 
 
 class Stream(ABC):
-    _config: StreamConfig
+    _id: int
     _environment: "ServiceExecutionEnvironment"
 
     def __init__(self, cfg: StreamConfig, env: "ServiceExecutionEnvironment"):
-        self._config = cfg
+        self._id = cfg.id
         self._environment = env
         env.runtime.register_stream(self)
 
     @property
     def name(self) -> str:
-        return self._config.name
+        return self.config.name
 
     @property
     def transformation_name(self) -> str:
-        return self.transformation_name
+        return self.config.transformation_name
 
     @property
     @abstractmethod
@@ -258,11 +258,11 @@ class Stream(ABC):
 
     @property
     def id(self) -> int:
-        return self._config.id
+        return self.id
 
     @property
     def config(self) -> StreamConfig:
-        return self._config
+        return self.environment.config.get_stream_config_by_id(self.id)
 
     @property
     def environment(self) -> "ServiceExecutionEnvironment":
@@ -314,7 +314,7 @@ class TypedStream[T](Stream):
 
     @property
     def type_name(self) -> str:
-        genetic_type = SerdeHelpers[T]().get_type() #pyright: ignore
+        genetic_type = TypeHelpers[T]().get_type() #pyright: ignore
         return genetic_type.__name__
 
 
@@ -408,7 +408,7 @@ class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
         pass
 
     @abstractmethod
-    def set_config(self, config: Config) -> None:
+    def set_config(self, cfg: Config) -> None:
         pass
 
     @property
@@ -431,15 +431,15 @@ class ConsumeStatistics(ABC):
 
 class ServiceExecutionRuntime(ABC):
     @abstractmethod
-    def reload_config(self, config: Config) -> None:
+    def reload_config(self, cfg: Config) -> None:
         pass
 
     @abstractmethod
-    def service_init(self, name: str,  config: Config) -> None:
+    def service_init(self, name: str,  cfg: Config) -> None:
         pass
 
     @abstractmethod
-    def get_type_serde(self, type_name: str) -> Serializer:
+    def get_type_serde(self, type_name: str) -> Optional[Serializer]:
         pass
 
     @abstractmethod
