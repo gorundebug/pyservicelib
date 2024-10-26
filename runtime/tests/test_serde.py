@@ -3,12 +3,12 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 import os
 from pathlib import Path
-import pytest
 
-from pyservicelib.runtime.serviceapp import ServiceApp, ServiceLoader
+from pyservicelib.runtime import Serde
+from pyservicelib.runtime.serviceapp import ServiceApp, ServiceAppLoader
 from pyservicelib.runtime.context import default_context
 from pyservicelib.runtime.config import ServiceAppConfig, ConfigSettings
 
@@ -27,9 +27,16 @@ class MockService(ServiceApp):
     def __init__(self):
         super().__init__()
 
-@pytest.mark.asyncio(loop_scope="function")
 async def test_serde_type_dict():
     os.chdir(Path(__file__).parent)
+    value = {1: True, 2: False, 3: True}
 
-    service = await ServiceLoader[MockService, MockServiceConfig]().init("MockService", ConfigSettings())
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().init("MockService", ConfigSettings())
     ctx = default_context()
+    ser = cast(Serde[dict[int, bool]], service.get_type_serde("MapType"))
+
+    b = ser.serialize(value, bytearray())
+    value_copy = ser.deserialize(b)
+
+    await service.stop(ctx)
+    assert value == value_copy

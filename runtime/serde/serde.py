@@ -10,7 +10,7 @@ from typing import Any, List, Tuple, cast, Hashable, Optional, Dict, Union
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
-from pyservicelib.api.models.data_type import DataType
+
 
 BytesBuffer = Union[bytes, bytearray, memoryview]
 
@@ -471,7 +471,7 @@ class IntListSerde(Serde[List[int]]):
         return self.serialize(cast(List[int], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
-        return self.deserialize_obj(data)
+        return self.deserialize(data)
 
     def serialize(self, obj: List[int], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
@@ -518,7 +518,7 @@ class FloatListSerde(Serde[List[float]]):
         return self.serialize(cast(List[float], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
-        return self.deserialize_obj(data)
+        return self.deserialize(data)
 
     def serialize(self, obj: List[float], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
@@ -553,7 +553,7 @@ class BoolListSerde(Serde[List[bool]]):
         return self.serialize(cast(List[bool], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
-        return self.deserialize_obj(data)
+        return self.deserialize(data)
 
     def serialize(self, obj: List[bool], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):

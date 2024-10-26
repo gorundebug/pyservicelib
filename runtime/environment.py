@@ -375,7 +375,7 @@ class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
         pass
 
     @abstractmethod
-    def stop(self, ctx: Context) -> None:
+    async def stop(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
@@ -429,13 +429,21 @@ class ConsumeStatistics(ABC):
     def link_id(self) -> LinkId:
         pass
 
+
+class ServiceLoader(ABC):
+
+    @abstractmethod
+    async def stop(self):
+        pass
+
+
 class ServiceExecutionRuntime(ABC):
     @abstractmethod
     def reload_config(self, cfg: Config) -> None:
         pass
 
     @abstractmethod
-    def service_init(self, name: str,  cfg: Config) -> None:
+    def service_init(self, name: str, loader: ServiceLoader, cfg: Config) -> None:
         pass
 
     @abstractmethod

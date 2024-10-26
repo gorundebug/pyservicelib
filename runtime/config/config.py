@@ -15,7 +15,7 @@ from pyservicelib.api.models.link import Link
 from pyservicelib.api.models.project_settings import ProjectSettings as ApiProjectSettings
 from pyservicelib.api.models.stream_app import StreamApp
 from typing import Any, Dict, List, Union, Self, cast, Optional, ClassVar
-from pydantic import Field, ConfigDict
+from pydantic import Field, ConfigDict, StrictStr
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -259,6 +259,7 @@ class Config(ABC):
 
 class ServiceAppConfig(StreamApp, Config):
     runtime_config: RuntimeConfig = Field(default=None, exclude=True)
+    log_level: StrictStr
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -285,7 +286,8 @@ class ServiceAppConfig(StreamApp, Config):
                                 for data_connector_data in obj.get('dataConnectors', [])],
             "endpoints": [EndpointConfig.from_dict(endpoint_data)
                           for endpoint_data in obj.get('endpoints', [])],
-            "settings": ProjectSettings.from_dict(obj.get('settings', {}))
+            "settings": ProjectSettings.from_dict(obj.get('settings', {})),
+            "log_level": 'DEBUG'
         }
         return data
 
@@ -297,7 +299,9 @@ class ServiceAppConfig(StreamApp, Config):
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
-        return cls.model_validate(cls._load_config(obj))
+        cfg = cls.model_validate(cls._load_config(obj))
+        cfg.init_runtime_config()
+        return cfg
 
     def init_runtime_config(self):
         for stream in self.streams:

@@ -3,27 +3,44 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-from datetime import timedelta
-from typing import Dict, cast, Optional, Any
 import argparse
-import yaml
 import os
-import aiofiles
+from datetime import timedelta
+from pathlib import Path
+from typing import Dict, cast, Optional, Any
+import logging
 
-from pyservicelib.runtime.environment import ServiceExecutionRuntime, ServiceExecutionEnvironment
-from pyservicelib.runtime.telemetry.metrics import Metrics
-from pyservicelib.runtime.environment import  Endpoint, Stream, EndpointWriter, EndpointReader
-from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, StubSerde, make_default_serde
-from pyservicelib.runtime.serde import ListSerde, DictSerde
-from pyservicelib.runtime.context import Context
-from pyservicelib.runtime.store import Storage
-from pyservicelib.runtime.pool  import PriorityTaskPool, TaskPool
+import aiofiles
+import yaml
+from watchfiles import awatch, Change
+import asyncio
+
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
+from pyservicelib.runtime.context import Context
+from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics, ServiceLoader
+from pyservicelib.runtime.environment import Endpoint, Stream, EndpointWriter, EndpointReader
+from pyservicelib.runtime.environment import ServiceExecutionRuntime, ServiceExecutionEnvironment
+from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool
+from pyservicelib.runtime.serde import ListSerde, DictSerde
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, StubSerde, make_default_serde
+from pyservicelib.runtime.store import Storage
+from pyservicelib.runtime.telemetry.metrics import Metrics
+
+def _init_logger() -> logging.Logger:
+    log = logging.getLogger()
+    log.setLevel('DEBUG')
+    ch = logging.StreamHandler()
+    ch.setLevel('DEBUG')
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    log.addHandler(ch)
+    return log
 
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
+    log: logging.Logger = _init_logger()
+
     _dataSources: Dict[int, DataSource]
     _dataSinks: Dict[int, DataSink]
     _metrics: Metrics
@@ -33,6 +50,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _serdes: Dict[str, StreamSerializer]
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
+    _loader: ServiceLoader | None
 
     def __init__(self):
         self._dataSources = {}
@@ -41,12 +59,14 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._serdes = {}
         self._task_pools = {}
         self._priority_task_pools = {}
+        self._loader = None
 
     def reload_config(self, cfg: Config) -> None:
         pass
 
-    def service_init(self, name: str, cfg: Config) -> None:
-        pass
+    def service_init(self, name: str, loader: ServiceLoader, cfg: Config) -> None:
+        self._loader = loader
+        self._config = cfg.service_config
 
     def _is_primitive_type(self, type_name: str) -> bool:
         if TypeConfig.is_primitive_type(type_name):
@@ -100,7 +120,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     raise ValueError(f"Invalid value type for dict type '{type_name}'")
 
                 if self._is_primitive_type(tp.key_type):
-                    keys_ser = self._make_default_serde(self._get_serde_type(tp.value_type, True))
+                    keys_ser = self._make_default_serde(self._get_serde_type(tp.key_type, True))
                 else:
                     keys_ser = ListSerde(self.get_type_serde(tp.key_type))
 
@@ -153,8 +173,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def start(self, ctx: Context) -> None:
         pass
 
-    def stop(self, ctx: Context) -> None:
-        pass
+    async def stop(self, ctx: Context) -> None:
+        await self._loader.stop()
 
     def add_datasource(self, datasource: DataSource) -> None:
         self._dataSources[datasource.id] = datasource
@@ -203,13 +223,50 @@ def get_path(arg_path: str) -> str:
             raise RuntimeError(f"path error: {e}")
     else:
         file_path = arg_path
-    return file_path
+    return str(Path(file_path).resolve())
 
-class ServiceLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig]:
+
+class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](ServiceLoader):
+    _watching_task: Optional[asyncio.Task[Any]]
+    _ready_flag: asyncio.Event
+    _watching_flag: asyncio.Event
+    _config_data: str
+    _service: ServiceType
+
+    async def _watch_config_changes(self, values_file: str):
+        cfg_class = self.__orig_class__.__args__[1]  #pyright: ignore
+        self._watching_flag.set()
+
+        try:
+            async for changes in awatch(Path(values_file).parent):
+                if not self._ready_flag.is_set():
+                    await self._ready_flag.wait()
+
+                if self._watching_task.done():
+                    break
+
+                for change, file_path in changes:
+                    if file_path == values_file and change in {Change.modified, Change.added}:
+                        try:
+                            async with aiofiles.open(values_file, 'r') as file:
+                                values_data = await file.read()
+                                values_dict: Dict[str, Any] = yaml.safe_load(values_data)
+
+                            config_dict: Dict[str, Any] = yaml.safe_load(self._config_data)
+                            result_config: Dict[str, Any] = replace_placeholders(config_dict, values_dict)
+
+                            cfg = cfg_class.from_dict(result_config)
+                            if cfg is None:
+                                raise ValueError("Failed to create updated config")
+                            self._service.runtime.reload_config(cfg)
+                        except Exception as e:
+                            ServiceApp.log.error(f"Failed to reload configuration: {e}")
+        finally:
+            ServiceApp.log.debug("Watch config changes loop exited.")
 
     async def init(self, name: str, config_settings: ConfigSettings) -> ServiceType:
-        service = self.__orig_class__.__args__[0]()  #pyright: ignore
-        if not isinstance(service , ServiceApp):
+        self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #pyright: ignore
+        if not isinstance(self._service , ServiceApp):
             raise ValueError("Invalid service type. Service must be inherit from ServiceApp class")
         cfg_class = self.__orig_class__.__args__[1]  #pyright: ignore
         if not issubclass(cfg_class , ServiceAppConfig):
@@ -222,20 +279,36 @@ class ServiceLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig]:
         config_file = get_path(args.config)
         values_file = get_path(args.values)
 
+        self._ready_flag = asyncio.Event()
+        self._watching_flag = asyncio.Event()
+
         async with aiofiles.open(config_file, 'r') as file:
-            content = await file.read()
-            config_data: Dict[str, Any] = yaml.safe_load(content)
+            self._config_data = await file.read()
+            config_dict: Dict[str, Any] = yaml.safe_load(self._config_data)
+
+        self._watching_task = asyncio.create_task(self._watch_config_changes(values_file))
+        if not self._watching_flag.is_set():
+            await self._watching_flag.wait()
 
         async with aiofiles.open(values_file, 'r') as file:
-            content = await file.read()
-            values_data: Dict[str, Any] = yaml.safe_load(content)
+            values_data = await file.read()
+            values_dict: Dict[str, Any] = yaml.safe_load(values_data)
 
-        result_config: Dict[str, Any] = replace_placeholders(config_data, values_data)
+        result_config: Dict[str, Any] = replace_placeholders(config_dict, values_dict)
 
         cfg = cfg_class.from_dict(result_config)
         if cfg is None:
             raise ValueError("Failed to create config")
 
-        service.runtime.service_init(name, cfg)
+        self._service.runtime.service_init(name, self, cfg)
+        self._ready_flag.set()
 
-        return cast(ServiceType, service)
+        return self._service
+
+    async def stop(self):
+        if self._watching_task is not None:
+            self._watching_task.cancel()
+            try:
+                await self._watching_task
+            except asyncio.CancelledError:
+                ServiceApp.log.debug("Watching task cancelled")
