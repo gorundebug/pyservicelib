@@ -20,7 +20,7 @@ from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 
 class Consumer[T](ABC):
     @abstractmethod
-    def consume(self, value: T) -> None:
+    async def consume(self, value: T) -> None:
         pass
 
 class Caller[T](Consumer[T], ABC):
@@ -28,7 +28,7 @@ class Caller[T](Consumer[T], ABC):
 
 class DirectCaller[T](Caller[T]):
 
-    def consume(self, value: T):
+    async def consume(self, value: T):
         pass
 
 class RuntimeHelpers[T]:

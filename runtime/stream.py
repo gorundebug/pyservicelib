@@ -10,5 +10,12 @@ from environment import Stream
 class MapFunction[T, R](ABC):
 
     @abstractmethod
-    def map(self, context: Stream, value: T) -> R:
+    async def map(self, context: Stream, value: T) -> R:
+        pass
+
+
+class FilterFunction[T](ABC):
+
+    @abstractmethod
+    async def filter(self, context: Stream, value: T) -> bool:
         pass

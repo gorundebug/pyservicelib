@@ -23,6 +23,6 @@ class InputStream[T](TypedConsumedStream[T]):
     def endpoint_id(self):
         return self.config.id_endpoint
 
-    def consume(self, value: T) -> None:
+    async def consume(self, value: T) -> None:
         if self._caller is not None:
-            self._caller.consume(value)
+            await self._caller.consume(value)

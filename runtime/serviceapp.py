@@ -50,7 +50,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _serdes: Dict[str, StreamSerializer]
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
-    _loader: ServiceLoader | None
+    _loader: ServiceLoader
 
     def __init__(self):
         self._dataSources = {}
@@ -59,7 +59,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._serdes = {}
         self._task_pools = {}
         self._priority_task_pools = {}
-        self._loader = None
 
     def reload_config(self, cfg: Config) -> None:
         pass
@@ -227,7 +226,7 @@ def get_path(arg_path: str) -> str:
 
 
 class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](ServiceLoader):
-    _watching_task: Optional[asyncio.Task[Any]]
+    _watching_task: asyncio.Task[Any]
     _ready_flag: asyncio.Event
     _watching_flag: asyncio.Event
     _config_data: str
@@ -242,7 +241,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                 if not self._ready_flag.is_set():
                     await self._ready_flag.wait()
 
-                if self._watching_task.done():
+                if self._watching_task.cancelling():
                     break
 
                 for change, file_path in changes:
@@ -306,9 +305,8 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         return self._service
 
     async def stop(self):
-        if self._watching_task is not None:
-            self._watching_task.cancel()
-            try:
-                await self._watching_task
-            except asyncio.CancelledError:
-                ServiceApp.log.debug("Watching task cancelled")
+        self._watching_task.cancel()
+        try:
+            await self._watching_task
+        except asyncio.CancelledError:
+            ServiceApp.log.debug("Watching task cancelled")

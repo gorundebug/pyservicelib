@@ -16,9 +16,9 @@ class MapFunctionContext[T, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    def call(self, value: T) -> R:
+    async def call(self, value: T) -> R:
         self.before_call()
-        result = self._fn.map(self._context, value)
+        result = await self._fn.map(self._context, value)
         self.after_call()
         return result
 
@@ -43,6 +43,6 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         self._f = MapFunctionContext(self, fn)
         stream.consumer = self
 
-    def consume(self, value: T) -> None:
+    async def consume(self, value: T) -> None:
         if self._caller is not None:
-            self._caller.consume(self._f.call(value))
+            await self._caller.consume(await self._f.call(value))
