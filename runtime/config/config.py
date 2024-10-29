@@ -3,6 +3,11 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
+from typing import Any, Dict, List, Union, Self, cast, Optional, ClassVar
+from pydantic import Field, ConfigDict, StrictStr
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+
 from pyservicelib.api.models.data_type import DataType
 from pyservicelib.api.models.transformation_type import TransformationType
 from pyservicelib.api.models.stream import Stream
@@ -14,10 +19,6 @@ from pyservicelib.api.models.service import Service
 from pyservicelib.api.models.link import Link
 from pyservicelib.api.models.project_settings import ProjectSettings as ApiProjectSettings
 from pyservicelib.api.models.stream_app import StreamApp
-from typing import Any, Dict, List, Union, Self, cast, Optional, ClassVar
-from pydantic import Field, ConfigDict, StrictStr
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
 
 
 transformation_name_map = {
@@ -254,7 +255,7 @@ class Config(ABC):
 
     @property
     @abstractmethod
-    def service_config(self) -> "ServiceAppConfig":
+    def config(self) -> "ServiceAppConfig":
         pass
 
 class ServiceAppConfig(StreamApp, Config):
@@ -361,19 +362,5 @@ class ServiceAppConfig(StreamApp, Config):
         return self.runtime_config.links_by_id.get(link_id)
 
     @property
-    def service_config(self) -> "ServiceAppConfig":
+    def config(self) -> "ServiceAppConfig":
         return self
-
-
-
-class ServiceEnvironmentConfig(ABC):
-
-    @property
-    @abstractmethod
-    def config(self) -> ServiceAppConfig:
-        pass
-
-    @property
-    @abstractmethod
-    def service_config(self) -> ServiceConfig:
-        pass

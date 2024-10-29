@@ -6,5 +6,5 @@
 
 from .pool import Pool
 from .delaypool import DelayPool, DelayTask
-from .taskpool import TaskPool, Task
+from .taskpool import TaskPool
 from .prioritytaskpool import PriorityTaskPool, PriorityTask

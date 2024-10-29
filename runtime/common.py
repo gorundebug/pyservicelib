@@ -9,12 +9,13 @@ from datetime import timedelta
 from typing import List, Optional
 from typing import cast
 
-from pyservicelib.runtime.config import StreamConfig, LinkId, Config, ServiceEnvironmentConfig
+from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
+from pyservicelib.runtime.config import StreamConfig, LinkId, Config
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, TypeHelpers
 from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StubSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
-from pyservicelib.runtime.telemetry.metrics import Metrics
+from pyservicelib.runtime.environment.metrics import Metrics
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 
@@ -23,13 +24,16 @@ class Consumer[T](ABC):
     async def consume(self, value: T) -> None:
         pass
 
+
 class Caller[T](Consumer[T], ABC):
     pass
+
 
 class DirectCaller[T](Caller[T]):
 
     async def consume(self, value: T):
         pass
+
 
 class RuntimeHelpers[T]:
     _environment: "ServiceExecutionEnvironment"
@@ -73,6 +77,7 @@ class DataConnector(ABC):
     def id(self) -> int:
         pass
 
+
 class Endpoint(ABC):
 
     @property
@@ -89,6 +94,7 @@ class Endpoint(ABC):
     @abstractmethod
     def data_connector(self) -> DataConnector:
         pass
+
 
 class DataSource(DataConnector):
 
@@ -122,6 +128,7 @@ class DataSource(DataConnector):
     @abstractmethod
     def endpoints(self) -> List["InputEndpoint"]:
         pass
+
 
 class InputEndpointConsumer(ABC):
 
@@ -357,7 +364,7 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
         super().consumer = value
 
 
-class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
+class ServiceExecutionEnvironment(ServiceEnvironment):
     @abstractmethod
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
         pass
@@ -376,6 +383,10 @@ class ServiceExecutionEnvironment(ServiceEnvironmentConfig):
 
     @abstractmethod
     async def stop(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    async def release(self) -> None:
         pass
 
     @abstractmethod
@@ -443,7 +454,7 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def service_init(self, name: str, loader: ServiceLoader, cfg: Config) -> None:
+    async def service_init(self, name: str, dep: ServiceDependency, loader: ServiceLoader, cfg: Config) -> None:
         pass
 
     @abstractmethod

@@ -5,19 +5,17 @@
 
 from datetime import timedelta
 import time
-# from abc import ABC, abstractmethod
+from typing import Optional
+
 
 class Context:
-    pass
-
-def default_context() -> Context:
-    return Context()
-
-class DeadlineContext:
     __deadline: float
 
-    def __init__(self, timeout: timedelta):
-        self.__deadline = time.perf_counter() + timeout.total_seconds()
+    def __init__(self, timeout: Optional[timedelta] = None):
+        if timeout is None:
+            self.__deadline = float('inf')
+        else:
+            self.__deadline = time.perf_counter() + timeout.total_seconds()
 
     @property
     def is_expired(self) -> bool:
@@ -26,3 +24,6 @@ class DeadlineContext:
     @property
     def time_left(self) -> float:
         return max(0.0, self.__deadline - time.perf_counter())
+
+def default_context() -> Context:
+    return Context()

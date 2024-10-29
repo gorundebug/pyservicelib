@@ -4,9 +4,9 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime.environment import StreamFunction
-from pyservicelib.runtime.environment import TypedStream, TypedConsumedStream
-from pyservicelib.runtime.stream import FilterFunction
+from pyservicelib.runtime.common import StreamFunction
+from pyservicelib.runtime.common import TypedStream, TypedConsumedStream
+from pyservicelib.runtime.functions import FilterFunction
 
 
 class FilterFunctionContext[T](StreamFunction[T]):

@@ -18,12 +18,11 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional, Set
 from typing_extensions import Annotated
 from pyservicelib.api.models.call_semantics import CallSemantics
-from pyservicelib.api.models.metrics_engine import MetricsEngine
+from pyservicelib.api.models.log_level import LogLevel
 from pyservicelib.api.models.programming_language import ProgrammingLanguage
-from typing import Optional, Set
 from typing_extensions import Self
 
 class Service(BaseModel):
@@ -41,10 +40,10 @@ class Service(BaseModel):
     grpc_host: StrictStr = Field(alias="grpcHost")
     color: StrictStr
     shutdown_timeout: Annotated[int, Field(strict=True, ge=0)] = Field(alias="shutdownTimeout")
-    metrics_engine: MetricsEngine = Field(alias="metricsEngine")
+    log_level: Optional[LogLevel] = Field(default=None, alias="logLevel")
     environment: StrictStr
     delay_executors: Annotated[int, Field(strict=True, ge=1)] = Field(alias="delayExecutors")
-    __properties: ClassVar[List[str]] = ["id", "name", "programmingLanguage", "defaultCallSemantics", "monitoringPort", "monitoringHost", "grpcPort", "defaultGrpcTimeout", "grpcHost", "color", "shutdownTimeout", "metricsEngine", "environment", "delayExecutors"]
+    __properties: ClassVar[List[str]] = ["id", "name", "programmingLanguage", "defaultCallSemantics", "monitoringPort", "monitoringHost", "grpcPort", "defaultGrpcTimeout", "grpcHost", "color", "shutdownTimeout", "logLevel", "environment", "delayExecutors"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -108,7 +107,7 @@ class Service(BaseModel):
             "grpcHost": obj.get("grpcHost"),
             "color": obj.get("color"),
             "shutdownTimeout": obj.get("shutdownTimeout"),
-            "metricsEngine": obj.get("metricsEngine"),
+            "logLevel": obj.get("logLevel"),
             "environment": obj.get("environment"),
             "delayExecutors": obj.get("delayExecutors")
         })

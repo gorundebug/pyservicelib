@@ -5,7 +5,7 @@
 #   file for details.
 
 from abc import ABC, abstractmethod
-from environment import Stream
+from common import Stream
 
 class MapFunction[T, R](ABC):
 

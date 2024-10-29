@@ -8,38 +8,29 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from typing import Dict, cast, Optional, Any
-import logging
 
 import aiofiles
 import yaml
 from watchfiles import awatch, Change
 import asyncio
 
+from pyservicelib.runtime.environment import ServiceDependency
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
 from pyservicelib.runtime.context import Context
-from pyservicelib.runtime.environment import DataSink, DataSource, ConsumeStatistics, ServiceLoader
-from pyservicelib.runtime.environment import Endpoint, Stream, EndpointWriter, EndpointReader
-from pyservicelib.runtime.environment import ServiceExecutionRuntime, ServiceExecutionEnvironment
+from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
+from pyservicelib.runtime.common import Endpoint, Stream, EndpointWriter, EndpointReader
+from pyservicelib.runtime.common import ServiceExecutionRuntime, ServiceExecutionEnvironment
+from pyservicelib.runtime.environment.metrics import MetricsEngine
 from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool
 from pyservicelib.runtime.serde import ListSerde, DictSerde
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from pyservicelib.runtime.store import Storage
-from pyservicelib.runtime.telemetry.metrics import Metrics
-
-def _init_logger() -> logging.Logger:
-    log = logging.getLogger()
-    log.setLevel('DEBUG')
-    ch = logging.StreamHandler()
-    ch.setLevel('DEBUG')
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    log.addHandler(ch)
-    return log
-
+from pyservicelib.runtime.environment.metrics.metrics import Metrics
+from pyservicelib.runtime.environment.log import LogsEngine, Logger
+from pyservicelib.runtime.logging import LogsEngineFactory, LogsEngineType
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
-    log: logging.Logger = _init_logger()
 
     _dataSources: Dict[int, DataSource]
     _dataSinks: Dict[int, DataSink]
@@ -51,6 +42,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
     _loader: ServiceLoader
+    _logs_engine: LogsEngine
+    _metrics_engine: MetricsEngine
+    _log: Logger
 
     def __init__(self):
         self._dataSources = {}
@@ -63,9 +57,29 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def reload_config(self, cfg: Config) -> None:
         pass
 
-    def service_init(self, name: str, loader: ServiceLoader, cfg: Config) -> None:
+    async def service_init(self, name: str, dep: Optional[ServiceDependency], loader: ServiceLoader, cfg: Config) -> None:
         self._loader = loader
-        self._config = cfg.service_config
+        self._config = cfg.config
+        logs_engine: Optional[LogsEngine] = None
+        metrics_engine: Optional[MetricsEngine] = None
+        if dep is not None:
+            logs_engine = await dep.get_logs_engine(self)
+            metrics_engine = await dep.get_metrics_engine(self)
+
+        if logs_engine is None:
+            self._logs_engine = await LogsEngineFactory.create_logs_engine(LogsEngineType.ASYNCLOG)
+        else:
+            self._logs_engine = logs_engine
+
+        if metrics_engine is None:
+            pass
+        else:
+            self._metrics_engine = metrics_engine
+
+        self._log = await self._logs_engine.default_logger()
+
+    async def release(self) -> None:
+        await self._logs_engine.release()
 
     def _is_primitive_type(self, type_name: str) -> bool:
         if TypeConfig.is_primitive_type(type_name):
@@ -91,6 +105,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         if ser is not None:
             return ser
         return None
+
+    @property
+    def log(self) -> Logger:
+        return self._log
 
     def get_type_serde(self, type_name: str) -> Serializer:
         ser = self.get_serde(type_name)
@@ -259,11 +277,11 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                                 raise ValueError("Failed to create updated config")
                             self._service.runtime.reload_config(cfg)
                         except Exception as e:
-                            ServiceApp.log.error(f"Failed to reload configuration: {e}")
+                            self._service.log.error(f"Failed to reload configuration: {e}")
         finally:
-            ServiceApp.log.debug("Watch config changes loop exited.")
+            self._service.log.debug("Watch config changes loop exited.")
 
-    async def init(self, name: str, config_settings: ConfigSettings) -> ServiceType:
+    async def init(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
         self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #pyright: ignore
         if not isinstance(self._service , ServiceApp):
             raise ValueError("Invalid service type. Service must be inherit from ServiceApp class")
@@ -299,7 +317,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         if cfg is None:
             raise ValueError("Failed to create config")
 
-        self._service.runtime.service_init(name, self, cfg)
+        await self._service.runtime.service_init(name, dep, self, cfg)
         self._ready_flag.set()
 
         return self._service
@@ -309,4 +327,4 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         try:
             await self._watching_task
         except asyncio.CancelledError:
-            ServiceApp.log.debug("Watching task cancelled")
+            self._service.log.debug("Watching task cancelled")

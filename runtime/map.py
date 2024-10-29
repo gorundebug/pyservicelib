@@ -4,9 +4,9 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime.environment import StreamFunction, TypedStreamSerde
-from pyservicelib.runtime.environment import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
-from pyservicelib.runtime.stream import MapFunction
+from pyservicelib.runtime.common import StreamFunction, TypedStreamSerde
+from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from pyservicelib.runtime.functions import MapFunction
 
 
 class MapFunctionContext[T, R](StreamFunction[R]):
