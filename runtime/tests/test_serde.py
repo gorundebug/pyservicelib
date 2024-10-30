@@ -6,13 +6,14 @@
 from typing import cast
 import os
 from pathlib import Path
-
+import pytest
 
 from pyservicelib.runtime.serde import Serde
 from pyservicelib.runtime.serviceapp import  ServiceAppLoader
 from pyservicelib.runtime.context import default_context
 from pyservicelib.runtime.config import  ConfigSettings
 from pyservicelib.runtime.tests.mockservice import MockService, MockServiceConfig, MockServiceDependency
+from pyservicelib.runtime.serde import IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde
 
 
 async def test_serde_type_dict():
@@ -29,3 +30,55 @@ async def test_serde_type_dict():
     await service.stop(ctx)
     await service.release()
     assert value == value_copy
+
+
+def test_serde_ints():
+    values = [1, 2, 3]
+    ser = IntListSerde("[]int")
+    data = ser.serialize(values, bytearray())
+    values_copy = ser.deserialize(data)
+    assert values == values_copy
+
+
+def test_serde_bools():
+    values = [True, False, True]
+    ser = BoolListSerde()
+    data = ser.serialize(values, bytearray())
+    values_copy = ser.deserialize(data)
+    assert values == values_copy
+
+
+def test_serde_strings():
+    values = ["test1", "", "test3"]
+    ser = StringListSerde()
+    data = ser.serialize(values, bytearray())
+    values_copy = ser.deserialize(data)
+    assert values == values_copy
+
+
+def test_serde_int():
+    value = 100
+    ser = IntSerde("int")
+    data = ser.serialize(value, bytearray())
+    value_copy = ser.deserialize(data)
+    assert value == value_copy
+
+
+def test_serde_string():
+    value = "test"
+    ser = StringSerde()
+    data = ser.serialize(value, bytearray())
+    value_copy = ser.deserialize(data)
+    assert value == value_copy
+
+
+@pytest.mark.parametrize("serializer", [IntListSerde("[]int")])
+def test_benchmark_serde_ints(benchmark, serializer):
+    values = list(range(1, 40001))
+
+    def ser_deser():
+        data = serializer.serialize(values, bytearray())
+        values_copy = serializer.deserialize(data)
+        assert values == values_copy
+
+    benchmark(ser_deser)
