@@ -31,8 +31,6 @@ class FilterStream[T](TypedConsumedStream[T]):
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"FilterStream configuration names '{name}' not found")
-        if cfg.value_type is None:
-            raise ValueError(f"The value type of the FilterStream with name '{name}' is not defined")
 
         super().__init__(cfg=cfg,
                          serde=stream.serde,

@@ -4,26 +4,18 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from abc import abstractmethod
 from typing import Callable, Any, List
 import asyncio
 
 from pyservicelib.runtime.common import ServiceEnvironment
-from pyservicelib.runtime.pool import Pool
+from pyservicelib.runtime.pool import TaskPool
 from pyservicelib.runtime.context import Context
 
-class TaskPool(Pool):
 
-    @abstractmethod
-    async def add_task(self, fn: Callable[..., Any], *args, **kwargs):
-        pass
-
-
-class TaskPoolImpl:
+class TaskPoolImpl(TaskPool):
     _environment: ServiceEnvironment
     _task_queue: asyncio.Queue
     _executors: List[asyncio.Task[Any]]
-    _executors_count: int
     _name: str
 
     def __init__(self, name: str, env: ServiceEnvironment):
@@ -35,7 +27,7 @@ class TaskPoolImpl:
         self._executors = []
         self._name = name
 
-    async def executor(self):
+    async def _executor(self):
         while True:
             task, args, kwargs = await self._task_queue.get()
             if task is None:
@@ -49,9 +41,9 @@ class TaskPoolImpl:
         cfg = self._environment.config.get_pool_by_name(self._name)
         if cfg is None:
             raise ValueError(f"Task pool configuration named '{self._name}' not found")
-        executors_count = cfg.executors_count
+        executors_count = cfg.executors_count or 1
         for _ in range(executors_count):
-            executor_task = asyncio.create_task(self.executor())
+            executor_task = asyncio.create_task(self._executor())
             self._executors.append(executor_task)
 
     async def stop(self, ctx: Context):
@@ -62,9 +54,11 @@ class TaskPoolImpl:
             await asyncio.wait_for(asyncio.gather(*self._executors), timeout=ctx.time_left)
         except asyncio.TimeoutError:
             tasks_count = self._task_queue.qsize()
-            #print(f"Task pool '{self._name}' не смог завершиться: превышен дедлайн "
-            #      f"(осталось задач: {tasks_count})")
+            self._environment.log.warning(f"Task pool '{self._name}' stopped by timeout. (tasks count={tasks_count})")
 
     async def add_task(self, task: Callable[..., Any], *args, **kwargs):
         await self._task_queue.put((task, args, kwargs))
 
+
+def make_task_pool(name: str, env: ServiceEnvironment) -> TaskPool:
+    return TaskPoolImpl(name, env)

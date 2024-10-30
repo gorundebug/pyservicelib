@@ -1,7 +1,9 @@
 dataConnectors: []
 endpoints: []
 links: []
-pools: []
+pools:
+  - executorsCount: 5
+    name: Default
 services:
   - color: '#D2E5FF'
     defaultCallSemantics: 1

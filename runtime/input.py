@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime.common import ServiceExecutionEnvironment, TypedConsumedStream, RuntimeHelpers
+from pyservicelib.runtime import ServiceExecutionEnvironment, TypedConsumedStream, RuntimeHelpers
 
 
 class InputStream[T](TypedConsumedStream[T]):

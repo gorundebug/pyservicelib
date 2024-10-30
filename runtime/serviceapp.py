@@ -45,6 +45,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _logs_engine: LogsEngine
     _metrics_engine: MetricsEngine
     _log: Logger
+    _id: int
 
     def __init__(self):
         self._dataSources = {}
@@ -59,6 +60,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     async def service_init(self, name: str, dep: Optional[ServiceDependency], loader: ServiceLoader, cfg: Config) -> None:
         self._loader = loader
+        service_config = cfg.config.get_service_config_by_name(name)
+        if service_config is None:
+            raise ValueError(f"Config for the service named {name} not found")
+        self._id = service_config.id
         self._config = cfg.config
         logs_engine: Optional[LogsEngine] = None
         metrics_engine: Optional[MetricsEngine] = None
@@ -224,7 +229,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     @property
     def service_config(self) -> ServiceConfig:
-        return self._serviceConfig
+        return self._config.get_service_config_by_id(self._id)
 
     @property
     def runtime(self) -> "ServiceExecutionRuntime":

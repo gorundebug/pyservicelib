@@ -276,38 +276,34 @@ class Stream(ABC):
         return self._environment
 
     @property
-    @abstractmethod
     def consumers(self) -> List["Stream"]:
+        return []
+
+
+class StreamConsumer[T](Consumer[T]):
+
+    @property
+    @abstractmethod
+    def stream(self) -> Stream:
         pass
 
 
-class StreamConsumer[T](Consumer[T], ABC):
-    _stream:  Stream
-
-    def __init__(self, stream: Stream):
-        self._stream = stream
-
-    @property
-    def stream(self) -> Stream:
-        return self._stream
-
-
 class TypedStream[T](Stream):
-    _consumer: Optional[StreamConsumer[T]]
     _serde:  TypedStreamSerde[T]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
         super().__init__(cfg, env)
-        self._consumer = None
         self._serde = serde
 
     @property
+    @abstractmethod
     def consumer(self) -> Optional[StreamConsumer[T]]:
-        return self._consumer
+        pass
 
     @consumer.setter
+    @abstractmethod
     def consumer(self, value: StreamConsumer[T]):
-        self._consumer = value
+        pass
 
     @property
     def serde(self) -> TypedStreamSerde[T]:
@@ -315,9 +311,7 @@ class TypedStream[T](Stream):
 
     @property
     def consumers(self) -> List[Stream]:
-        if self._consumer is None:
-            return []
-        return [self._consumer.stream]
+        return []
 
     @property
     def type_name(self) -> str:
@@ -327,41 +321,62 @@ class TypedStream[T](Stream):
 
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
+    _consumer: Optional[StreamConsumer[T]]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        ABC.__init__(self)
         TypedStream[T].__init__(self, cfg, serde, env)
-        StreamConsumer[T].__init__(self, self)
-
+        StreamConsumer[T].__init__(self)
+        ABC.__init__(self)
         self._caller = None
 
     @property
     def consumer(self) -> Optional[StreamConsumer[T]]:
-        return super().consumer
+        return self._consumer
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[T]):
         self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
-        super().consumer = value
+        self._consumer = value
+
+    @property
+    def stream(self) -> Stream:
+        return self
+
+    @property
+    def consumers(self) -> List[Stream]:
+        if self._consumer is None:
+            return []
+        return [self._consumer.stream]
 
 
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
+    _consumer: Optional[StreamConsumer[T]]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
-        ABC.__init__(self)
         TypedStream[R].__init__(self, cfg, serde, env)
-        StreamConsumer[T].__init__(self, self)
+        StreamConsumer[T].__init__(self)
+        ABC.__init__(self)
         self._caller = None
 
     @property
-    def consumer(self) -> Optional[StreamConsumer[R]]:
-        return super().consumer
+    def consumer(self) -> Optional[StreamConsumer[T]]:
+        return self._consumer
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[R]):
         self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
-        super().consumer = value
+        self._consumer = value
+
+    @property
+    def stream(self) -> Stream:
+        return self
+
+    @property
+    def consumers(self) -> List[Stream]:
+        if self._consumer is None:
+            return []
+        return [self._consumer.stream]
 
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
