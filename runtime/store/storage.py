@@ -3,19 +3,23 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-import datetime
+
 from abc import ABC, abstractmethod
+from typing import Hashable, Callable, List, Any
+import datetime
+
 from pyservicelib.runtime.context import Context
 
 class Storage(ABC):
 
     @abstractmethod
-    def start(self, ctx: Context) -> None:
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
-    def stop(self, ctx: Context) -> None:
+    async def stop(self, ctx: Context) -> None:
         pass
+
 
 class JoinStorageConfig(ABC):
 
@@ -32,4 +36,11 @@ class JoinStorageConfig(ABC):
     @property
     @abstractmethod
     def renew_ttl(self) -> bool:
+        pass
+
+
+class JoinStorage[K: Hashable](Storage):
+
+    @abstractmethod
+    async def join_value(self, key: K, index: int, value: Any, callback: Callable[[List[List[Any]]], Any]):
         pass

@@ -4,11 +4,12 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Hashable
 from datetime import datetime, timedelta
 
 from pyservicelib.runtime.common import ServiceEnvironment
-from pyservicelib.runtime.store.storage import JoinStorageConfig
+from pyservicelib.runtime.context import Context
+from pyservicelib.runtime.store.storage import JoinStorageConfig, JoinStorage
 
 
 class Item[V]:
@@ -24,19 +25,20 @@ class Item[V]:
         self.lock = asyncio.Lock()
 
 
-class HashMapJoinStorage[K, V]:
-    _timer_task: asyncio.Task[Any]
+class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
+
     _config: JoinStorageConfig
     _environment: ServiceEnvironment
     _storage1: Dict[K, Item[V]]
     _storage2: Dict[K, Item[V]]
+    _timer_task: Optional[asyncio.Task[Any]]
 
     def __init__(self, env: ServiceEnvironment, cfg: JoinStorageConfig):
         self._environment = env
         self._config = cfg
         self._storage1 = {}
         self._storage2 = {}
-        self._timer_task = asyncio.create_task(self._start_rotation())
+        self._timer_task = None
 
     async def _start_rotation(self):
         while True:
@@ -76,6 +78,14 @@ class HashMapJoinStorage[K, V]:
                         self._storage1[key] = item
                     break
 
-    async def stop(self):
-        self._timer_task.cancel()
-        await self._timer_task
+    async def stop(self, ctx: Context) -> None:
+        if self._timer_task is not None:
+            self._timer_task.cancel()
+            await self._timer_task
+
+    async def start(self, ctx: Context) -> None:
+        self._timer_task = asyncio.create_task(self._start_rotation())
+
+
+def make_hashmap_storage(env: ServiceEnvironment, cfg: JoinStorageConfig):
+    return HashMapJoinStorage(env, cfg)

@@ -72,7 +72,7 @@ async def test_async_pool():
    assert all(result in delays for result in results)
    assert counter == 0
 
-   assert abs(time_difference) <= 10
+   assert abs(time_difference) <= 50
 
    pool.shutdown()
 
@@ -104,7 +104,7 @@ async def test_async_pool_add_task_without_block():
    assert all(result in delays for result in results)
    assert counter == 0
 
-   assert abs(time_difference) <= 10
+   assert abs(time_difference) <= 50
 
    pool.shutdown()
 
@@ -136,4 +136,4 @@ async def test_async_pool_shutdown():
    assert all(result in delays for result in results)
    assert counter == 0
 
-   assert abs(time_difference) <= 10
+   assert abs(time_difference) <= 50

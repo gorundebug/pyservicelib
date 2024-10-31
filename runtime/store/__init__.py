@@ -5,3 +5,4 @@
 #   file for details.
 
 from .storage import Storage
+from .joinstore import JoinStorageFactory
