@@ -6,7 +6,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import List, Optional
+from typing import List, Optional, Callable, Any
 from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -32,6 +32,12 @@ class Caller[T](Consumer[T], ABC):
 class DirectCaller[T](Caller[T]):
 
     async def consume(self, value: T):
+        pass
+
+
+class Collect[T](ABC):
+
+    async def out(self, value: T) -> None:
         pass
 
 
@@ -393,7 +399,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def start(self, ctx: Context) -> None:
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
@@ -440,6 +446,10 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
     @property
     @abstractmethod
     def runtime(self) -> "ServiceExecutionRuntime":
+        pass
+
+    @abstractmethod
+    async def delay(self, duration: timedelta, task: Callable[..., Any], *args, **kwargs):
         pass
 
 
@@ -504,6 +514,10 @@ class ServiceExecutionRuntime(ABC):
     def get_priority_task_pool(self, name: str) -> PriorityTaskPool:
         pass
 
+    @abstractmethod
+    def create_task(self, fn: Callable[..., Any], *args, **kwargs):
+        pass
+
 
 class StreamFunction[T]:
     _context: TypedStream[T]
@@ -516,3 +530,28 @@ class StreamFunction[T]:
 
     def after_call(self):
         pass
+
+
+class Collector[T](Collect[T]):
+    _caller: Caller[T]
+
+    def __init__(self, caller: Caller[T]):
+        self._caller = caller
+
+    async def out(self, value: T):
+        await self._caller.consume(value)
+
+
+class ParallelsCollector[T](Collect[T]):
+    _caller: Caller[T]
+    _env: ServiceExecutionEnvironment
+
+    def __init__(self, caller: Caller[T], env: ServiceExecutionEnvironment):
+        self._caller = caller
+        self._env = env
+
+    async def consume(self, value: T):
+        await self._caller.consume(value)
+
+    async def out(self, value: T):
+        self._env.runtime.create_task(self.consume, value)

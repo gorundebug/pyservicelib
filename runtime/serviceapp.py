@@ -7,7 +7,7 @@ import argparse
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, cast, Optional, Any
+from typing import Dict, cast, Optional, Any, Callable, Set
 
 import aiofiles
 import yaml
@@ -18,17 +18,18 @@ from pyservicelib.runtime.environment import ServiceDependency
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
 from pyservicelib.runtime.context import Context
-from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
+from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader, Collect, Caller
 from pyservicelib.runtime.common import Endpoint, Stream, EndpointWriter, EndpointReader
 from pyservicelib.runtime.common import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from pyservicelib.runtime.environment.metrics import MetricsEngine
-from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool
+from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool
 from pyservicelib.runtime.serde import ListSerde, DictSerde
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.environment.metrics.metrics import Metrics
 from pyservicelib.runtime.environment.log import LogsEngine, Logger
 from pyservicelib.runtime.logging import LogsEngineFactory, LogsEngineType
+
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
@@ -46,6 +47,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _metrics_engine: MetricsEngine
     _log: Logger
     _id: int
+    _delay_pool: DelayPool
+    _tasks: Set[asyncio.Task[Any]]
 
     def __init__(self):
         self._dataSources = {}
@@ -54,6 +57,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._serdes = {}
         self._task_pools = {}
         self._priority_task_pools = {}
+        self._tasks = set()
 
     def reload_config(self, cfg: Config) -> None:
         pass
@@ -82,6 +86,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             self._metrics_engine = metrics_engine
 
         self._log = await self._logs_engine.default_logger()
+        self._delay_pool = make_delay_pool(self)
 
     async def release(self) -> None:
         await self._logs_engine.release()
@@ -192,8 +197,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def streams_init(self, ctx: Context) -> None:
         pass
 
-    def start(self, ctx: Context) -> None:
-        pass
+    async def start(self, ctx: Context) -> None:
+        await self._delay_pool.start(ctx)
 
     async def stop(self, ctx: Context) -> None:
         await self._loader.stop()
@@ -235,6 +240,13 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def runtime(self) -> "ServiceExecutionRuntime":
         return self
 
+    async def delay(self, duration: timedelta, task: Callable[..., Any], *args, **kwargs):
+        await self._delay_pool.add_task(duration, task, *args, **kwargs)
+
+    def create_task(self, fn: Callable[..., Any], *args, **kwargs):
+        task = asyncio.create_task(fn(*args, **kwargs))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
 def get_path(arg_path: str) -> str:
     if not os.path.isabs(arg_path):
@@ -333,3 +345,4 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             await self._watching_task
         except asyncio.CancelledError:
             self._service.log.debug("Watching task cancelled")
+
