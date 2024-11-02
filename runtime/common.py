@@ -6,12 +6,12 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import List, Optional, Callable, Any
+from typing import List, Optional, Callable, Any, get_origin
 from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, TypeHelpers
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde
 from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StubSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
@@ -321,7 +321,10 @@ class TypedStream[T](Stream):
 
     @property
     def type_name(self) -> str:
-        genetic_type = TypeHelpers[T]().get_type() #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
+        orig_type = get_origin(genetic_type)
+        if orig_type is not None:
+            return orig_type.__name__
         return genetic_type.__name__
 
 

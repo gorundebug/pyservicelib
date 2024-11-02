@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from pyservicelib.runtime import TypedStream, Consumer, StreamConsumer, Stream
-from pyservicelib.runtime.serde import TypeHelpers
+from typing import get_origin
 
 class AppSinkStream[T](Stream, StreamConsumer[T]):
     _source: TypedStream[T]
@@ -31,6 +31,9 @@ class AppSinkStream[T](Stream, StreamConsumer[T]):
 
     @property
     def type_name(self) -> str:
-        genetic_type = TypeHelpers[T]().get_type() #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
+        orig_type = get_origin(genetic_type)
+        if orig_type is not None:
+            return orig_type.__name__
         return genetic_type.__name__
 

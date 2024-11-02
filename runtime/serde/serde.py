@@ -6,7 +6,7 @@
 
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, List, Tuple, cast, Hashable, Optional, Dict, Union
+from typing import Any, List, Tuple, cast, Hashable, Optional, Dict, Union, get_origin
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
@@ -193,11 +193,6 @@ class StreamKeyValueSerde[K: Hashable, V](TypedStreamKeyValueSerde[KeyValue[K, V
     @property
     def value_serializer(self) -> Serializer:
         return self._serde_value
-
-
-class TypeHelpers[T]:
-    def get_type(self) -> type:
-        return self.__orig_class__.__args__[0] #pyright: ignore
 
 
 class BytesSerde(Serde[bytes]):
