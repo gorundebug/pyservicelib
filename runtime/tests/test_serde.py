@@ -15,7 +15,7 @@ from pyservicelib.runtime.config import  ConfigSettings
 from pyservicelib.runtime.tests.mockservice import MockService, MockServiceConfig, MockServiceDependency
 from pyservicelib.runtime.serde import IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde
 
-
+@pytest.mark.asyncio
 async def test_serde_type_dict():
     os.chdir(Path(__file__).parent)
     value = {1: True, 2: False, 3: True}

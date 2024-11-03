@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-from typing import Any, Callable, Dict, List, Optional, Hashable
+from typing import Any, Callable, Optional, Hashable
 from datetime import datetime, timedelta
 
 from pyservicelib.runtime.common import ServiceEnvironment
@@ -14,7 +14,7 @@ from pyservicelib.runtime.store.storage import JoinStorageConfig, JoinStorage
 
 class Item[V]:
     deadline: datetime
-    values: List[List[V]]
+    values: list[list[V]]
     processed: bool
     lock: asyncio.Lock
 
@@ -29,8 +29,8 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
 
     _config: JoinStorageConfig
     _environment: ServiceEnvironment
-    _storage1: Dict[K, Item[V]]
-    _storage2: Dict[K, Item[V]]
+    _storage1: dict[K, Item[V]]
+    _storage2: dict[K, Item[V]]
     _timer_task: Optional[asyncio.Task[Any]]
 
     def __init__(self, env: ServiceEnvironment, cfg: JoinStorageConfig):
@@ -45,7 +45,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
             await asyncio.sleep(self._config.ttl.total_seconds())
             self._storage2, self._storage1 = self._storage1, {}
 
-    async def join_value(self, key: K, index: int, value: V, callback: Callable[[List[List[V]]], Any]):
+    async def join_value(self, key: K, index: int, value: V, callback: Callable[[list[list[V]]], Any]):
         while True:
             storage = self._storage1
             item: Optional[Item[V]] = storage.get(key)

@@ -6,7 +6,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import List, Optional, Callable, Any, get_origin
+from typing import Optional, Callable, Any, get_origin
 from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -132,7 +132,7 @@ class DataSource(DataConnector):
 
     @property
     @abstractmethod
-    def endpoints(self) -> List["InputEndpoint"]:
+    def endpoints(self) -> list["InputEndpoint"]:
         pass
 
 
@@ -167,7 +167,7 @@ class InputEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def endpoint_consumers(self) -> List[InputEndpointConsumer]:
+    def endpoint_consumers(self) -> list[InputEndpointConsumer]:
         pass
 
 
@@ -201,7 +201,7 @@ class DataSink(DataConnector):
 
     @property
     @abstractmethod
-    def endpoints(self) -> List["SinkEndpoint"]:
+    def endpoints(self) -> list["SinkEndpoint"]:
         pass
 
 class OutputEndpointConsumer(ABC):
@@ -235,7 +235,7 @@ class SinkEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def endpoint_consumers(self) -> List[OutputEndpointConsumer]:
+    def endpoint_consumers(self) -> list[OutputEndpointConsumer]:
         pass
 
 
@@ -281,7 +281,7 @@ class Stream(ABC):
 
     @property
     @abstractmethod
-    def consumers(self) -> List["Stream"]:
+    def consumers(self) -> list["Stream"]:
         pass
 
 class ServiceStream(Stream):
@@ -319,7 +319,7 @@ class ServiceStream(Stream):
         return self._environment
 
     @property
-    def consumers(self) -> List["Stream"]:
+    def consumers(self) -> list["Stream"]:
         return []
 
     def build(self):
@@ -356,7 +356,7 @@ class TypedStream[T](ServiceStream):
         return self._serde
 
     @property
-    def consumers(self) -> List[Stream]:
+    def consumers(self) -> list[Stream]:
         return []
 
     @property
@@ -390,7 +390,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         return self
 
     @property
-    def consumers(self) -> List[Stream]:
+    def consumers(self) -> list[Stream]:
         if self._consumer is None:
             return []
         return [self._consumer.stream]
@@ -418,7 +418,7 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
         return self
 
     @property
-    def consumers(self) -> List[Stream]:
+    def consumers(self) -> list[Stream]:
         if self._consumer is None:
             return []
         return [self._consumer.stream]

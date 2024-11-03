@@ -5,7 +5,7 @@
 #   file for details.
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from typing import Hashable, List
+from typing import Hashable
 
 from pyservicelib.runtime.common import ServiceStream, Collect
 
@@ -41,5 +41,5 @@ class FlatMapFunction[T, R](ABC):
 class JoinFunction[K: Hashable, T1, T2, R](ABC):
 
     @abstractmethod
-    async def join(self, context: ServiceStream, key: K, left_values: List[T1], right_values: List[T2], out: Collect[R]):
+    async def join(self, context: ServiceStream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]):
         pass

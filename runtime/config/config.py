@@ -3,7 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-from typing import Any, Dict, List, Union, Self, cast, Optional, ClassVar
+from typing import Any, Union, Self, cast, Optional, ClassVar
 from pydantic import Field, ConfigDict, StrictStr
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
@@ -43,9 +43,9 @@ class ConfigSettings:
     pass
 
 class StreamConfig(Stream):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -57,9 +57,9 @@ class StreamConfig(Stream):
         return transformation_name_map[self.type]
 
 class DataConnectorConfig(DataConnector):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -67,9 +67,9 @@ class DataConnectorConfig(DataConnector):
         return _obj
 
 class EndpointConfig(Endpoint):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -78,9 +78,9 @@ class EndpointConfig(Endpoint):
 
 
 class PoolConfig(Pool):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -131,9 +131,9 @@ class TypeConfig(Type):
         cast(str, DataType.UINT64): 'uint64'
     }
 
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -166,9 +166,9 @@ class TypeConfig(Type):
 
 
 class ServiceConfig(Service):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -177,9 +177,9 @@ class ServiceConfig(Service):
 
 
 class LinkConfig(Link):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
@@ -188,19 +188,19 @@ class LinkConfig(Link):
 
 
 class ProjectSettings(ApiProjectSettings):
-    properties: Dict[str, Any] = Field(default=None, exclude=True)
+    properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         _obj = cls(**obj)
         _obj.properties = obj
         return _obj
 
-_ConfigType = Union[str, int, float, bool, List[Any], Dict[str, Any]]
+_ConfigType = Union[str, int, float, bool, list[Any], dict[str, Any]]
 
 def _replace_placeholders(config: _ConfigType,
-                          values: Dict[str, Any]) -> Optional[_ConfigType]:
+                          values: dict[str, Any]) -> Optional[_ConfigType]:
     if isinstance(config, str):
         if config.startswith("$"):
             placeholder = config[1:]
@@ -213,7 +213,7 @@ def _replace_placeholders(config: _ConfigType,
     else:
         return config
 
-def replace_placeholders(config: Dict[str, Any], values: Dict[str, Any]) -> Dict[str, Any]:
+def replace_placeholders(config: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     result = _replace_placeholders(config, values)
     if not isinstance(result, dict):
         raise ValueError("The result must be a dictionary.")
@@ -225,17 +225,17 @@ class LinkId:
     to_id: int
 
 class RuntimeConfig:
-    streams_by_name: Dict[str, StreamConfig]
-    services_by_name: Dict[str, ServiceConfig]
-    links_by_id: Dict[LinkId, LinkConfig]
-    data_connectors_by_name: Dict[str, DataConnectorConfig]
-    endpoints_by_name: Dict[str, EndpointConfig]
-    streams_by_id: Dict[int, StreamConfig]
-    services_by_id: Dict[int, ServiceConfig]
-    data_connectors_by_id: Dict[int, DataConnectorConfig]
-    endpoints_by_id: Dict[int, EndpointConfig]
-    pool_by_name: Dict[str, PoolConfig]
-    types: Dict[str, TypeConfig]
+    streams_by_name: dict[str, StreamConfig]
+    services_by_name: dict[str, ServiceConfig]
+    links_by_id: dict[LinkId, LinkConfig]
+    data_connectors_by_name: dict[str, DataConnectorConfig]
+    endpoints_by_name: dict[str, EndpointConfig]
+    streams_by_id: dict[int, StreamConfig]
+    services_by_id: dict[int, ServiceConfig]
+    data_connectors_by_id: dict[int, DataConnectorConfig]
+    endpoints_by_id: dict[int, EndpointConfig]
+    pool_by_name: dict[str, PoolConfig]
+    types: dict[str, TypeConfig]
 
     def __init__(self):
         self.streams_by_name = {}
@@ -270,7 +270,7 @@ class ServiceAppConfig(StreamApp, Config):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
-    def _load_config(cls, obj: Dict[str, Any]) -> Dict[str, Any]:
+    def _load_config(cls, obj: dict[str, Any]) -> dict[str, Any]:
         data = cls.load_config(obj)
         data = data | {
             "services": [ServiceConfig.from_dict(service_data)
@@ -293,11 +293,11 @@ class ServiceAppConfig(StreamApp, Config):
         return data
 
     @classmethod
-    def load_config(cls, obj: Dict[str, Any]) -> Dict[str, Any]:
+    def load_config(cls, obj: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
         cfg = cls.model_validate(cls._load_config(obj))

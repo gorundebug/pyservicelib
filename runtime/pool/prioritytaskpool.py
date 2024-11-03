@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Callable, Any, List
+from typing import Callable, Any
 import asyncio
 
 from pyservicelib.runtime.common import ServiceEnvironment
@@ -14,7 +14,7 @@ from pyservicelib.runtime.context import Context
 class PriorityTaskPoolImpl(PriorityTaskPool):
     _environment: ServiceEnvironment
     _task_queue: asyncio.PriorityQueue
-    _executors: List[asyncio.Task[Any]]
+    _executors: list[asyncio.Task[Any]]
     _name: str
 
     def __init__(self, name: str, env: ServiceEnvironment):

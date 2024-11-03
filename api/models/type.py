@@ -18,7 +18,7 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List
 from pyservicelib.api.models.data_type import DataType
 from pyservicelib.api.models.type_definition_format import TypeDefinitionFormat
 from typing import Optional, Set
@@ -85,7 +85,7 @@ class Type(BaseModel):
         return _dict
 
     @classmethod
-    def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         """Create an instance of Type from a dict"""
         if obj is None:
             return None

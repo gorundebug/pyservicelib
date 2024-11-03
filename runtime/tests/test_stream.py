@@ -6,11 +6,11 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import List, get_origin, Any, Dict, Optional
+from typing import get_origin, Any, Optional
 from collections.abc import Iterable
 
 
-class TestValue[T]:
+class Value[T]:
     value: Optional[T]
 
     def __init__(self):
@@ -20,7 +20,7 @@ class TestValue[T]:
         self.value = value
 
 
-class TestStream[T: Iterable, R]:
+class Stream[T: Iterable, R]:
     def __init__(self):
         pass
 
@@ -40,12 +40,12 @@ class TestStream[T: Iterable, R]:
         if not isinstance(value, orig_type):
             return False
 
-        test_value = TestValue[R]()
+        test_value = Value[R]()
         test_value.set_value(value)
         return test_value.value == value
 
 
-class DerivedStream[T: Iterable, R](TestStream[T, R]):
+class DerivedStream[T: Iterable, R](Stream[T, R]):
 
     def __init__(self):
         super().__init__()
@@ -58,7 +58,7 @@ class DerivedFromDerivedStream[T: Iterable, R](DerivedStream[T, R]):
 
 
 def test_type_check():
-    stream = DerivedFromDerivedStream[List[int], int]()
+    stream = DerivedFromDerivedStream[list[int], int]()
     assert stream.check(5) == True
 
     stream1 = DerivedFromDerivedStream[tuple, float]()
@@ -67,10 +67,10 @@ def test_type_check():
     stream2 = DerivedStream[int, float]() #type: ignore[type-var]
     assert stream2.check(5.0) == False
 
-    stream3 = DerivedStream[List[int], float]()
+    stream3 = DerivedStream[list[int], float]()
     assert stream3.check(5) == False
 
-    stream4 = DerivedStream[Dict[int, int], float]()
+    stream4 = DerivedStream[dict[int, int], float]()
     assert stream4.check(5) == False
 
 
@@ -84,22 +84,6 @@ def test_benchmark_sync(benchmark):
         sync_func()
 
     benchmark(test)
-    print(counter)
-
-
-async def test_something(benchmark):
-
-    counter = 0
-    async def func():
-        nonlocal counter
-        counter += 1
-
-    async def async_test():
-        await func()
-
-    await benchmark(async_test)
-    print(counter)
-
 
 
 

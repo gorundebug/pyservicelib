@@ -7,7 +7,7 @@ import argparse
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, cast, Optional, Any, Callable, Set
+from typing import cast, Optional, Any, Callable, Set
 
 import aiofiles
 import yaml
@@ -33,15 +33,15 @@ from pyservicelib.runtime.logging import LogsEngineFactory, LogsEngineType
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
-    _dataSources: Dict[int, DataSource]
-    _dataSinks: Dict[int, DataSink]
+    _dataSources: dict[int, DataSource]
+    _dataSinks: dict[int, DataSink]
     _metrics: Metrics
     _config: ServiceAppConfig
     _serviceConfig: ServiceConfig
-    _streams: Dict[int, ServiceStream]
-    _serdes: Dict[str, StreamSerializer]
-    _task_pools: Dict[str, TaskPool]
-    _priority_task_pools: Dict[str, PriorityTaskPool]
+    _streams: dict[int, ServiceStream]
+    _serdes: dict[str, StreamSerializer]
+    _task_pools: dict[str, TaskPool]
+    _priority_task_pools: dict[str, PriorityTaskPool]
     _loader: ServiceLoader
     _logs_engine: LogsEngine
     _metrics_engine: MetricsEngine
@@ -284,10 +284,10 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                         try:
                             async with aiofiles.open(values_file, 'r') as file:
                                 values_data = await file.read()
-                                values_dict: Dict[str, Any] = yaml.safe_load(values_data)
+                                values_dict: dict[str, Any] = yaml.safe_load(values_data)
 
-                            config_dict: Dict[str, Any] = yaml.safe_load(self._config_data)
-                            result_config: Dict[str, Any] = replace_placeholders(config_dict, values_dict)
+                            config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
+                            result_config: dict[str, Any] = replace_placeholders(config_dict, values_dict)
 
                             cfg = cfg_class.from_dict(result_config)
                             if cfg is None:
@@ -318,7 +318,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
 
         async with aiofiles.open(config_file, 'r') as file:
             self._config_data = await file.read()
-            config_dict: Dict[str, Any] = yaml.safe_load(self._config_data)
+            config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
 
         self._watching_task = asyncio.create_task(self._watch_config_changes(values_file))
         if not self._watching_flag.is_set():
@@ -326,9 +326,9 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
 
         async with aiofiles.open(values_file, 'r') as file:
             values_data = await file.read()
-            values_dict: Dict[str, Any] = yaml.safe_load(values_data)
+            values_dict: dict[str, Any] = yaml.safe_load(values_data)
 
-        result_config: Dict[str, Any] = replace_placeholders(config_dict, values_dict)
+        result_config: dict[str, Any] = replace_placeholders(config_dict, values_dict)
 
         cfg = cfg_class.from_dict(result_config)
         if cfg is None:

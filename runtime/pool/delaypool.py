@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Callable, Any, List
+from typing import Callable, Any
 import asyncio
 from datetime import datetime, timedelta
 
@@ -17,7 +17,7 @@ class DelayPoolImpl(DelayPool):
     _environment: ServiceEnvironment
     _task_queue: asyncio.Queue
     _priority_task_queue: asyncio.PriorityQueue
-    _executors: List[asyncio.Task[Any]]
+    _executors: list[asyncio.Task[Any]]
     _timer_executor_task: asyncio.Task[Any]
     _new_task_event: asyncio.Event
     _stopping: bool

@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Hashable, List, Any
+from typing import Hashable, Any
 
 from pyservicelib.runtime.common import StreamFunction, TypedStreamSerde, Collect, Stream, StreamConsumer
 from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
@@ -21,7 +21,7 @@ class JoinFunctionContext[K: Hashable, T1, T2, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    async def call(self, key: K, left_values: List[T1], right_values: List[T2], out: Collect[R]):
+    async def call(self, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]):
         self.before_call()
         await self._fn.join(self._context, key, left_values, right_values, out)
         self.after_call()
@@ -90,7 +90,7 @@ class JoinLink[K: Hashable, T1, T2, R](Stream, StreamConsumer[KeyValue[K, T2]]):
         return self._join_stream.environment
 
     @property
-    def consumers(self) -> List[Stream]:
+    def consumers(self) -> list[Stream]:
         return self._join_stream.consumers
 
     @property

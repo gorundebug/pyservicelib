@@ -6,7 +6,7 @@
 
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, List, Tuple, cast, Hashable, Optional, Dict, Union, get_origin
+from typing import Any, Tuple, cast, Hashable, Optional, Union
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
@@ -25,7 +25,7 @@ def set_size(b: Union[bytearray, memoryview], offset: int, size: int) -> int:
     return UINT_SIZE
 
 
-def get_size(b: Union[bytearray, memoryview], offset: int) -> Tuple[int, int]:
+def get_size(b: Union[bytearray, memoryview], offset: int) -> tuple[int, int]:
     if len(b) < UINT_SIZE:
         raise ValueError("get_size: size length error")
     return struct.unpack_from(SIZE_PACK_FORMAT, b, offset)[0], UINT_SIZE
@@ -422,7 +422,7 @@ class StringSerde(Serde[str]):
         return data[:length].tobytes().decode('utf-8')
 
 
-class IntListSerde(Serde[List[int]]):
+class IntListSerde(Serde[list[int]]):
     _fmt: str
     _size: int
 
@@ -463,12 +463,12 @@ class IntListSerde(Serde[List[int]]):
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
             raise ValueError(f"IntListSerde: obj is not list")
-        return self.serialize(cast(List[int], obj), b)
+        return self.serialize(cast(list[int], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: List[int], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: list[int], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
@@ -483,7 +483,7 @@ class IntListSerde(Serde[List[int]]):
         struct.pack_into(f'<{count}{self._fmt}', b, n, *obj)
         return b
 
-    def deserialize(self, data: BytesBuffer) -> List[int]:
+    def deserialize(self, data: BytesBuffer) -> list[int]:
         if not isinstance(data, memoryview):
             data = memoryview(data)
 
@@ -493,7 +493,7 @@ class IntListSerde(Serde[List[int]]):
         return list(struct.unpack_from(f'<{count}{self._fmt}', data, n))
 
 
-class FloatListSerde(Serde[List[float]]):
+class FloatListSerde(Serde[list[float]]):
     _fmt: str
     _size: int
 
@@ -510,12 +510,12 @@ class FloatListSerde(Serde[List[float]]):
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
             raise ValueError(f"FloatListSerde: obj is not list")
-        return self.serialize(cast(List[float], obj), b)
+        return self.serialize(cast(list[float], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: List[float], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: list[float], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
@@ -530,7 +530,7 @@ class FloatListSerde(Serde[List[float]]):
         struct.pack_into(f'<{count}{self._fmt}', b, n, *obj)
         return b
 
-    def deserialize(self, data: BytesBuffer) -> List[float]:
+    def deserialize(self, data: BytesBuffer) -> list[float]:
         if not isinstance(data, memoryview):
             data = memoryview(data)
 
@@ -540,17 +540,17 @@ class FloatListSerde(Serde[List[float]]):
         return list(struct.unpack_from(f'<{count}{self._fmt}', data, n))
 
 
-class BoolListSerde(Serde[List[bool]]):
+class BoolListSerde(Serde[list[bool]]):
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
             raise ValueError(f"BoolListSerde: obj is not list")
-        return self.serialize(cast(List[bool], obj), b)
+        return self.serialize(cast(list[bool], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize(data)
 
-    def serialize(self, obj: List[bool], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: list[bool], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
@@ -565,7 +565,7 @@ class BoolListSerde(Serde[List[bool]]):
         struct.pack_into(f'<{count}?', b, n, *obj)
         return b
 
-    def deserialize(self, data: BytesBuffer) -> List[bool]:
+    def deserialize(self, data: BytesBuffer) -> list[bool]:
         if not isinstance(data, memoryview):
             data = memoryview(data)
 
@@ -575,7 +575,7 @@ class BoolListSerde(Serde[List[bool]]):
         return list(struct.unpack_from(f'<{count}?', data, n))
 
 
-class StringListSerde(Serde[List[str]]):
+class StringListSerde(Serde[list[str]]):
 
     def __init__(self):
         self._value_serde = StringSerde()
@@ -583,12 +583,12 @@ class StringListSerde(Serde[List[str]]):
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
             raise ValueError(f"StringListSerde: obj is not list")
-        return self.serialize(cast(List[str], obj), b)
+        return self.serialize(cast(list[str], obj), b)
 
     def deserialize_obj(self, data: BytesBuffer) -> Any:
         return self.deserialize_obj(data)
 
-    def serialize(self, obj: List[str], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: list[str], b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
@@ -610,7 +610,7 @@ class StringListSerde(Serde[List[str]]):
 
         return b
 
-    def deserialize(self, data: BytesBuffer) -> List[str]:
+    def deserialize(self, data: BytesBuffer) -> list[str]:
         if not isinstance(data, memoryview):
             data = memoryview(data)
 
@@ -631,7 +631,7 @@ class StringListSerde(Serde[List[str]]):
         return result
 
 
-class ListSerde(Serde[List[Any]]):
+class ListSerde(Serde[list[Any]]):
     _value_serde: Serializer
 
     def __init__(self, value_serde: Serializer):
@@ -644,7 +644,7 @@ class ListSerde(Serde[List[Any]]):
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
-        list_value: List[Any] = cast(List[Any], obj)
+        list_value: list[Any] = cast(list[Any], obj)
 
         b_length = len(b)
         b.extend(bytearray(MAX_SIZE_LENGTH))
@@ -674,7 +674,7 @@ class ListSerde(Serde[List[Any]]):
         count, n = get_size(data, 0)
         data = data[n:]
 
-        result: List[Optional[Any]] = [None] * count
+        result: list[Optional[Any]] = [None] * count
 
         for i in range(count):
             element_length, n = get_size(data, 0)
@@ -690,18 +690,18 @@ class ListSerde(Serde[List[Any]]):
 
         return result
 
-    def serialize(self, obj: List[Any], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: list[Any], b: BytesBuffer) -> bytearray:
         return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: BytesBuffer) -> List[Any]:
-        return cast(List[Any], self.deserialize_obj(data))
+    def deserialize(self, data: BytesBuffer) -> list[Any]:
+        return cast(list[Any], self.deserialize_obj(data))
 
     @property
     def is_stub(self) -> bool:
         return self._value_serde.is_stub
 
 
-class TupleSerde(Serde[Tuple[Any, ...]]):
+class TupleSerde(Serde[tuple[Any, ...]]):
     _value_serde: Serializer
 
     def __init__(self, value_serde: Serializer):
@@ -714,7 +714,7 @@ class TupleSerde(Serde[Tuple[Any, ...]]):
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
-        tuple_value: Tuple[Any, ...] = cast(Tuple[Any, ...], obj)
+        tuple_value: tuple[Any, ...] = cast(tuple[Any, ...], obj)
 
         b_length = len(b)
         b.extend(bytearray(MAX_SIZE_LENGTH))
@@ -745,7 +745,7 @@ class TupleSerde(Serde[Tuple[Any, ...]]):
         count, n = get_size(data, 0)
         data = data[n:]
 
-        result: List[Optional[Any]] = [None] * count
+        result: list[Optional[Any]] = [None] * count
 
         for i in range(count):
             element_length, n = get_size(data, 0)
@@ -761,18 +761,18 @@ class TupleSerde(Serde[Tuple[Any, ...]]):
 
         return tuple(result)
 
-    def serialize(self, obj: Tuple[Any, ...], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: tuple[Any, ...], b: BytesBuffer) -> bytearray:
         return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: BytesBuffer) -> Tuple[Any, ...]:
-        return cast(Tuple[Any, ...], self.deserialize_obj(data))
+    def deserialize(self, data: BytesBuffer) -> tuple[Any, ...]:
+        return cast(tuple[Any, ...], self.deserialize_obj(data))
 
     @property
     def is_stub(self) -> bool:
         return self._value_serde.is_stub
 
 
-class DictSerde(Serde[Dict[Any, Any]]):
+class DictSerde(Serde[dict[Any, Any]]):
     _keys_serde: Serializer
     _values_serde: Serializer
 
@@ -780,11 +780,11 @@ class DictSerde(Serde[Dict[Any, Any]]):
         self._keys_serde = keys_serde
         self._values_serde = values_serde
 
-    def serialize(self, obj: Dict[Any, Any], b: BytesBuffer) -> bytearray:
+    def serialize(self, obj: dict[Any, Any], b: BytesBuffer) -> bytearray:
         return self.serialize_obj(obj, b)
 
-    def deserialize(self, data: BytesBuffer) -> Dict[Any, Any]:
-        return cast(Dict[Any, Any], self.deserialize_obj(data))
+    def deserialize(self, data: BytesBuffer) -> dict[Any, Any]:
+        return cast(dict[Any, Any], self.deserialize_obj(data))
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, dict):
@@ -793,10 +793,10 @@ class DictSerde(Serde[Dict[Any, Any]]):
         if not isinstance(b, bytearray):
             b = bytearray(b)
 
-        dict_value: Dict[Any, Any] = cast(Dict[Any, Any], obj)
+        dict_value: dict[Any, Any] = cast(dict[Any, Any], obj)
 
-        keys: List[Any] = list(dict_value.keys())
-        values: List[Any] = list(dict_value.values())
+        keys: list[Any] = list(dict_value.keys())
+        values: list[Any] = list(dict_value.values())
 
         b_length = len(b)
         b.extend(bytearray(MAX_SIZE_LENGTH))

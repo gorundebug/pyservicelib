@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 import asyncio
-from typing import List
+import pytest
 import os
 from pathlib import Path
 from datetime import timedelta, datetime
@@ -17,10 +17,11 @@ from pyservicelib.runtime.config import  ConfigSettings
 from pyservicelib.runtime.tests.mockservice import MockService, MockServiceConfig, MockServiceDependency
 
 
+@pytest.mark.asyncio
 async def test_delay_pool():
    os.chdir(Path(__file__).parent)
-   delays: List[int] = [1000, 5000, 1200, 3000, 1500, 4000, 1350, 900, 100, 500, 500, 500, 500, 500, 500, 500]
-   recorded_delays: List[int] = []
+   delays: list[int] = [1000, 5000, 1200, 3000, 1500, 4000, 1350, 900, 100, 500, 500, 500, 500, 500, 500, 500]
+   recorded_delays: list[int] = []
 
    service = await ServiceAppLoader[MockService, MockServiceConfig]().init(
       "MockService", MockServiceDependency(), ConfigSettings())
@@ -44,11 +45,11 @@ async def test_delay_pool():
    await service.stop(ctx)
    await service.release()
 
-
+@pytest.mark.asyncio
 async def test_async_pool():
    pool = AsyncThreadPoolExecutor(5)
 
-   delays: List[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
+   delays: list[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
    counter = len(delays)
 
    async def task(value: float):
@@ -57,7 +58,7 @@ async def test_async_pool():
       counter -= 1
       return value
 
-   tasks: List[AsyncFuture] = []
+   tasks: list[AsyncFuture] = []
 
    start_time = datetime.now()
 
@@ -76,11 +77,11 @@ async def test_async_pool():
 
    pool.shutdown()
 
-
+@pytest.mark.asyncio
 async def test_async_pool_add_task_without_block():
    pool = AsyncThreadPoolExecutor(5)
 
-   delays: List[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
+   delays: list[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
    counter = len(delays)
 
    async def task(value: float):
@@ -89,7 +90,7 @@ async def test_async_pool_add_task_without_block():
       counter -= 1
       return value
 
-   tasks: List[AsyncFuture] = []
+   tasks: list[AsyncFuture] = []
 
    for delay in delays:
       tasks.append(pool.add_task(task, delay))
@@ -108,10 +109,11 @@ async def test_async_pool_add_task_without_block():
 
    pool.shutdown()
 
+@pytest.mark.asyncio
 async def test_async_pool_shutdown():
    pool = AsyncThreadPoolExecutor(5)
 
-   delays: List[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
+   delays: list[float] = [5, 5, 5, 5, 5, 2, 2, 2, 2, 2]
    counter = len(delays)
 
    async def task(value: float):
@@ -120,7 +122,7 @@ async def test_async_pool_shutdown():
       counter -= 1
       return value
 
-   tasks: List[AsyncFuture] = []
+   tasks: list[AsyncFuture] = []
 
    start_time = datetime.now()
 

@@ -5,7 +5,7 @@
 #   file for details.
 
 from abc import ABC, abstractmethod
-from typing import Hashable, Callable, List, Any
+from typing import Hashable, Callable, Any
 import datetime
 
 from pyservicelib.runtime.context import Context
@@ -42,5 +42,5 @@ class JoinStorageConfig(ABC):
 class JoinStorage[K: Hashable](Storage):
 
     @abstractmethod
-    async def join_value(self, key: K, index: int, value: Any, callback: Callable[[List[List[Any]]], Any]):
+    async def join_value(self, key: K, index: int, value: Any, callback: Callable[[list[list[Any]]], Any]):
         pass

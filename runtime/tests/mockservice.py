@@ -3,7 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from pyservicelib.runtime.environment import ServiceDependency, ServiceEnvironment
 from pyservicelib.runtime.environment.log import LogsEngine
@@ -17,7 +17,7 @@ class MockServiceConfig(ServiceAppConfig):
         super().__init__(**data)
 
     @classmethod
-    def load_config(cls, obj: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def load_config(cls, obj: Optional[dict[str, Any]]) -> dict[str, Any]:
         return {}
 
 class MockServiceDependency(ServiceDependency):

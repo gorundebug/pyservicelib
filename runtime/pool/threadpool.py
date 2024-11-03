@@ -6,7 +6,7 @@
 import threading
 import asyncio
 from asyncio import AbstractEventLoop
-from typing import Callable, Any, List, Optional
+from typing import Callable, Any, Optional
 from queue import Queue
 
 
@@ -78,7 +78,7 @@ class AsyncThreadPoolExecutor:
 
     def __init__(self, max_workers: int):
         self._task_queue = Queue()
-        self.threads: List[AsyncThread] = [AsyncThread(self._task_queue) for _ in range(max_workers)]
+        self.threads: list[AsyncThread] = [AsyncThread(self._task_queue) for _ in range(max_workers)]
 
     def add_task(self, coro: Callable[..., Any], *args, **kwargs) -> AsyncFuture:
         future = AsyncFuture(asyncio.get_running_loop())
