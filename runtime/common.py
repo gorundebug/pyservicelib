@@ -30,13 +30,12 @@ class Caller[T](Consumer[T], ABC):
 
 
 class DirectCaller[T](Caller[T]):
-
     async def consume(self, value: T):
         pass
 
 
 class Collect[T](ABC):
-
+    @abstractmethod
     async def out(self, value: T) -> None:
         pass
 
