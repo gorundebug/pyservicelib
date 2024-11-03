@@ -44,5 +44,6 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
+        v = await self._f.call(value)
         if self._caller is not None:
-            await self._caller.consume(await self._f.call(value))
+            await self._caller.consume(v)

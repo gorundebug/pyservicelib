@@ -40,6 +40,6 @@ class FilterStream[T](TypedConsumedStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        if self._caller is not None:
-            if await self._f.call(value):
+        if await self._f.call(value):
+            if self._caller is not None:
                 await self._caller.consume(value)

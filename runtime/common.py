@@ -577,7 +577,8 @@ class Collector[T](Collect[T]):
         self._caller = caller
 
     async def out(self, value: T):
-        await self._caller.consume(value)
+        if self._caller is not None:
+            await self._caller.consume(value)
 
 
 class ParallelsCollector[T](Collect[T]):
