@@ -6,7 +6,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import Optional, Callable, Any, get_origin
+from typing import Optional, Callable, Any, get_origin, Hashable
 from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -17,6 +17,7 @@ from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.environment.metrics import Metrics
 from pyservicelib.runtime.context import Context
+from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 
 class Consumer[T](ABC):
@@ -334,9 +335,9 @@ class StreamConsumer[T](Consumer[T]):
 
 
 class TypedStream[T](ServiceStream):
-    _serde:  TypedStreamSerde[T]
+    _serde:  Optional[TypedStreamSerde[T]]
 
-    def __init__(self, stream_id: int, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: Optional[TypedStreamSerde[T]] = None):
         super().__init__(stream_id=stream_id, env=env)
         self._serde = serde
 
@@ -352,6 +353,8 @@ class TypedStream[T](ServiceStream):
 
     @property
     def serde(self) -> TypedStreamSerde[T]:
+        if self._serde is None:
+            raise ValueError("serde must be initialized for TypedStream")
         return self._serde
 
     @property
@@ -367,12 +370,22 @@ class TypedStream[T](ServiceStream):
         return genetic_type.__name__
 
 
+class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment"):
+        super().__init__(stream_id=stream_id, env=env)
+
+    @abstractmethod
+    def set_source(self, stream: TypedStream[T]):
+        pass
+
+
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
     _consumer: Optional[StreamConsumer[T]]
 
     def __init__(self, stream_id: int, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        super().__init__(stream_id=stream_id, serde=serde, env=env)
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
 
     @property
@@ -399,8 +412,8 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
     _caller: Optional[Caller[R]]
     _consumer: Optional[StreamConsumer[R]]
 
-    def __init__(self, stream_id: int, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
-        super().__init__(stream_id=stream_id, serde=serde, env=env)
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[R]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
 
     @property
@@ -422,6 +435,14 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
             return []
         return [self._consumer.stream]
 
+
+class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K, T1], R]):
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[R]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+    @abstractmethod
+    async def consume_right(self, value: KeyValue[K, T2]) -> None:
+        pass
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
     @abstractmethod

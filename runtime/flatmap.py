@@ -34,15 +34,15 @@ class FlatMapStream[T, R](TypedTransformConsumedStream[T, R]):
         if cfg.value_type is None:
             raise ValueError(f"The value type of the FlatMapStream with name '{name}' is not defined")
 
-        super().__init__(stream_id=cfg.id,
-                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type),
-                         env=stream.environment)
+        super().__init__(stream_id=cfg.id, env=stream.environment,
+                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
         self._in_serde = stream.serde
         self._f = FlatMapFunctionContext[T, R](self, fn)
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        await self._f.call(value, Collector(self._caller))
+        if self._caller is not None:
+           await self._f.call(value, Collector[R](self._caller))
 
 

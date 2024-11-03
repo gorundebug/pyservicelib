@@ -35,9 +35,8 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         if cfg.value_type is None:
             raise ValueError(f"The value type of the MapStream with name '{name}' is not defined")
 
-        super().__init__(stream_id=cfg.id,
-                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type),
-                         env=stream.environment)
+        super().__init__(stream_id=cfg.id, env=stream.environment,
+                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
         self._in_serde = stream.serde
         self._f = MapFunctionContext[T, R](self, fn)

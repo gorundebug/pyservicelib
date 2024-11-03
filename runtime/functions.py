@@ -24,6 +24,13 @@ class FilterFunction[T](ABC):
         pass
 
 
+class ForEachFunction[T](ABC):
+
+    @abstractmethod
+    async def for_each(self, context: ServiceStream, value: T):
+        pass
+
+
 class DelayFunction[T](ABC):
 
     @abstractmethod

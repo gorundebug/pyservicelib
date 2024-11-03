@@ -5,4 +5,5 @@
 #   file for details.
 
 from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
-                     RuntimeHelpers, TypedStream, Consumer, StreamConsumer, ServiceStream, Stream)
+                     RuntimeHelpers, TypedStream, Consumer, StreamConsumer,
+                     ServiceStream, Stream, TypedLinkStream)

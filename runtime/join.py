@@ -9,7 +9,7 @@ from typing import Hashable, Any
 from pyservicelib.api.models.join_storage_type import JoinStorageType
 from pyservicelib.api.models.join_type import JoinType
 from pyservicelib.runtime.common import StreamFunction, TypedStreamSerde, Collect, Stream, StreamConsumer
-from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from pyservicelib.runtime.common import TypedStream, TypedJoinConsumedStream, RuntimeHelpers
 from pyservicelib.runtime.common import ServiceExecutionEnvironment
 from pyservicelib.runtime.config import StreamConfig
 from pyservicelib.runtime.datastruct import KeyValue
@@ -52,7 +52,7 @@ class JoinStorageConfigImpl(JoinStorageConfig):
         return cfg.name
 
 
-class JoinStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K, T1], R], Collect[R]):
+class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R], Collect[R]):
 
     _source: TypedStream[KeyValue[K, T1]]
     _in_serde: TypedStreamSerde[KeyValue[K, T1]]
@@ -70,9 +70,8 @@ class JoinStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K
         if cfg.value_type is None:
             raise ValueError(f"The value type of the JoinStream with name '{name}' is not defined")
 
-        super().__init__(stream_id=cfg.id,
-                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type),
-                         env=stream.environment)
+        super().__init__(stream_id=cfg.id, env=stream.environment,
+                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
         self._in_serde = stream.serde
         self._f = JoinFunctionContext[K, T1, T2, R](self, fn)
