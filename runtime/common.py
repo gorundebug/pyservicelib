@@ -338,7 +338,7 @@ class TypedStream[T](ServiceStream):
     _serde:  TypedStreamSerde[T]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        super().__init__(cfg, env)
+        super().__init__(cfg=cfg, env=env)
         self._serde = serde
 
     @property
