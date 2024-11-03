@@ -18,8 +18,8 @@ from pyservicelib.runtime.environment import ServiceDependency
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
 from pyservicelib.runtime.context import Context
-from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader, Collect, Caller
-from pyservicelib.runtime.common import Endpoint, Stream, EndpointWriter, EndpointReader
+from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
+from pyservicelib.runtime.common import Endpoint, ServiceStream, EndpointWriter, EndpointReader, Stream
 from pyservicelib.runtime.common import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from pyservicelib.runtime.environment.metrics import MetricsEngine
 from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool
@@ -38,7 +38,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _metrics: Metrics
     _config: ServiceAppConfig
     _serviceConfig: ServiceConfig
-    _streams: Dict[int, Stream]
+    _streams: Dict[int, ServiceStream]
     _serdes: Dict[str, StreamSerializer]
     _task_pools: Dict[str, TaskPool]
     _priority_task_pools: Dict[str, PriorityTaskPool]
@@ -164,7 +164,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
         return ser
 
-    def register_stream(self, stream: Stream) -> None:
+    def register_stream(self, stream: ServiceStream) -> None:
         self._streams[stream.id] = stream
 
     def register_serde(self, type_name: str, serializer: StreamSerializer) -> None:

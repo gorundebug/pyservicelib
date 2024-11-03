@@ -6,10 +6,21 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import List, get_origin, Any, Dict
+from typing import List, get_origin, Any, Dict, Optional
 from collections.abc import Iterable
 
-class TestStream[T, R]:
+
+class TestValue[T]:
+    value: Optional[T]
+
+    def __init__(self):
+        self.value = None
+
+    def set_value(self, value: T):
+        self.value = value
+
+
+class TestStream[T: Iterable, R]:
     def __init__(self):
         pass
 
@@ -26,18 +37,21 @@ class TestStream[T, R]:
         orig_type = get_origin(genetic_type)
         if orig_type is None:
             orig_type = genetic_type
-
         if not isinstance(value, orig_type):
             return False
 
-        return True
+        test_value = TestValue[R]()
+        test_value.set_value(value)
+        return test_value.value == value
 
-class DerivedStream[T, R](TestStream[T, R]):
+
+class DerivedStream[T: Iterable, R](TestStream[T, R]):
 
     def __init__(self):
         super().__init__()
 
-class DerivedFromDerivedStream[T, R](DerivedStream[T, R]):
+
+class DerivedFromDerivedStream[T: Iterable, R](DerivedStream[T, R]):
 
     def __init__(self):
         super().__init__()
@@ -50,7 +64,7 @@ def test_type_check():
     stream1 = DerivedFromDerivedStream[tuple, float]()
     assert stream1.check(5.0) == True
 
-    stream2 = DerivedStream[int, float]()
+    stream2 = DerivedStream[int, float]() #pyright: ignore
     assert stream2.check(5.0) == False
 
     stream3 = DerivedStream[List[int], float]()
@@ -58,6 +72,7 @@ def test_type_check():
 
     stream4 = DerivedStream[Dict[int, int], float]()
     assert stream4.check(5) == False
+
 
 def test_benchmark_sync(benchmark):
     counter = 0

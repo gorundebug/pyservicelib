@@ -36,7 +36,7 @@ class FilterStream[T](TypedConsumedStream[T]):
                          serde=stream.serde,
                          env=stream.environment)
         self._source = stream
-        self._f = FilterFunctionContext(self, fn)
+        self._f = FilterFunctionContext[T](self, fn)
         stream.consumer = self
 
     async def consume(self, value: T) -> None:

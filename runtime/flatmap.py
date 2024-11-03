@@ -16,11 +16,10 @@ class FlatMapFunctionContext[T, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    async def call(self, value: T, out: Collect[R]) -> R:
+    async def call(self, value: T, out: Collect[R]):
         self.before_call()
-        result = await self._fn.flatmap(self._context, value, out)
+        await self._fn.flatmap(self._context, value, out)
         self.after_call()
-        return result
 
 
 class FlatMapStream[T, R](TypedTransformConsumedStream[T, R]):
@@ -40,7 +39,7 @@ class FlatMapStream[T, R](TypedTransformConsumedStream[T, R]):
                          env=stream.environment)
         self._source = stream
         self._serdeIn = stream.serde
-        self._f = FlatMapFunctionContext(self, fn)
+        self._f = FlatMapFunctionContext[T, R](self, fn)
         stream.consumer = self
 
     async def consume(self, value: T) -> None:

@@ -3,10 +3,10 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from pyservicelib.runtime import TypedStream, Consumer, StreamConsumer, Stream
+from pyservicelib.runtime import TypedStream, Consumer, StreamConsumer, ServiceStream, Stream
 from typing import get_origin
 
-class AppSinkStream[T](Stream, StreamConsumer[T]):
+class AppSinkStream[T](ServiceStream, StreamConsumer[T]):
     _source: TypedStream[T]
     _consumer: Consumer[T]
 

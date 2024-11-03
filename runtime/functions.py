@@ -5,32 +5,41 @@
 #   file for details.
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from common import Stream, Collect
+from typing import Hashable, List
+
+from pyservicelib.runtime.common import ServiceStream, Collect
 
 
 class MapFunction[T, R](ABC):
 
     @abstractmethod
-    async def map(self, context: Stream, value: T) -> R:
+    async def map(self, context: ServiceStream, value: T) -> R:
         pass
 
 
 class FilterFunction[T](ABC):
 
     @abstractmethod
-    async def filter(self, context: Stream, value: T) -> bool:
+    async def filter(self, context: ServiceStream, value: T) -> bool:
         pass
 
 
 class DelayFunction[T](ABC):
 
     @abstractmethod
-    async def duration(self, context: Stream, value: T) -> timedelta:
+    async def duration(self, context: ServiceStream, value: T) -> timedelta:
         pass
 
 
 class FlatMapFunction[T, R](ABC):
 
     @abstractmethod
-    async def flatmap(self, context: Stream, value: T, out: Collect[R]) -> R:
+    async def flatmap(self, context: ServiceStream, value: T, out: Collect[R]):
+        pass
+
+
+class JoinFunction[K: Hashable, T1, T2, R](ABC):
+
+    @abstractmethod
+    async def join(self, context: ServiceStream, key: K, left_values: List[T1], right_values: List[T2], out: Collect[R]):
         pass

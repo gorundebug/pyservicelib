@@ -40,7 +40,7 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
                          env=stream.environment)
         self._source = stream
         self._serdeIn = stream.serde
-        self._f = MapFunctionContext(self, fn)
+        self._f = MapFunctionContext[T, R](self, fn)
         stream.consumer = self
 
     async def consume(self, value: T) -> None:

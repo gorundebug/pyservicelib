@@ -248,6 +248,43 @@ class EndpointWriter(ABC):
 
 
 class Stream(ABC):
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def transformation_name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def type_name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def id(self) -> int:
+       pass
+
+    @property
+    @abstractmethod
+    def config(self) -> StreamConfig:
+        pass
+
+    @property
+    @abstractmethod
+    def environment(self) -> "ServiceExecutionEnvironment":
+        pass
+
+    @property
+    @abstractmethod
+    def consumers(self) -> List["Stream"]:
+        pass
+
+class ServiceStream(Stream):
     _id: int
     _environment: "ServiceExecutionEnvironment"
 
@@ -294,7 +331,7 @@ class StreamConsumer[T](Consumer[T]):
         pass
 
 
-class TypedStream[T](Stream):
+class TypedStream[T](ServiceStream):
     _serde:  TypedStreamSerde[T]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
@@ -490,7 +527,7 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def register_stream(self, stream: Stream) -> None:
+    def register_stream(self, stream: ServiceStream) -> None:
         pass
 
     @abstractmethod
