@@ -25,7 +25,7 @@ class MapFunctionContext[T, R](StreamFunction[R]):
 
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
-    _serdeIn: TypedStreamSerde[T]
+    _in_serde: TypedStreamSerde[T]
     _f: MapFunctionContext[T, R]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
@@ -35,11 +35,11 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         if cfg.value_type is None:
             raise ValueError(f"The value type of the MapStream with name '{name}' is not defined")
 
-        super().__init__(cfg=cfg,
+        super().__init__(stream_id=cfg.id,
                          serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type),
                          env=stream.environment)
         self._source = stream
-        self._serdeIn = stream.serde
+        self._in_serde = stream.serde
         self._f = MapFunctionContext[T, R](self, fn)
         stream.consumer = self
 

@@ -32,7 +32,7 @@ class FilterStream[T](TypedConsumedStream[T]):
         if cfg is None:
             raise ValueError(f"FilterStream configuration names '{name}' not found")
 
-        super().__init__(cfg=cfg,
+        super().__init__(stream_id=cfg.id,
                          serde=stream.serde,
                          env=stream.environment)
         self._source = stream

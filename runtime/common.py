@@ -288,8 +288,8 @@ class ServiceStream(Stream):
     _id: int
     _environment: "ServiceExecutionEnvironment"
 
-    def __init__(self, cfg: StreamConfig, env: "ServiceExecutionEnvironment"):
-        self._id = cfg.id
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment"):
+        self._id = stream_id
         self._environment = env
         env.runtime.register_stream(self)
 
@@ -308,11 +308,11 @@ class ServiceStream(Stream):
 
     @property
     def id(self) -> int:
-        return self.id
+        return self._id
 
     @property
     def config(self) -> StreamConfig:
-        return self.environment.config.get_stream_config_by_id(self.id)
+        return self.environment.config.get_stream_config_by_id(self._id)
 
     @property
     def environment(self) -> "ServiceExecutionEnvironment":
@@ -337,8 +337,8 @@ class StreamConsumer[T](Consumer[T]):
 class TypedStream[T](ServiceStream):
     _serde:  TypedStreamSerde[T]
 
-    def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        super().__init__(cfg=cfg, env=env)
+    def __init__(self, stream_id: int, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
+        super().__init__(stream_id=stream_id, env=env)
         self._serde = serde
 
     @property
@@ -372,8 +372,8 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
     _consumer: Optional[StreamConsumer[T]]
 
-    def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        super().__init__(cfg=cfg, serde=serde, env=env)
+    def __init__(self, stream_id: int, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
+        super().__init__(stream_id=stream_id, serde=serde, env=env)
         self._caller = None
 
     @property
@@ -400,8 +400,8 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
     _caller: Optional[Caller[R]]
     _consumer: Optional[StreamConsumer[R]]
 
-    def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
-        super().__init__(cfg=cfg, serde=serde, env=env)
+    def __init__(self, stream_id: int, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
+        super().__init__(stream_id=stream_id, serde=serde, env=env)
         self._caller = None
 
     @property

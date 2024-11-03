@@ -15,7 +15,7 @@ class InputStream[T](TypedConsumedStream[T]):
         if cfg.value_type is None:
             raise ValueError(f"The value type of the InputStream with name '{name}' is not defined")
 
-        super().__init__(cfg=cfg,
+        super().__init__(stream_id=cfg.id,
                          serde=RuntimeHelpers[T](env).make_serde(type_name=cfg.value_type),
                          env=env)
 

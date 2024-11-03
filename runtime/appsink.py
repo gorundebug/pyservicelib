@@ -15,7 +15,7 @@ class AppSinkStream[T](ServiceStream, StreamConsumer[T]):
         if cfg is None:
             raise ValueError(f"AppSinkStream configuration names '{name}' not found")
 
-        super().__init__(cfg=cfg,
+        super().__init__(stream_id=cfg.id,
                          env=stream.environment)
 
         self._source = stream

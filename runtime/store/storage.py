@@ -6,7 +6,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Hashable, Callable, Any
-import datetime
+from datetime import timedelta
 
 from pyservicelib.runtime.context import Context
 
@@ -25,7 +25,7 @@ class JoinStorageConfig(ABC):
 
     @property
     @abstractmethod
-    def ttl(self) -> datetime.timedelta:
+    def ttl(self) -> timedelta:
         pass
 
     @property
