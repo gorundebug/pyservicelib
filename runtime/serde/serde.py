@@ -6,7 +6,7 @@
 
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, Tuple, cast, Hashable, Optional, Union
+from typing import Any, cast, Hashable, Optional, Union
 import sys
 
 from pyservicelib.runtime.datastruct import KeyValue
