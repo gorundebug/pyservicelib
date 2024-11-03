@@ -25,7 +25,7 @@ class TestStream[T: Iterable, R]:
         pass
 
     def check(self, value: Any) -> bool:
-        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
         orig_type = get_origin(genetic_type)
         if orig_type is None:
             orig_type = genetic_type
@@ -33,7 +33,7 @@ class TestStream[T: Iterable, R]:
         if not issubclass(orig_type, Iterable):
             return False
 
-        genetic_type = self.__orig_class__.__args__[1] #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[1] #type: ignore[attr-defined]
         orig_type = get_origin(genetic_type)
         if orig_type is None:
             orig_type = genetic_type
@@ -64,7 +64,7 @@ def test_type_check():
     stream1 = DerivedFromDerivedStream[tuple, float]()
     assert stream1.check(5.0) == True
 
-    stream2 = DerivedStream[int, float]() #pyright: ignore
+    stream2 = DerivedStream[int, float]() #type: ignore[type-var]
     assert stream2.check(5.0) == False
 
     stream3 = DerivedStream[List[int], float]()

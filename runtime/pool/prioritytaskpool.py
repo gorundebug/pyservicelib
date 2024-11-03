@@ -55,8 +55,8 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
             tasks_count = self._task_queue.qsize()
             self._environment.log.warning(f"Priority task pool '{self._name}' stopped by timeout. (tasks count={tasks_count})")
 
-    async def add_task(self, task: Callable[..., Any], priority: int = 0, *args, **kwargs):
-        await self._task_queue.put((priority, task, args, kwargs))
+    async def add_task(self, priority: int, fn: Callable[..., Any], *args, **kwargs):
+        await self._task_queue.put((priority, fn, args, kwargs))
 
 
 def make_priority_task_pool(name: str, env: ServiceEnvironment) -> PriorityTaskPool:

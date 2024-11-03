@@ -29,7 +29,7 @@ class DelayPool(Pool):
 class PriorityTaskPool(Pool):
 
     @abstractmethod
-    async def add_task(self, priority: int, fn: Callable[..., Any],  *args, **kwargs):
+    async def add_task(self, priority: int, fn: Callable[..., Any], *args, **kwargs):
         pass
 
 class TaskPool(Pool):

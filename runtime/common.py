@@ -322,6 +322,9 @@ class ServiceStream(Stream):
     def consumers(self) -> List["Stream"]:
         return []
 
+    def build(self):
+        pass
+
 
 class StreamConsumer[T](Consumer[T]):
 
@@ -358,7 +361,7 @@ class TypedStream[T](ServiceStream):
 
     @property
     def type_name(self) -> str:
-        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
         orig_type = get_origin(genetic_type)
         if orig_type is not None:
             return orig_type.__name__
@@ -370,9 +373,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _consumer: Optional[StreamConsumer[T]]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
-        TypedStream[T].__init__(self, cfg, serde, env)
-        StreamConsumer[T].__init__(self)
-        ABC.__init__(self)
+        super().__init__(cfg=cfg, serde=serde, env=env)
         self._caller = None
 
     @property
@@ -397,16 +398,14 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
 
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
-    _consumer: Optional[StreamConsumer[T]]
+    _consumer: Optional[StreamConsumer[R]]
 
     def __init__(self, cfg: StreamConfig, serde: TypedStreamSerde[R], env: "ServiceExecutionEnvironment"):
-        TypedStream[R].__init__(self, cfg, serde, env)
-        StreamConsumer[T].__init__(self)
-        ABC.__init__(self)
+        super().__init__(cfg=cfg, serde=serde, env=env)
         self._caller = None
 
     @property
-    def consumer(self) -> Optional[StreamConsumer[T]]:
+    def consumer(self) -> Optional[StreamConsumer[R]]:
         return self._consumer
 
     @consumer.setter

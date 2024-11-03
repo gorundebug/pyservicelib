@@ -31,7 +31,7 @@ class AppSinkStream[T](ServiceStream, StreamConsumer[T]):
 
     @property
     def type_name(self) -> str:
-        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
+        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
         orig_type = get_origin(genetic_type)
         if orig_type is not None:
             return orig_type.__name__

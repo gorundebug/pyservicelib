@@ -85,9 +85,9 @@ class DelayPoolImpl(DelayPool):
                 f"Delay pool stopped by timeout. (tasks count={tasks_count})"
             )
 
-    async def add_task(self, delay: timedelta, task: Callable[..., Any], *args, **kwargs):
+    async def add_task(self, delay: timedelta, fn: Callable[..., Any], *args, **kwargs):
         execute_time = datetime.now() + delay
-        await self._priority_task_queue.put((execute_time, task, args, kwargs))
+        await self._priority_task_queue.put((execute_time, fn, args, kwargs))
         self._new_task_event.set()
 
 

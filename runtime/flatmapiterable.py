@@ -5,9 +5,9 @@
 #   file for details.
 
 from collections.abc import Iterable
-from typing import get_origin
+from typing import get_origin, cast
 
-from pyservicelib.runtime.common import TypedStreamSerde, Collector
+from pyservicelib.runtime.common import TypedStreamSerde
 from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 
 
@@ -17,18 +17,6 @@ class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
     _element_type: type
 
     def __init__(self, name: str, stream: TypedStream[T]):
-        genetic_type = self.__orig_class__.__args__[0] #pyright: ignore
-        orig_type = get_origin(genetic_type)
-        if orig_type is None:
-            orig_type = genetic_type
-
-        if not issubclass(orig_type, Iterable):
-            raise TypeError(f"FlatMapIterable type '{orig_type.__name__}' isn't iterable.")
-
-        genetic_type = self.__orig_class__.__args__[1] #pyright: ignore
-        self._element_type = get_origin(genetic_type)
-        if self._element_type is None:
-            self._element_type = genetic_type
 
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
@@ -43,11 +31,25 @@ class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
         self._serdeIn = stream.serde
         stream.consumer = self
 
+    def build(self):
+        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
+        orig_type = get_origin(genetic_type)
+        if orig_type is None:
+            orig_type = genetic_type
+
+        if not issubclass(orig_type, Iterable):
+            raise TypeError(f"FlatMapIterable type '{orig_type.__name__}' isn't iterable.")
+
+        genetic_type = self.__orig_class__.__args__[1] #type: ignore[attr-defined]
+        self._element_type = get_origin(genetic_type)
+        if self._element_type is None:
+            self._element_type = genetic_type
+
     async def consume(self, value: T) -> None:
         if self._caller is not None:
             for elem in value:
                 if isinstance(elem, self._element_type):
-                    await self._caller.consume(elem)
+                    await self._caller.consume(cast(R, elem))
                 else:
                     raise ValueError(f"""Element in the consume method for the FlatMapIterable stream '{self.name}'
 has an invalid type: Element Type: {type(elem).__name__}, Required Type: {self._element_type.__name__}""")

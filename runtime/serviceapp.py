@@ -268,7 +268,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
     _service: ServiceType
 
     async def _watch_config_changes(self, values_file: str):
-        cfg_class = self.__orig_class__.__args__[1]  #pyright: ignore
+        cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
         self._watching_flag.set()
 
         try:
@@ -299,10 +299,10 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             self._service.log.debug("Watch config changes loop exited.")
 
     async def init(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
-        self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #pyright: ignore
+        self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #type: ignore[attr-defined]
         if not isinstance(self._service , ServiceApp):
             raise ValueError("Invalid service type. Service must be inherit from ServiceApp class")
-        cfg_class = self.__orig_class__.__args__[1]  #pyright: ignore
+        cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
         if not issubclass(cfg_class , ServiceAppConfig):
             raise ValueError("Invalid config type. Config must be inherit from ServiceAppConfig class")
 

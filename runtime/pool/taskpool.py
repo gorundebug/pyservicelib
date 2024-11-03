@@ -56,8 +56,8 @@ class TaskPoolImpl(TaskPool):
             tasks_count = self._task_queue.qsize()
             self._environment.log.warning(f"Task pool '{self._name}' stopped by timeout. (tasks count={tasks_count})")
 
-    async def add_task(self, task: Callable[..., Any], *args, **kwargs):
-        await self._task_queue.put((task, args, kwargs))
+    async def add_task(self, fn: Callable[..., Any], *args, **kwargs):
+        await self._task_queue.put((fn, args, kwargs))
 
 
 def make_task_pool(name: str, env: ServiceEnvironment) -> TaskPool:
