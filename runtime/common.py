@@ -11,7 +11,7 @@ from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config
-from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde
+from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, StreamKeyValueSerde
 from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StubSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
@@ -56,20 +56,28 @@ class RuntimeHelpers[T]:
         if ser is not None:
             return ser
         ser = cast(Serde[T], self._environment.runtime.get_type_serde(type_name))
-        if ser is not None:
-            pass
-        if ser is None:
-            ser = StubSerde()
         stream_ser = StreamSerde(ser)
         self._environment.runtime.register_serde(type_name, stream_ser)
         return stream_ser
 
-    def make_key_value_serde(self, key_type_name: str, value_type_name: str) -> TypedStreamKeyValueSerde[T]:
-        return cast(TypedStreamKeyValueSerde[T],
-                    self.get_registered_serde(f"KeyValue[{key_type_name},{value_type_name}]"))
-
     def make_caller(self, source: "TypedStream[T]") -> Caller[T]:
         return DirectCaller[T]()
+
+
+class RuntimeKeyValueHelpers[K: Hashable, V](RuntimeHelpers[KeyValue[K, V]]):
+
+    def __init__(self, env: "ServiceExecutionEnvironment"):
+        super().__init__(env)
+
+    def make_key_value_serde(self, key_type_name: str, value_type_name: str) -> TypedStreamKeyValueSerde[KeyValue[K, V]]:
+        ser = cast(TypedStreamKeyValueSerde[KeyValue[K, V]],
+                   self.get_registered_serde(f"KeyValue[{key_type_name},{value_type_name}]"))
+        if ser is not None:
+            return ser
+        key_ser = cast(Serde[K], self._environment.runtime.get_type_serde(key_type_name))
+        value_ser = cast(Serde[V], self._environment.runtime.get_type_serde(value_type_name))
+        stream_ser = StreamKeyValueSerde[K, V](key_ser, value_ser)
+        return stream_ser
 
 
 class DataConnector(ABC):
@@ -300,11 +308,6 @@ class ServiceStream(Stream):
     @property
     def transformation_name(self) -> str:
         return self.config.transformation_name
-
-    @property
-    @abstractmethod
-    def type_name(self) -> str:
-       pass
 
     @property
     def id(self) -> int:
