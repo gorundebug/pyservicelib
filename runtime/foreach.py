@@ -24,7 +24,6 @@ class ForEachFunctionContext[T](StreamFunction[T]):
 
 class ForEachStream[T](TypedConsumedStream[T]):
     _source: TypedStream[T]
-    _in_serde: TypedStreamSerde[T]
     _f: ForEachFunctionContext[T]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: ForEachFunction[T]):
@@ -37,7 +36,6 @@ class ForEachStream[T](TypedConsumedStream[T]):
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[T](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
-        self._in_serde = stream.serde
         self._f = ForEachFunctionContext[T](self, fn)
         stream.consumer = self
 

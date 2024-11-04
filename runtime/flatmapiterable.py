@@ -13,7 +13,6 @@ from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStrea
 
 class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
-    _in_serde: TypedStreamSerde[T]
     _element_type: type
 
     def __init__(self, name: str, stream: TypedStream[T]):
@@ -27,7 +26,6 @@ class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
-        self._in_serde = stream.serde
         stream.consumer = self
 
     def build(self):

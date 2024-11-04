@@ -25,7 +25,6 @@ class MapFunctionContext[T, R](StreamFunction[R]):
 
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
-    _in_serde: TypedStreamSerde[T]
     _f: MapFunctionContext[T, R]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: MapFunction[T, R]):
@@ -38,7 +37,6 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
-        self._in_serde = stream.serde
         self._f = MapFunctionContext[T, R](self, fn)
         stream.consumer = self
 

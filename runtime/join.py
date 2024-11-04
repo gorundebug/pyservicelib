@@ -55,7 +55,6 @@ class JoinStorageConfigImpl(JoinStorageConfig):
 class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R], Collect[R]):
 
     _source: TypedStream[KeyValue[K, T1]]
-    _in_serde: TypedStreamSerde[KeyValue[K, T1]]
     _f: JoinFunctionContext[K, T1, T2, R]
     _join_link: "JoinLink[K, T1, T2, R]"
     _join_storage: JoinStorage[K]
@@ -73,7 +72,6 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R], 
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
         self._source = stream
-        self._in_serde = stream.serde
         self._f = JoinFunctionContext[K, T1, T2, R](self, fn)
         stream.consumer = self
         self._join_link = JoinLink[K, T1, T2, R](self, right_stream)
@@ -115,13 +113,11 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R], 
 class JoinLink[K: Hashable, T1, T2, R](Stream, StreamConsumer[KeyValue[K, T2]]):
     _join_stream: JoinStream[K, T1, T2, R]
     _source: TypedStream[KeyValue[K, T2]]
-    _in_serde: TypedStreamSerde[KeyValue[K, T2]]
 
     def __init__(self, join_stream: JoinStream[K, T1, T2, R],
                  stream: TypedStream[KeyValue[K, T2]]):
         self._join_stream = join_stream
         self._source = stream
-        self._in_serde = stream.serde
         stream.consumer = self
 
     @property

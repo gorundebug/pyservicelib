@@ -28,7 +28,6 @@ class KeyByFunctionContext[T, K: Hashable, V](StreamFunction[KeyValue[K, V]]):
 
 class KeyByStream[T, K, V](TypedTransformConsumedStream[T, KeyValue[K, V]]):
     _source: TypedStream[T]
-    _in_serde: TypedStreamSerde[T]
     _f: KeyByFunctionContext[T, K, V]
 
     def __init__(self, name: str, stream: TypedStream[T], fn: KeyByFunction[T, K, V]):
@@ -45,7 +44,6 @@ class KeyByStream[T, K, V](TypedTransformConsumedStream[T, KeyValue[K, V]]):
                          make_key_value_serde(key_type_name=cfg.key_type,
                                               value_type_name=cfg.value_type))
         self._source = stream
-        self._in_serde = stream.serde
         self._f = KeyByFunctionContext[T, K, V](self, fn)
         stream.consumer = self
 
