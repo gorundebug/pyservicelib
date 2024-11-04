@@ -379,12 +379,33 @@ class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
     def set_source(self, stream: TypedStream[T]):
         pass
 
+    @property
+    def stream(self) -> Stream:
+        return self
+
+
+
+class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+    @abstractmethod
+    @property
+    def endpoint_id(self) -> int:
+        pass
+
+    @property
+    def stream(self) -> Stream:
+        return self
+
+
 
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     _caller: Optional[Caller[T]]
     _consumer: Optional[StreamConsumer[T]]
 
-    def __init__(self, stream_id: int, serde: TypedStreamSerde[T], env: "ServiceExecutionEnvironment"):
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
 
@@ -443,6 +464,7 @@ class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStre
     @abstractmethod
     async def consume_right(self, value: KeyValue[K, T2]) -> None:
         pass
+
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
     @abstractmethod

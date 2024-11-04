@@ -36,10 +36,6 @@ class LinkStream[T](TypedLinkStream[T]):
     def consumer(self, value: StreamConsumer[T]):
         self._consumer = value
 
-    @property
-    def stream(self) -> Stream:
-        return self
-
     def set_source(self, stream: TypedStream[T]):
         self._source = stream
         self._serde = stream.serde

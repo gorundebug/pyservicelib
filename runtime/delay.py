@@ -34,8 +34,7 @@ class DelayStream[T](TypedConsumedStream[T]):
         if cfg is None:
             raise ValueError(f"DelayStream configuration names '{name}' not found")
 
-        super().__init__(stream_id=cfg.id, serde=stream.serde,
-                         env=stream.environment)
+        super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._source = stream
         self._f = DelayFunctionContext[T](self, fn)
         stream.consumer = self
