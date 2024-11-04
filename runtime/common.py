@@ -12,7 +12,7 @@ from typing import cast
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
 from pyservicelib.runtime.config import StreamConfig, LinkId, Config
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, StreamKeyValueSerde
-from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StubSerde, StreamSerde, Serde
+from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.pool import TaskPool, PriorityTaskPool
 from pyservicelib.runtime.environment.metrics import Metrics
@@ -393,8 +393,8 @@ class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
 
-    @abstractmethod
     @property
+    @abstractmethod
     def endpoint_id(self) -> int:
         pass
 
