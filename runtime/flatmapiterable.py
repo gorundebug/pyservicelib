@@ -7,7 +7,6 @@
 from collections.abc import Iterable
 from typing import get_origin, cast
 
-from pyservicelib.runtime.common import TypedStreamSerde
 from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 
 
@@ -24,7 +23,7 @@ class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
             raise ValueError(f"The value type of the FlatMapIterableStream with name '{name}' is not defined")
 
         super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[R](stream.environment).make_serde(type_name=cfg.value_type))
+                         serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         stream.consumer = self
 

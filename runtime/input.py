@@ -16,7 +16,7 @@ class InputStream[T](TypedConsumedStream[T]):
             raise ValueError(f"The value type of the InputStream with name '{name}' is not defined")
 
         super().__init__(stream_id=cfg.id, env=env,
-                         serde=RuntimeHelpers[T](env).make_serde(type_name=cfg.value_type))
+                         serde=RuntimeHelpers[T](env).make_stream_serde(type_name=cfg.value_type))
 
     @property
     def endpoint_id(self):

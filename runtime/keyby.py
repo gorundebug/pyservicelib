@@ -6,7 +6,7 @@
 
 from typing import Hashable
 
-from pyservicelib.runtime.common import StreamFunction, TypedStreamSerde
+from pyservicelib.runtime.common import StreamFunction
 from pyservicelib.runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeKeyValueHelpers
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.functions import KeyByFunction
@@ -41,7 +41,7 @@ class KeyByStream[T, K, V](TypedTransformConsumedStream[T, KeyValue[K, V]]):
 
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeKeyValueHelpers[K, V](stream.environment).
-                         make_key_value_serde(key_type_name=cfg.key_type,
+                         make_key_value_stream_serde(key_type_name=cfg.key_type,
                                               value_type_name=cfg.value_type))
         self._source = stream
         self._f = KeyByFunctionContext[T, K, V](self, fn)

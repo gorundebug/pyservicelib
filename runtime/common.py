@@ -51,7 +51,7 @@ class RuntimeHelpers[T]:
         return cast(TypedStreamSerde[T],
                     self._environment.runtime.get_registered_serde(type_name))
 
-    def make_serde(self, type_name: str) -> TypedStreamSerde[T]:
+    def make_stream_serde(self, type_name: str) -> TypedStreamSerde[T]:
         ser = self.get_registered_serde(type_name)
         if ser is not None:
             return ser
@@ -69,7 +69,7 @@ class RuntimeKeyValueHelpers[K: Hashable, V](RuntimeHelpers[KeyValue[K, V]]):
     def __init__(self, env: "ServiceExecutionEnvironment"):
         super().__init__(env)
 
-    def make_key_value_serde(self, key_type_name: str, value_type_name: str) -> TypedStreamKeyValueSerde[KeyValue[K, V]]:
+    def make_key_value_stream_serde(self, key_type_name: str, value_type_name: str) -> TypedStreamKeyValueSerde[KeyValue[K, V]]:
         ser = cast(TypedStreamKeyValueSerde[KeyValue[K, V]],
                    self.get_registered_serde(f"KeyValue[{key_type_name},{value_type_name}]"))
         if ser is not None:
