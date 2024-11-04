@@ -18,6 +18,13 @@ class MapFunction[T, R](ABC):
         pass
 
 
+class ParallelsFunction[T, R](ABC):
+
+    @abstractmethod
+    async def parallels(self, context: Stream, value: T, out: Collect[R]):
+        pass
+
+
 class KeyByFunction[T, K: Hashable, V](ABC):
 
     @abstractmethod
