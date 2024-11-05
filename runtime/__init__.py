@@ -6,4 +6,4 @@
 
 from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      RuntimeHelpers, TypedStream, Consumer, StreamConsumer,
-                     ServiceStream, Stream, TypedLinkStream, TypedSinkStream)
+                     ServiceStream, Stream, TypedLinkStream, TypedSinkStream, TypedSplitStream)

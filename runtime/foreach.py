@@ -33,8 +33,7 @@ class ForEachStream[T](TypedConsumedStream[T]):
         if cfg.value_type is None:
             raise ValueError(f"The value type of the ForEachStream with name '{name}' is not defined")
 
-        super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[T](stream.environment).make_stream_serde(type_name=cfg.value_type))
+        super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._source = stream
         self._f = ForEachFunctionContext[T](self, fn)
         stream.consumer = self

@@ -387,7 +387,6 @@ class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
         return self
 
 
-
 class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
@@ -401,7 +400,6 @@ class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
     @property
     def stream(self) -> Stream:
         return self
-
 
 
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
@@ -430,6 +428,15 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         if self._consumer is None:
             return []
         return [self._consumer.stream]
+
+
+class TypedSplitStream[T](TypedConsumedStream[T]):
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+    @abstractmethod
+    def add_stream(self) -> TypedConsumedStream[T]:
+        pass
 
 
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
