@@ -409,6 +409,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
+        self._consumer = None
 
     @property
     def consumer(self) -> Optional[StreamConsumer[T]]:
@@ -428,6 +429,17 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         if self._consumer is None:
             return []
         return [self._consumer.stream]
+
+
+class TypedInputStream[T](TypedConsumedStream[T]):
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+    @property
+    @abstractmethod
+    def endpoint_id(self) -> int:
+        pass
 
 
 class TypedSplitStream[T](TypedConsumedStream[T]):

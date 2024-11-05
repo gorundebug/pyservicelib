@@ -4,10 +4,10 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from pyservicelib.runtime import ServiceExecutionEnvironment, TypedConsumedStream, RuntimeHelpers
+from pyservicelib.runtime import ServiceExecutionEnvironment, TypedInputStream, RuntimeHelpers
 
 
-class InputStream[T](TypedConsumedStream[T]):
+class InputStream[T](TypedInputStream[T]):
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
         cfg = env.config.get_stream_config_by_name(name)
         if cfg is None:
