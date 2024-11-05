@@ -87,7 +87,7 @@ class SplitStream[T](SplitStreamBase[T]):
         super().__init__(name=name, env=stream.environment, serde=stream.serde, stream=stream)
 
 
-class InputSplitStream[T](SplitStreamBase[T]):
+class TypedBinarySplitStream[T](SplitStreamBase[T]):
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
         cfg = env.config.get_stream_config_by_name(name)
@@ -106,7 +106,7 @@ class InputSplitStream[T](SplitStreamBase[T]):
             await self._caller.consume(value)
 
 
-class InputKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]]):
+class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]]):
     _kv_serde: TypedStreamKeyValueSerde[KeyValue[K, V]]
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
