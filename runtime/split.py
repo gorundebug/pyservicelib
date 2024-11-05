@@ -3,8 +3,6 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from typing import Optional
-
 from pyservicelib.runtime import TypedStream, TypedConsumedStream, TypedSplitStream, Stream
 
 class SplitLink[T](TypedConsumedStream[T]):
