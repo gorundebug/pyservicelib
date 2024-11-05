@@ -29,6 +29,7 @@ from pyservicelib.runtime.store import Storage
 from pyservicelib.runtime.environment.metrics.metrics import Metrics
 from pyservicelib.runtime.environment.log import LogsEngine, Logger
 from pyservicelib.runtime.logging import LogsEngineFactory, LogsEngineType
+from pyservicelib.runtime.store import JoinStorageConfig
 
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
@@ -345,4 +346,26 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             await self._watching_task
         except asyncio.CancelledError:
             self._service.log.debug("Watching task cancelled")
+
+
+class JoinStreamStorageConfig(JoinStorageConfig):
+    _stream: Stream
+
+    def __init__(self, stream: Stream):
+        self._stream = stream
+
+    @property
+    def ttl(self) -> timedelta:
+        cfg = self._stream.config
+        return timedelta(milliseconds=0) if cfg.ttl is None else timedelta(milliseconds=cfg.ttl)
+
+    @property
+    def renew_ttl(self) -> bool:
+        cfg = self._stream.config
+        return False if cfg.renew_ttl is None else cfg.renew_ttl
+
+    @property
+    def name(self) -> str:
+        cfg = self._stream.config
+        return cfg.name
 

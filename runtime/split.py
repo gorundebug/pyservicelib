@@ -45,7 +45,6 @@ class SplitStream[T](TypedSplitStream[T]):
         self._links = []
         stream.consumer = self
 
-
     async def consume(self, value: T) -> None:
         for link in self._links:
             await link.consume(value)
@@ -60,9 +59,9 @@ class SplitStream[T](TypedSplitStream[T]):
         return consumers
 
     def build(self):
-        for link in self._links:
+        for i, link in enumerate(self._links):
             if link.consumer is None:
-                raise ValueError(f"SplitStream '{self.name}' does not have a consumer for all split streams")
+                raise ValueError(f"SplitStream '{self.name}' does not have a consumer for the link with index {i}")
 
     def add_stream(self) -> TypedConsumedStream[T]:
         index = len(self._links)

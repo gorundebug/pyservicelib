@@ -5,7 +5,7 @@
 #   file for details.
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from typing import Hashable
+from typing import Hashable, Any
 
 from pyservicelib.runtime.common import Stream, Collect
 from pyservicelib.runtime.datastruct import KeyValue
@@ -64,4 +64,11 @@ class JoinFunction[K: Hashable, T1, T2, R](ABC):
 
     @abstractmethod
     async def join(self, context: Stream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]):
+        pass
+
+
+class MultiJoinFunction[K: Hashable, T, R](ABC):
+
+    @abstractmethod
+    async def multi_join(self, context: Stream, key: K, values: list[list[Any]], out: Collect[R]):
         pass
