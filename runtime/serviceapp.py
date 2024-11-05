@@ -249,17 +249,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-def get_path(arg_path: str) -> str:
-    if not os.path.isabs(arg_path):
-        try:
-            dir_path = os.getcwd()
-            file_path = os.path.join(dir_path, arg_path)
-        except OSError as e:
-            raise RuntimeError(f"path error: {e}")
-    else:
-        file_path = arg_path
-    return str(Path(file_path).resolve())
-
 
 class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](ServiceLoader):
     _watching_task: asyncio.Task[Any]
@@ -299,6 +288,17 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         finally:
             self._service.log.debug("Watch config changes loop exited.")
 
+    def _get_path(self, arg_path: str) -> str:
+        if not os.path.isabs(arg_path):
+            try:
+                dir_path = os.getcwd()
+                file_path = os.path.join(dir_path, arg_path)
+            except OSError as e:
+                raise RuntimeError(f"path error: {e}")
+        else:
+            file_path = arg_path
+        return str(Path(file_path).resolve())
+
     async def init(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
         self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #type: ignore[attr-defined]
         if not isinstance(self._service , ServiceApp):
@@ -311,8 +311,8 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         parser.add_argument("--values", default="./values.yaml", help="Service config values path")
         parser.add_argument("--config", default="./config.yaml", help="Service config path")
         args, _ = parser.parse_known_args()
-        config_file = get_path(args.config)
-        values_file = get_path(args.values)
+        config_file = self._get_path(args.config)
+        values_file = self._get_path(args.values)
 
         self._ready_flag = asyncio.Event()
         self._watching_flag = asyncio.Event()
