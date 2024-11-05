@@ -3,13 +3,21 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from pyservicelib.runtime import TypedStream, TypedConsumedStream, TypedSplitStream, Stream
+from typing import Optional, Hashable
+
+from pyservicelib.api.models.transformation_type import TransformationType
+from pyservicelib.runtime import TypedStream, TypedConsumedStream, TypedSplitStream
+from pyservicelib.runtime import Stream, ServiceExecutionEnvironment, RuntimeHelpers
+from pyservicelib.runtime.common import RuntimeKeyValueHelpers
+from pyservicelib.runtime.datastruct import KeyValue
+from pyservicelib.runtime.serde import TypedStreamSerde, BytesBuffer, TypedStreamKeyValueSerde
+
 
 class SplitLink[T](TypedConsumedStream[T]):
-    _split_stream: "SplitStream[T]"
+    _split_stream: "SplitStreamBase[T]"
     _index: int
 
-    def __init__(self, split_stream: "SplitStream[T]", index: int):
+    def __init__(self, split_stream: "SplitStreamBase[T]", index: int):
         super().__init__(split_stream.id, split_stream.environment, split_stream.serde)
         self._split_stream = split_stream
         self._index = index
@@ -31,19 +39,23 @@ class SplitLink[T](TypedConsumedStream[T]):
             await self._caller.consume(value)
 
 
-class SplitStream[T](TypedSplitStream[T]):
+class SplitStreamBase[T](TypedSplitStream[T]):
     _links: list[SplitLink[T]]
-    _source: TypedStream[T]
+    _source: Optional[TypedStream[T]]
 
-    def __init__(self, name: str, stream: TypedStream[T], *streams: TypedStream[T]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
+    def __init__(self, name: str,
+                 env: ServiceExecutionEnvironment,
+                 serde: TypedStreamSerde[T],
+                 stream: Optional[TypedStream[T]] = None):
+        cfg = env.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"SplitStream configuration names '{name}' not found")
 
-        super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
+        super().__init__(stream_id=cfg.id, env=env, serde=serde)
         self._source = stream
         self._links = []
-        stream.consumer = self
+        if stream is not None:
+            stream.consumer = self
 
     async def consume(self, value: T) -> None:
         for link in self._links:
@@ -70,4 +82,58 @@ class SplitStream[T](TypedSplitStream[T]):
         return link
 
 
+class SplitStream[T](SplitStreamBase[T]):
+    def __init__(self, name: str, stream: TypedStream[T]):
+        super().__init__(name=name, env=stream.environment, serde=stream.serde, stream=stream)
+
+
+class InputSplitStream[T](SplitStreamBase[T]):
+
+    def __init__(self, name: str, env: ServiceExecutionEnvironment):
+        cfg = env.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"SplitStream configuration names '{name}' not found")
+        if cfg.value_type is None:
+            raise ValueError(f"The value type of the InputStream with name '{name}' is not defined")
+
+        super().__init__(name=name, env=env, serde=RuntimeHelpers[T](env).make_stream_serde(type_name=cfg.value_type))
+
+    async def consume_binary(self, data: BytesBuffer):
+        if self._serde is None:
+            raise ValueError(f"serde can not be None for InputSplitStream '{self.name}'")
+        value = self._serde.deserialize(data)
+        if self._caller is not None:
+            await self._caller.consume(value)
+
+
+class InputKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]]):
+    _kv_serde: TypedStreamKeyValueSerde[KeyValue[K, V]]
+
+    def __init__(self, name: str, env: ServiceExecutionEnvironment):
+        cfg = env.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"SplitStream configuration names '{name}' not found")
+
+        kv_stream_cfg = cfg
+        while kv_stream_cfg.id_source != 0:
+            kv_stream_cfg = env.config.get_stream_config_by_id(kv_stream_cfg.id_source)
+            if kv_stream_cfg.type == TransformationType.KeyBy:
+                break
+
+        if kv_stream_cfg.key_type is None:
+            raise ValueError(f"The key type of the KeyByStream with name '{name}' is not defined")
+        if kv_stream_cfg.value_type is None:
+            raise ValueError(f"The value type of the KeyByStream with name '{name}' is not defined")
+
+        self._kv_serde = RuntimeKeyValueHelpers[K, V](env).make_key_value_stream_serde(key_type_name=kv_stream_cfg.key_type,
+                                    value_type_name=kv_stream_cfg.value_type)
+
+        super().__init__(name=name,
+                         env=env,
+                         serde=self._kv_serde)
+
+    async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer):
+        value = self._kv_serde.deserialize_key_value(key_data, value_data)
+        if self._caller is not None:
+            await self._caller.consume(value)
 
