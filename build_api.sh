@@ -1,11 +1,8 @@
-#
-# Copyright (c) 2024 Sergey Alexeev
-# Email: sergeyalexeev@yahoo.com
-#
-#  Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
-#
+#!/bin/bash
 
-cd "$(dirname "$0")" || { echo "Error: Failed to change directory to script location"; exit 1; }
+original_dir=$(pwd)
+path=$(dirname "$0")
+cd "$path" || { echo "Error: Failed to change directory to script location"; exit 1; }
 
 rm -rf ./api/models
 
@@ -15,3 +12,5 @@ mv ./api/pyservicelib/api/models ./api/
 rm -rf ./api/docs
 rm -rf ./api/test
 rm -rf ./api/pyservicelib
+
+cd "$original_dir" || { echo "Error: Failed to change directory to '$original_dir'"; exit 1; }
