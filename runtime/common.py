@@ -488,6 +488,7 @@ class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStre
     async def consume_right(self, value: KeyValue[K, T2]) -> None:
         pass
 
+
 class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStream[KeyValue[K, T], R]):
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[R]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
@@ -495,6 +496,7 @@ class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStre
     @abstractmethod
     async def consume_right(self, index: int, value: KeyValue[K, Any]) -> None:
         pass
+
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
     @abstractmethod
