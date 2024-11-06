@@ -7,4 +7,5 @@
 from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      RuntimeHelpers, TypedStream, Consumer, StreamConsumer,
                      ServiceStream, Stream, TypedLinkStream, TypedSinkStream,
-                     TypedInputStream, TypedSplitStream)
+                     TypedInputStream, TypedSplitStream, TypedBinaryConsumedStream,
+                     TypedBinaryKVConsumedStream, TypedStreamConsumer)

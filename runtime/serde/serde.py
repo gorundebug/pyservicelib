@@ -73,6 +73,11 @@ class TypedStreamSerde[T](StreamSerializer):
     def deserialize(self, data: BytesBuffer) -> T:
        pass
 
+    @property
+    @abstractmethod
+    def value_serializer(self) -> Serializer:
+        pass
+
 
 class TypedStreamKeyValueSerde[T](TypedStreamSerde[T]):
 
@@ -95,11 +100,6 @@ class TypedStreamKeyValueSerde[T](TypedStreamSerde[T]):
     def key_serializer(self) -> Serializer:
         pass
 
-    @property
-    @abstractmethod
-    def value_serializer(self) -> Serializer:
-        pass
-
 
 class StreamSerde[T](TypedStreamSerde[T]):
     _serde: Serde[T]
@@ -117,6 +117,10 @@ class StreamSerde[T](TypedStreamSerde[T]):
 
     def deserialize(self, data: BytesBuffer) -> T:
         return self._serde.deserialize(data)
+
+    @property
+    def value_serializer(self) -> Serializer:
+        return self._serde
 
 
 class StreamKeyValueSerde[K: Hashable, V](TypedStreamKeyValueSerde[KeyValue[K, V]]):

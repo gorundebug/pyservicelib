@@ -3,10 +3,9 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from pyservicelib.runtime import TypedStream, Consumer, StreamConsumer, ServiceStream, Stream
-from typing import get_origin
+from pyservicelib.runtime import TypedStream, Consumer, TypedStreamConsumer
 
-class AppSinkStream[T](ServiceStream, StreamConsumer[T]):
+class AppSinkStream[T](TypedStreamConsumer[T]):
     _source: TypedStream[T]
     _consumer: Consumer[T]
 
@@ -25,15 +24,5 @@ class AppSinkStream[T](ServiceStream, StreamConsumer[T]):
     async def consume(self, value: T) -> None:
         await self._consumer.consume(value)
 
-    @property
-    def stream(self) -> Stream:
-        return self
 
-    @property
-    def type_name(self) -> str:
-        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
-        orig_type = get_origin(genetic_type)
-        if orig_type is not None:
-            return orig_type.__name__
-        return genetic_type.__name__
 

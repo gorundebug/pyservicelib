@@ -19,6 +19,7 @@ from pyservicelib.runtime.environment.metrics import Metrics
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
+from pyservicelib.runtime.serde import BytesBuffer
 
 class Consumer[T](ABC):
     @abstractmethod
@@ -452,6 +453,24 @@ class TypedSplitStream[T](TypedConsumedStream[T]):
         pass
 
 
+class TypedStreamConsumer[T](ServiceStream, StreamConsumer[T], ABC):
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment"):
+        super().__init__(stream_id=stream_id, env=env)
+
+    @property
+    def stream(self) -> Stream:
+        return self
+
+    @property
+    def type_name(self) -> str:
+        genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
+        orig_type = get_origin(genetic_type)
+        if orig_type is not None:
+            return orig_type.__name__
+        return genetic_type.__name__
+
+
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
     _consumer: Optional[StreamConsumer[R]]
@@ -496,6 +515,34 @@ class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStre
     @abstractmethod
     async def consume_right(self, index: int, value: KeyValue[K, Any]) -> None:
         pass
+
+
+class BinaryConsumer[T](ABC):
+
+    @abstractmethod
+    async def consume_binary(self, data: BytesBuffer):
+        pass
+
+
+class BinaryKVConsumer[K: Hashable, V](ABC):
+
+    @abstractmethod
+    async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer):
+        pass
+
+
+class TypedBinaryConsumedStream[T](TypedConsumedStream[T], BinaryConsumer[T], ABC):
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+
+class TypedBinaryKVConsumedStream[K: Hashable, V](TypedConsumedStream[KeyValue[K, V]], BinaryKVConsumer[K, V], ABC):
+
+    def __init__(self, stream_id: int,
+                 env: "ServiceExecutionEnvironment",
+                 serde: TypedStreamKeyValueSerde[KeyValue[K, V]]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
 
 
 class ServiceExecutionEnvironment(ServiceEnvironment):

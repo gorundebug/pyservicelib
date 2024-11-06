@@ -56,6 +56,18 @@ class StreamConfig(Stream):
     def transformation_name(self) -> str:
         return transformation_name_map[self.type]
 
+    @property
+    def is_type_transformation(self) -> bool:
+        return (self.type == TransformationType.Input or
+                self.type == TransformationType.Map or
+                self.type == TransformationType.Join or
+                self.type == TransformationType.MultiJoin or
+                self.type == TransformationType.FlatMap or
+                self.type == TransformationType.FlatMapIterable or
+                self.type == TransformationType.KeyBy or
+                self.type == TransformationType.Parallels)
+
+
 class DataConnectorConfig(DataConnector):
     properties: dict[str, Any] = Field(default=None, exclude=True)
     @classmethod

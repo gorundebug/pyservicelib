@@ -8,7 +8,7 @@ from typing import Optional, Hashable
 from pyservicelib.api.models.transformation_type import TransformationType
 from pyservicelib.runtime import TypedStream, TypedConsumedStream, TypedSplitStream
 from pyservicelib.runtime import Stream, ServiceExecutionEnvironment, RuntimeHelpers
-from pyservicelib.runtime.common import RuntimeKeyValueHelpers
+from pyservicelib.runtime.common import RuntimeKeyValueHelpers, BinaryConsumer, BinaryKVConsumer
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.serde import TypedStreamSerde, BytesBuffer, TypedStreamKeyValueSerde
 
@@ -87,16 +87,27 @@ class SplitStream[T](SplitStreamBase[T]):
         super().__init__(name=name, env=stream.environment, serde=stream.serde, stream=stream)
 
 
-class TypedBinarySplitStream[T](SplitStreamBase[T]):
+class TypedBinarySplitStream[T](SplitStreamBase[T], BinaryConsumer[T]):
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
         cfg = env.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"SplitStream configuration names '{name}' not found")
-        if cfg.value_type is None:
+
+        stream_cfg = cfg
+        while stream_cfg.id_source != 0:
+            stream_cfg = env.config.get_stream_config_by_id(stream_cfg.id_source)
+            if stream_cfg.is_type_transformation:
+                break
+
+        if stream_cfg.value_type is None:
             raise ValueError(f"The value type of the InputStream with name '{name}' is not defined")
 
-        super().__init__(name=name, env=env, serde=RuntimeHelpers[T](env).make_stream_serde(type_name=cfg.value_type))
+        ser = RuntimeHelpers[T](env).make_stream_serde(type_name=stream_cfg.value_type)
+        if ser.value_serializer.is_stub:
+            raise ValueError(f"Serializer for the type '{stream_cfg.value_type}' in the stream '{name}' can't be a stub serializer")
+
+        super().__init__(name=name, env=env, serde=ser)
 
     async def consume_binary(self, data: BytesBuffer):
         if self._serde is None:
@@ -106,7 +117,7 @@ class TypedBinarySplitStream[T](SplitStreamBase[T]):
             await self._caller.consume(value)
 
 
-class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]]):
+class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]], BinaryKVConsumer[K, V]):
     _kv_serde: TypedStreamKeyValueSerde[KeyValue[K, V]]
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
@@ -125,12 +136,18 @@ class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]]):
         if kv_stream_cfg.value_type is None:
             raise ValueError(f"The value type of the KeyByStream with name '{name}' is not defined")
 
-        self._kv_serde = RuntimeKeyValueHelpers[K, V](env).make_key_value_stream_serde(key_type_name=kv_stream_cfg.key_type,
+        kv_serde = RuntimeKeyValueHelpers[K, V](env).make_key_value_stream_serde(key_type_name=kv_stream_cfg.key_type,
                                     value_type_name=kv_stream_cfg.value_type)
+
+        if kv_serde.key_serializer.is_stub:
+            raise ValueError(f"Serializer for the key type '{cfg.key_type}' in the stream '{name}' can't be a stub serializer")
+        if kv_serde.value_serializer.is_stub:
+            raise ValueError(f"Serializer for the value type '{cfg.value_type}' in the stream '{name}' can't be a stub serializer")
 
         super().__init__(name=name,
                          env=env,
-                         serde=self._kv_serde)
+                         serde=kv_serde)
+        self._kv_serde = kv_serde
 
     async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer):
         value = self._kv_serde.deserialize_key_value(key_data, value_data)
