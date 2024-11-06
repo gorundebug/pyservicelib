@@ -5,7 +5,7 @@
 
 from typing import Optional
 
-from pyservicelib.runtime import TypedSinkStream, TypedStream, StreamConsumer, Stream
+from pyservicelib.runtime import TypedSinkStream, TypedStream, StreamConsumer
 
 class SinkStream[T](TypedSinkStream[T]):
     _source: TypedStream[T]

@@ -5,70 +5,70 @@
 #   file for details.
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from typing import Hashable, Any
+from typing import Hashable, Any, Protocol
 
 from pyservicelib.runtime.common import Stream, Collect
 from pyservicelib.runtime.datastruct import KeyValue
 
 
-class MapFunction[T, R](ABC):
+class MapFunction[T, R](Protocol):
 
     @abstractmethod
     async def map(self, context: Stream, value: T) -> R:
-        pass
+        ...
 
 
-class ParallelsFunction[T, R](ABC):
+class ParallelsFunction[T, R](Protocol):
 
     @abstractmethod
     async def parallels(self, context: Stream, value: T, out: Collect[R]):
-        pass
+        ...
 
 
-class KeyByFunction[T, K: Hashable, V](ABC):
+class KeyByFunction[T, K: Hashable, V](Protocol):
 
     @abstractmethod
     async def key_by(self, context: Stream, value: T) -> KeyValue[K, V]:
-        pass
+        ...
 
 
-class FilterFunction[T](ABC):
+class FilterFunction[T](Protocol):
 
     @abstractmethod
     async def filter(self, context: Stream, value: T) -> bool:
-        pass
+        ...
 
 
-class ForEachFunction[T](ABC):
+class ForEachFunction[T](Protocol):
 
     @abstractmethod
     async def for_each(self, context: Stream, value: T):
-        pass
+        ...
 
 
-class DelayFunction[T](ABC):
+class DelayFunction[T](Protocol):
 
     @abstractmethod
     async def duration(self, context: Stream, value: T) -> timedelta:
-        pass
+        ...
 
 
-class FlatMapFunction[T, R](ABC):
+class FlatMapFunction[T, R](Protocol):
 
     @abstractmethod
     async def flatmap(self, context: Stream, value: T, out: Collect[R]):
-        pass
+        ...
 
 
-class JoinFunction[K: Hashable, T1, T2, R](ABC):
+class JoinFunction[K: Hashable, T1, T2, R](Protocol):
 
     @abstractmethod
     async def join(self, context: Stream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]):
-        pass
+        ...
 
 
-class MultiJoinFunction[K: Hashable, T, R](ABC):
+class MultiJoinFunction[K: Hashable, T, R](Protocol):
 
     @abstractmethod
     async def multi_join(self, context: Stream, key: K, values: list[list[Any]], out: Collect[R]):
-        pass
+        ...

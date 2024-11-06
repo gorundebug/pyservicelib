@@ -6,7 +6,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import Optional, Callable, Any, get_origin, Hashable
+from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
 from typing import cast
 
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -20,6 +20,11 @@ from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 from pyservicelib.runtime.serde import BytesBuffer
+
+class Consume[T](Protocol):
+
+    async def consume(self, value: T) -> None:
+        ...
 
 class Consumer[T](ABC):
     @abstractmethod
@@ -39,16 +44,16 @@ class ConsumerBinaryKV[T](ABC):
         pass
 
 
-class BinaryConsumer[T](ABC):
-    @abstractmethod
+class BinaryConsume[T](Protocol):
+
     async def consume(self, data: BytesBuffer) -> None:
-        pass
+        ...
 
 
-class BinaryKVConsumer[T](ABC):
-    @abstractmethod
+class BinaryKVConsume[T](Protocol):
+
     async def consume(self, key_data: BytesBuffer, value_data: BytesBuffer) -> None:
-        pass
+        ...
 
 
 class Caller[T](Consumer[T], ABC):
@@ -56,11 +61,13 @@ class Caller[T](Consumer[T], ABC):
 
 
 class DirectCaller[T](Caller[T]):
+
     async def consume(self, value: T):
         pass
 
 
 class Collect[T](ABC):
+
     @abstractmethod
     async def out(self, value: T) -> None:
         pass

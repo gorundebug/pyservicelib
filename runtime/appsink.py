@@ -3,13 +3,13 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from pyservicelib.runtime import TypedStream, Consumer, TypedStreamConsumer
+from pyservicelib.runtime import TypedStream, Consume, TypedStreamConsumer
 
 class AppSinkStream[T](TypedStreamConsumer[T]):
     _source: TypedStream[T]
-    _consumer: Consumer[T]
+    _consumer: Consume[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], consumer: Consumer[T]):
+    def __init__(self, name: str, stream: TypedStream[T], consumer: Consume[T]):
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"AppSinkStream configuration names '{name}' not found")

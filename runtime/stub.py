@@ -8,8 +8,8 @@ from typing import Hashable, cast
 from pyservicelib.api.models.transformation_type import TransformationType
 from pyservicelib.runtime import ServiceExecutionEnvironment, TypedBinaryConsumedStream
 from pyservicelib.runtime import TypedBinaryKVConsumedStream, RuntimeHelpers
-from pyservicelib.runtime.common import RuntimeKeyValueHelpers, TypedStreamConsumer, TypedStream, Consumer, \
-    BinaryConsumer, BinaryKVConsumer
+from pyservicelib.runtime.common import RuntimeKeyValueHelpers, TypedStreamConsumer, TypedStream, Consume
+from pyservicelib.runtime.common import BinaryConsume, BinaryKVConsume
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.serde import BytesBuffer, TypedStreamKeyValueSerde, TypedStreamSerde
 
@@ -91,9 +91,9 @@ class InStubKVStream[K:Hashable, V](TypedBinaryKVConsumedStream[K, V]):
 
 class OutStubStream[T](TypedStreamConsumer[T]):
     _source: TypedStream[T]
-    _consumer: Consumer[T]
+    _consumer: Consume[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], consumer: Consumer[T]):
+    def __init__(self, name: str, stream: TypedStream[T], consumer: Consume[T]):
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"OutStubStream configuration names '{name}' not found")
@@ -109,10 +109,10 @@ class OutStubStream[T](TypedStreamConsumer[T]):
 
 class OutStubBinaryStream[T](TypedStreamConsumer[T]):
     _source: TypedStream[T]
-    _consumer: BinaryConsumer[T]
+    _consumer: BinaryConsume[T]
     _serde: TypedStreamSerde[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryConsumer[T]):
+    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryConsume[T]):
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"OutStubStream configuration names '{name}' not found")
@@ -132,10 +132,10 @@ class OutStubBinaryStream[T](TypedStreamConsumer[T]):
 
 class OutStubBinaryKVStream[T](TypedStreamConsumer[T]):
     _source: TypedStream[T]
-    _consumer: BinaryKVConsumer[T]
+    _consumer: BinaryKVConsume[T]
     _kv_serde: TypedStreamKeyValueSerde[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryKVConsumer[T]):
+    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryKVConsume[T]):
         cfg = stream.environment.config.get_stream_config_by_name(name)
         if cfg is None:
             raise ValueError(f"OutStubStream configuration names '{name}' not found")

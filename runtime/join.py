@@ -134,3 +134,4 @@ class JoinLink[K: Hashable, T1, T2, R](Stream, StreamConsumer[KeyValue[K, T2]]):
 
     async def consume(self, value: KeyValue[K, T2]) -> None:
         await self._join_stream.consume_right(value)
+
