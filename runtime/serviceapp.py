@@ -140,7 +140,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                 if self._is_primitive_type(tp.value_type):
                     ser = self._make_default_serde(self._get_serde_type(tp.value_type, True))
                 else:
-                    ser = ListSerde(self.get_type_serde(tp.value_type))
+                    ser = ListSerde(type_name, self.get_type_serde(tp.value_type))
             elif tp.is_dict:
                 if tp.key_type is None:
                     raise ValueError(f"Invalid key type for dict type '{type_name}'")
@@ -150,18 +150,18 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                 if self._is_primitive_type(tp.key_type):
                     keys_ser = self._make_default_serde(self._get_serde_type(tp.key_type, True))
                 else:
-                    keys_ser = ListSerde(self.get_type_serde(tp.key_type))
+                    keys_ser = ListSerde(tp.key_type, self.get_type_serde(tp.key_type))
 
                 if self._is_primitive_type(tp.value_type):
                     values_ser = self._make_default_serde(self._get_serde_type(tp.value_type, True))
                 else:
-                    values_ser = ListSerde(self.get_type_serde(tp.value_type))
+                    values_ser = ListSerde(tp.value_type, self.get_type_serde(tp.value_type))
 
                 if values_ser is not None and keys_ser is not None:
-                    ser = DictSerde(keys_ser, values_ser)
+                    ser = DictSerde(type_name, keys_ser, values_ser)
 
         if ser is None:
-            ser = StubSerde()
+            ser = StubSerde("")
 
         return ser
 

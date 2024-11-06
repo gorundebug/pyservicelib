@@ -8,7 +8,7 @@ from typing import Optional, Hashable
 from pyservicelib.api.models.transformation_type import TransformationType
 from pyservicelib.runtime import TypedStream, TypedConsumedStream, TypedSplitStream
 from pyservicelib.runtime import Stream, ServiceExecutionEnvironment, RuntimeHelpers
-from pyservicelib.runtime.common import RuntimeKeyValueHelpers, BinaryConsumer, BinaryKVConsumer
+from pyservicelib.runtime.common import RuntimeKeyValueHelpers, ConsumerBinary, ConsumerBinaryKV
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.serde import TypedStreamSerde, BytesBuffer, TypedStreamKeyValueSerde
 
@@ -87,7 +87,7 @@ class SplitStream[T](SplitStreamBase[T]):
         super().__init__(name=name, env=stream.environment, serde=stream.serde, stream=stream)
 
 
-class TypedBinarySplitStream[T](SplitStreamBase[T], BinaryConsumer[T]):
+class TypedBinarySplitStream[T](SplitStreamBase[T], ConsumerBinary[T]):
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):
         cfg = env.config.get_stream_config_by_name(name)
@@ -117,7 +117,7 @@ class TypedBinarySplitStream[T](SplitStreamBase[T], BinaryConsumer[T]):
             await self._caller.consume(value)
 
 
-class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]], BinaryKVConsumer[K, V]):
+class TypedBinaryKVSplitStream[K: Hashable, V](SplitStreamBase[KeyValue[K, V]], ConsumerBinaryKV[KeyValue[K, V]]):
     _kv_serde: TypedStreamKeyValueSerde[KeyValue[K, V]]
 
     def __init__(self, name: str, env: ServiceExecutionEnvironment):

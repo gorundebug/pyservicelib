@@ -44,6 +44,11 @@ class Serializer(ABC):
     def is_stub(self) -> bool:
         return False
 
+    @property
+    @abstractmethod
+    def type_name(self) -> str:
+        pass
+
 class StreamSerializer(ABC):
 
     @property
@@ -54,6 +59,11 @@ class StreamSerializer(ABC):
 
 class Serde[T](Serializer):
 
+    _type_name: str
+
+    def __init__(self, type_name: str):
+        self._type_name = type_name
+
     @abstractmethod
     def serialize(self, obj: T, b: BytesBuffer) -> bytearray:
         pass
@@ -61,6 +71,10 @@ class Serde[T](Serializer):
     @abstractmethod
     def deserialize(self, data: BytesBuffer) -> T:
         pass
+
+    @property
+    def type_name(self) -> str:
+        return self._type_name
 
 
 class TypedStreamSerde[T](StreamSerializer):
@@ -200,6 +214,9 @@ class StreamKeyValueSerde[K: Hashable, V](TypedStreamKeyValueSerde[KeyValue[K, V
 
 
 class BytesSerde(Serde[bytes]):
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, bytes):
             raise ValueError("BytesSerde: obj is not bytes")
@@ -231,6 +248,9 @@ class BytesSerde(Serde[bytes]):
 
 
 class NumberSerde(Serde[int]):
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, int):
             raise ValueError("obj is not int")
@@ -263,6 +283,9 @@ class NumberSerde(Serde[int]):
 
 
 class StubSerde(Serde[Any]):
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         return self.serialize(obj, b)
 
@@ -283,6 +306,8 @@ class IntSerde(Serde[int]):
     _size: int
 
     def __init__(self, type_name: str):
+        super().__init__(type_name)
+
         if type_name == 'int':
             self._fmt = '<i' if UINT_SIZE == 4 else '<q'
             self._size = UINT_SIZE
@@ -341,6 +366,8 @@ class FloatSerde(Serde[float]):
     _size: int
 
     def __init__(self, type_name: str):
+        super().__init__(type_name)
+
         if type_name == 'float32':
             self._fmt = '<f'
             self._size = 4
@@ -371,6 +398,8 @@ class FloatSerde(Serde[float]):
 
 
 class BoolSerde(Serde[bool]):
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, bool):
@@ -393,6 +422,8 @@ class BoolSerde(Serde[bool]):
 
 
 class StringSerde(Serde[str]):
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, str):
@@ -431,6 +462,8 @@ class IntListSerde(Serde[list[int]]):
     _size: int
 
     def __init__(self, type_name: str):
+        super().__init__(type_name)
+
         if type_name == '[]int':
             self._fmt = 'i' if UINT_SIZE == 4 else 'q'
             self._size = UINT_SIZE
@@ -502,6 +535,8 @@ class FloatListSerde(Serde[list[float]]):
     _size: int
 
     def __init__(self, type_name: str):
+        super().__init__(type_name)
+
         if type_name == '[]float32':
             self._fmt = 'f'
             self._size = 4
@@ -546,6 +581,9 @@ class FloatListSerde(Serde[list[float]]):
 
 class BoolListSerde(Serde[list[bool]]):
 
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
             raise ValueError(f"BoolListSerde: obj is not list")
@@ -581,8 +619,9 @@ class BoolListSerde(Serde[list[bool]]):
 
 class StringListSerde(Serde[list[str]]):
 
-    def __init__(self):
-        self._value_serde = StringSerde()
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+        self._value_serde = StringSerde("str")
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
         if not isinstance(obj, list):
@@ -638,7 +677,8 @@ class StringListSerde(Serde[list[str]]):
 class ListSerde(Serde[list[Any]]):
     _value_serde: Serializer
 
-    def __init__(self, value_serde: Serializer):
+    def __init__(self, type_name: str, value_serde: Serializer):
+        super().__init__(type_name)
         self._value_serde = value_serde
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
@@ -708,7 +748,8 @@ class ListSerde(Serde[list[Any]]):
 class TupleSerde(Serde[tuple[Any, ...]]):
     _value_serde: Serializer
 
-    def __init__(self, value_serde: Serializer):
+    def __init__(self, type_name: str, value_serde: Serializer):
+        super().__init__(type_name)
         self._value_serde = value_serde
 
     def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
@@ -780,7 +821,8 @@ class DictSerde(Serde[dict[Any, Any]]):
     _keys_serde: Serializer
     _values_serde: Serializer
 
-    def __init__(self, keys_serde: Serializer, values_serde: Serializer):
+    def __init__(self, type_name: str, keys_serde: Serializer, values_serde: Serializer):
+        super().__init__(type_name)
         self._keys_serde = keys_serde
         self._values_serde = values_serde
 
@@ -876,9 +918,9 @@ def make_default_serde(serde_type: str) -> Optional[Serializer]:
     elif serde_type == 'uint64':
         return IntSerde(serde_type)
     elif serde_type == 'str':
-        return StringSerde()
+        return StringSerde(serde_type)
     elif serde_type == 'bool':
-        return BoolSerde()
+        return BoolSerde(serde_type)
     elif serde_type == 'float32':
         return FloatSerde(serde_type)
     elif serde_type == 'float64':
@@ -904,14 +946,14 @@ def make_default_serde(serde_type: str) -> Optional[Serializer]:
     elif serde_type == '[]uint64':
         return IntListSerde(serde_type)
     elif serde_type == '[]str':
-        return StringListSerde()
+        return StringListSerde(serde_type)
     elif serde_type == '[]bool':
-        return BoolListSerde()
+        return BoolListSerde(serde_type)
     elif serde_type == '[]float32':
         return FloatListSerde(serde_type)
     elif serde_type == '[]float64':
         return FloatListSerde(serde_type)
     elif serde_type == 'bytes':
-        return BytesSerde()
+        return BytesSerde(serde_type)
 
     return None

@@ -42,7 +42,7 @@ def test_serde_ints():
 
 def test_serde_bools():
     values = [True, False, True]
-    ser = BoolListSerde()
+    ser = BoolListSerde("[]bool")
     data = ser.serialize(values, bytearray())
     values_copy = ser.deserialize(data)
     assert values == values_copy
@@ -50,7 +50,7 @@ def test_serde_bools():
 
 def test_serde_strings():
     values = ["test1", "", "test3"]
-    ser = StringListSerde()
+    ser = StringListSerde("[]str")
     data = ser.serialize(values, bytearray())
     values_copy = ser.deserialize(data)
     assert values == values_copy
@@ -66,7 +66,7 @@ def test_serde_int():
 
 def test_serde_string():
     value = "test"
-    ser = StringSerde()
+    ser = StringSerde("str")
     data = ser.serialize(value, bytearray())
     value_copy = ser.deserialize(data)
     assert value == value_copy

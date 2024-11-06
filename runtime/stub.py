@@ -3,14 +3,15 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from typing import Hashable
+from typing import Hashable, cast
 
 from pyservicelib.api.models.transformation_type import TransformationType
 from pyservicelib.runtime import ServiceExecutionEnvironment, TypedBinaryConsumedStream
 from pyservicelib.runtime import TypedBinaryKVConsumedStream, RuntimeHelpers
-from pyservicelib.runtime.common import RuntimeKeyValueHelpers, TypedStreamConsumer, TypedStream, Consumer
+from pyservicelib.runtime.common import RuntimeKeyValueHelpers, TypedStreamConsumer, TypedStream, Consumer, \
+    BinaryConsumer, BinaryKVConsumer
 from pyservicelib.runtime.datastruct import KeyValue
-from pyservicelib.runtime.serde import BytesBuffer, TypedStreamKeyValueSerde
+from pyservicelib.runtime.serde import BytesBuffer, TypedStreamKeyValueSerde, TypedStreamSerde
 
 
 class InStubStream[T](TypedBinaryConsumedStream[T]):
@@ -104,3 +105,56 @@ class OutStubStream[T](TypedStreamConsumer[T]):
 
     async def consume(self, value: T) -> None:
         await self._consumer.consume(value)
+
+
+class OutStubBinaryStream[T](TypedStreamConsumer[T]):
+    _source: TypedStream[T]
+    _consumer: BinaryConsumer[T]
+    _serde: TypedStreamSerde[T]
+
+    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryConsumer[T]):
+        cfg = stream.environment.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"OutStubStream configuration names '{name}' not found")
+        if stream.serde.value_serializer.is_stub:
+            raise ValueError(f"Serializer for the type '{stream.serde.value_serializer.type_name}' in the stream '{name}' can't be a stub serializer")
+
+        super().__init__(stream_id=cfg.id, env=stream.environment)
+        self._source = stream
+        self._consumer = consumer
+        self._serde = stream.serde
+        stream.consumer = self
+
+    async def consume(self, value: T) -> None:
+        data = self._serde.serialize(value)
+        await self._consumer.consume(data)
+
+
+class OutStubBinaryKVStream[T](TypedStreamConsumer[T]):
+    _source: TypedStream[T]
+    _consumer: BinaryKVConsumer[T]
+    _kv_serde: TypedStreamKeyValueSerde[T]
+
+    def __init__(self, name: str, stream: TypedStream[T], consumer: BinaryKVConsumer[T]):
+        cfg = stream.environment.config.get_stream_config_by_name(name)
+        if cfg is None:
+            raise ValueError(f"OutStubStream configuration names '{name}' not found")
+        if not stream.serde.is_key_value:
+            raise ValueError(f"Invalid serde type for OutStubStream '{name}'")
+
+        kv_serde = cast(TypedStreamKeyValueSerde[T], stream.serde)
+        if kv_serde.key_serializer.is_stub:
+            raise ValueError(f"Serializer for the key type '{kv_serde.key_serializer.type_name}' in the stream '{name}' can't be a stub serializer")
+        if kv_serde.value_serializer.is_stub:
+            raise ValueError(f"Serializer for the value type '{kv_serde.value_serializer.type_name}' in the stream '{name}' can't be a stub serializer")
+
+        super().__init__(stream_id=cfg.id, env=stream.environment)
+        self._source = stream
+        self._consumer = consumer
+        self._kv_serde = kv_serde
+        stream.consumer = self
+
+    async def consume(self, value: T) -> None:
+        key_data = self._kv_serde.serialize_key(value)
+        value_data = self._kv_serde.serialize_key(value)
+        await self._consumer.consume(key_data, value_data)

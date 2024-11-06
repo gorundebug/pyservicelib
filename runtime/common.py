@@ -27,6 +27,30 @@ class Consumer[T](ABC):
         pass
 
 
+class ConsumerBinary[T](ABC):
+    @abstractmethod
+    async def consume_binary(self, data: BytesBuffer) -> None:
+        pass
+
+
+class ConsumerBinaryKV[T](ABC):
+    @abstractmethod
+    async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer) -> None:
+        pass
+
+
+class BinaryConsumer[T](ABC):
+    @abstractmethod
+    async def consume(self, data: BytesBuffer) -> None:
+        pass
+
+
+class BinaryKVConsumer[T](ABC):
+    @abstractmethod
+    async def consume(self, key_data: BytesBuffer, value_data: BytesBuffer) -> None:
+        pass
+
+
 class Caller[T](Consumer[T], ABC):
     pass
 
@@ -471,6 +495,7 @@ class TypedStreamConsumer[T](ServiceStream, StreamConsumer[T], ABC):
         return genetic_type.__name__
 
 
+
 class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC):
     _caller: Optional[Caller[R]]
     _consumer: Optional[StreamConsumer[R]]
@@ -517,27 +542,13 @@ class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStre
         pass
 
 
-class BinaryConsumer[T](ABC):
-
-    @abstractmethod
-    async def consume_binary(self, data: BytesBuffer):
-        pass
-
-
-class BinaryKVConsumer[K: Hashable, V](ABC):
-
-    @abstractmethod
-    async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer):
-        pass
-
-
-class TypedBinaryConsumedStream[T](TypedConsumedStream[T], BinaryConsumer[T], ABC):
+class TypedBinaryConsumedStream[T](TypedConsumedStream[T], ConsumerBinary[T], ABC):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
 
 
-class TypedBinaryKVConsumedStream[K: Hashable, V](TypedConsumedStream[KeyValue[K, V]], BinaryKVConsumer[K, V], ABC):
+class TypedBinaryKVConsumedStream[K: Hashable, V](TypedConsumedStream[KeyValue[K, V]], ConsumerBinaryKV[KeyValue[K, V]], ABC):
 
     def __init__(self, stream_id: int,
                  env: "ServiceExecutionEnvironment",
