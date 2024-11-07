@@ -79,16 +79,18 @@ class RuntimeHelpers[T]:
     def __init__(self, env: "ServiceExecutionEnvironment"):
         self._environment = env
 
-    def get_registered_serde(self, type_name: str) -> TypedStreamSerde[T]:
-        return cast(TypedStreamSerde[T],
-                    self._environment.runtime.get_registered_serde(type_name))
+    def get_registered_serde(self, type_name: str) -> Optional[TypedStreamSerde[T]]:
+        ser = self._environment.runtime.get_registered_serde(type_name)
+        if ser is not None:
+            return cast(TypedStreamSerde[T], ser)
+        return None
 
     def make_stream_serde(self, type_name: str) -> TypedStreamSerde[T]:
         ser = self.get_registered_serde(type_name)
         if ser is not None:
             return ser
-        ser = cast(Serde[T], self._environment.runtime.get_type_serde(type_name))
-        stream_ser = StreamSerde(ser)
+        ser_typed = cast(Serde[T], self._environment.runtime.get_type_serde(type_name))
+        stream_ser = StreamSerde(ser_typed)
         self._environment.runtime.register_serde(type_name, stream_ser)
         return stream_ser
 
@@ -673,7 +675,7 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def get_registered_serde(self, type_name: str) -> StreamSerializer:
+    def get_registered_serde(self, type_name: str) -> Optional[StreamSerializer]:
         pass
 
     @abstractmethod

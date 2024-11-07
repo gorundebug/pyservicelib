@@ -9,3 +9,4 @@ from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      ServiceStream, Stream, TypedLinkStream, TypedSinkStream,
                      TypedInputStream, TypedSplitStream, TypedBinaryConsumedStream,
                      TypedBinaryKVConsumedStream, TypedStreamConsumer, Consume)
+

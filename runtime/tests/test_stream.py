@@ -5,10 +5,18 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-
+import os
+from pathlib import Path
 from typing import get_origin, Any, Optional
 from collections.abc import Iterable
 
+import pytest
+
+from pyservicelib.runtime.config import ConfigSettings
+from pyservicelib.runtime.context import default_context
+from pyservicelib.runtime.serviceapp import ServiceAppLoader
+from pyservicelib.runtime.tests.mockservice import MockService, MockServiceConfig, MockServiceDependency
+from pyservicelib import transformation
 
 class Value[T]:
     value: Optional[T]
@@ -58,6 +66,7 @@ class DerivedFromDerivedStream[T: Iterable, R](DerivedStream[T, R]):
 
 
 def test_type_check():
+
     stream = DerivedFromDerivedStream[list[int], int]()
     assert stream.check(5) == True
 
@@ -72,6 +81,15 @@ def test_type_check():
 
     stream4 = DerivedStream[dict[int, int], float]()
     assert stream4.check(5) == False
+
+
+@pytest.mark.asyncio
+async def test_input_stream():
+    os.chdir(Path(__file__).parent)
+
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().init("MockService", MockServiceDependency(), ConfigSettings())
+    stream = transformation.Input[int]("Input", service)
+    assert stream.type_name == "int"
 
 
 def test_benchmark_sync(benchmark):

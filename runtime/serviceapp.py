@@ -171,8 +171,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def register_serde(self, type_name: str, serializer: StreamSerializer) -> None:
         self._serdes[type_name] = serializer
 
-    def get_registered_serde(self, type_name: str) -> StreamSerializer:
-        return self._serdes[type_name]
+    def get_registered_serde(self, type_name: str) -> Optional[StreamSerializer]:
+        return self._serdes.get(type_name)
 
     def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
         pass

@@ -23,7 +23,18 @@ settings:
   golangVersion: 1.23.0
   modulePath: project1.com
   name: Project1
-streams: []
+streams:
+  - id: 1
+    idEndpoint: 1
+    idService: 1
+    idSource: 0
+    idSources: [ ]
+    name: Input
+    type: 1
+    valueType: IntType
+    xPos: -1293
+    yPos: -1004
+
 types:
   - keyType: IntType
     name: MapType
