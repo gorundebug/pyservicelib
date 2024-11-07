@@ -104,7 +104,7 @@ class AsyncLogger(Logger):
 class AsyncLogsEngine(LogsEngine):
     _default_logger: AsyncLogger
     _engine: Optional["AsyncLogsEngine"] = None
-    _lock = asyncio.Lock()
+    _lock: asyncio.Lock = asyncio.Lock()
 
     def __init__(self):
         self._default_logger = AsyncLogger()

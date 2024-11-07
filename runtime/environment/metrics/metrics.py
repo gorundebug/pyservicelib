@@ -57,7 +57,7 @@ class Histogram(ABC):
 class HistogramVec(ABC):
 
     @abstractmethod
-    def with_label_values(self, *label_values: Any, **label_kwargs: Any) -> Gauge:
+    def with_label_values(self, *label_values: Any, **label_kwargs: Any) -> Histogram:
         pass
 
 
