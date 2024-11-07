@@ -17,7 +17,7 @@ class Counter(metrics.Counter):
     _counter: prometheus_client.Counter
 
     def __init__(self, counter: prometheus_client.Counter):
-        _counter = counter
+        self._counter = counter
 
     def inc(self, amount: float = 1) -> None:
         self._counter.inc(amount=amount)
