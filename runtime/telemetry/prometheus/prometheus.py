@@ -3,8 +3,8 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
+
 import asyncio
-from abc import ABC
 from typing import Any, Optional
 
 import pyservicelib.runtime.environment.metrics as metrics
