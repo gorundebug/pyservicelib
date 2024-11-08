@@ -5,13 +5,15 @@
 #   file for details.
 
 import asyncio
-from typing import Any, Optional, Dict, Sequence, Iterable
+from typing import Any, Optional, Sequence
 import prometheus_client
 
 import pyservicelib.runtime.environment.metrics as metrics
 from pyservicelib.runtime.environment.metrics import MetricsHandler
 
 class Counter(metrics.Counter):
+    __slots__ = ['_counter']
+
     _reserved_labels: Sequence[str] = ()
     _counter: prometheus_client.Counter
 
@@ -27,6 +29,8 @@ class Counter(metrics.Counter):
 
 
 class Summary(metrics.Summary):
+    __slots__ = ['_summary']
+
     _reserved_labels: Sequence[str] = ['quantile']
     _summary: prometheus_client.Summary
 
@@ -42,6 +46,9 @@ class Summary(metrics.Summary):
 
 
 class Gauge(metrics.Gauge):
+
+    __slots__ = ['_gauge']
+
     _reserved_labels: Sequence[str] = ()
     _gauge: prometheus_client.Gauge
 
@@ -66,6 +73,8 @@ class Gauge(metrics.Gauge):
 
 
 class Histogram(metrics.Histogram):
+    __slots__ = ['_histogram']
+
     _reserved_labels: Sequence[str] = ['le']
     _histogram: prometheus_client.Histogram
 
@@ -81,6 +90,8 @@ class Histogram(metrics.Histogram):
 
 
 class CounterVec(metrics.CounterVec):
+    __slots__ = ['_counter', '_label_names', '_const_label_names', '_const_values', '_metrics']
+
     _counter: prometheus_client.Counter
     _label_names: metrics.Labels
     _const_label_names: metrics.Labels
@@ -126,6 +137,8 @@ class CounterVec(metrics.CounterVec):
 
 
 class SummaryVec(metrics.SummaryVec):
+    __slots__ = ['_summary', '_label_names', '_const_label_names', '_const_values', '_metrics']
+
     _summary: prometheus_client.Summary
     _label_names: metrics.Labels
     _const_label_names: metrics.Labels
@@ -171,6 +184,8 @@ class SummaryVec(metrics.SummaryVec):
 
 
 class GaugeVec(metrics.GaugeVec):
+    __slots__ = ['_gauge', '_label_names', '_const_label_names', '_const_values', '_metrics']
+
     _gauge: prometheus_client.Gauge
     _label_names: metrics.Labels
     _const_label_names: metrics.Labels
@@ -216,6 +231,8 @@ class GaugeVec(metrics.GaugeVec):
 
 
 class HistogramVec(metrics.HistogramVec):
+    __slots__ = ['_histogram', '_label_names', '_const_label_names', '_const_values', '_metrics']
+
     _histogram: prometheus_client.Histogram
     _label_names: metrics.Labels
     _const_label_names: metrics.Labels

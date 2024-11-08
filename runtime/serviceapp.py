@@ -8,14 +8,13 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from typing import cast, Optional, Any, Callable, Set
-
 import aiofiles
 import yaml
 from watchfiles import awatch, Change
 import asyncio
 
 from pyservicelib.runtime.environment import ServiceDependency
-from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig
+from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig, LinkId
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
@@ -30,6 +29,7 @@ from pyservicelib.runtime.environment.metrics.metrics import Metrics
 from pyservicelib.runtime.environment.log import LogsEngine, Logger
 from pyservicelib.runtime.logging import LogsEngineFactory, LogsEngineType
 from pyservicelib.runtime.store import JoinStorageConfig
+from pyservicelib.runtime.telemetry import MetricsEngineFactory, MetricsEngineType
 
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
@@ -82,7 +82,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             self._logs_engine = logs_engine
 
         if metrics_engine is None:
-            pass
+            self._metrics_engine = await MetricsEngineFactory.create_metrics_engine(MetricsEngineType.PROMETHEUS)
         else:
             self._metrics_engine = metrics_engine
 
@@ -174,7 +174,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def get_registered_serde(self, type_name: str) -> Optional[StreamSerializer]:
         return self._serdes.get(type_name)
 
-    def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
+    def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
         pass
 
     def register_storage(self, storage: Storage) -> None:

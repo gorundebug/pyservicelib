@@ -9,8 +9,9 @@ from datetime import timedelta
 from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
 from typing import cast
 
+from pyservicelib.api.models.call_semantics import CallSemantics
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
-from pyservicelib.runtime.config import StreamConfig, LinkId, Config
+from pyservicelib.runtime.config import StreamConfig, Config, LinkId
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, TypedStreamSerde, StreamKeyValueSerde
 from pyservicelib.runtime.serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from pyservicelib.runtime.store import Storage
@@ -20,6 +21,8 @@ from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.datastruct import KeyValue
 from pyservicelib.runtime.config import EndpointConfig, DataConnectorConfig
 from pyservicelib.runtime.serde import BytesBuffer
+from pyservicelib.runtime.utils.atomicint import AtomicInteger
+
 
 class Consume[T](Protocol):
 
@@ -56,14 +59,80 @@ class BinaryKVConsume[T](Protocol):
         ...
 
 
+class ConsumeStatistics(ABC):
+
+    @property
+    @abstractmethod
+    def count(self) -> int:
+        pass
+
+
+class CallerStatistics(ConsumeStatistics):
+
+    _count: AtomicInteger
+
+    def __init__(self):
+        self._count = AtomicInteger()
+
+    @property
+    def count(self) -> int:
+        return self._count.get()
+
+    def inc(self, amount: int = 1):
+        self._count.inc(amount)
+
+
 class Caller[T](Consumer[T], ABC):
-    pass
+
+    _statistics: CallerStatistics
+    _source: "TypedStream[T]"
+    _consumer: "StreamConsumer[T]"
+
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics):
+        self._source = source
+        if source.consumer is None:
+            raise ValueError(f"The source stream named '{source.name}' does not have consumer in Caller constructor")
+        self._consumer = source.consumer
+        self._statistics = statistics
 
 
 class DirectCaller[T](Caller[T]):
 
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics):
+        super().__init__(source=source, statistics=statistics)
+
     async def consume(self, value: T):
-        pass
+        await self._consumer.consume(value)
+        self._statistics.inc()
+
+
+class TaskPoolCaller[T](Caller[T]):
+    _task_pool: TaskPool
+
+    def __init__(self, task_pool: TaskPool, source: "TypedStream[T]", statistics: CallerStatistics):
+        super().__init__(source=source, statistics=statistics)
+        self._task_pool = task_pool
+
+    async def consume(self, value: T):
+        await self._task_pool.add_task(self.consume, value)
+        self._statistics.inc()
+
+
+class PriorityTaskPoolCaller[T](Caller[T]):
+    _priority_task_pool: PriorityTaskPool
+    _priority: int
+
+    def __init__(self, priority_task_pool: PriorityTaskPool,
+                 priority: int,
+                 source: "TypedStream[T]",
+                 statistics: CallerStatistics):
+        super().__init__(source=source, statistics=statistics)
+        self._priority_task_pool = priority_task_pool
+        self._priority = priority
+
+    async def consume(self, value: T):
+        await self._priority_task_pool.add_task(self._priority, self.consume, value)
+        self._statistics.inc()
 
 
 class Collect[T](ABC):
@@ -95,7 +164,57 @@ class RuntimeHelpers[T]:
         return stream_ser
 
     def make_caller(self, source: "TypedStream[T]") -> Caller[T]:
-        return DirectCaller[T]()
+        env = source.environment
+        runtime = env.runtime
+        cfg = env.config
+        service_config = env.service_config
+        consumer = source.consumer
+        if consumer is None:
+            raise ValueError(f"The source stream named '{source.name}' does not have consumer in make_caller")
+
+        link = cfg.get_link(source.id, consumer.stream.id)
+        if link is None:
+            raise ValueError(f"No link found between streams from={source.id} to={consumer.stream.id}")
+        stream_cfg = source.config
+        if stream_cfg.id_service == service_config.id:
+            call_semantics = link.call_semantics
+        else:
+            if link.income_call_semantics is None:
+                raise ValueError(f"Invalid income call semantics for link from={source.id} to={consumer.stream.id}")
+            call_semantics = link.income_call_semantics
+
+        statistics = CallerStatistics()
+
+        if call_semantics == CallSemantics.FunctionCall:
+            return DirectCaller[T](source=source, statistics=statistics)
+
+        elif call_semantics == CallSemantics.TaskPool:
+
+            pool_name = link.pool_name if stream_cfg.id_service == service_config.id else link.income_pool_name
+            if pool_name is None:
+                raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "}\
+pool name for link between streams from={source.id} to={consumer.stream.id}")
+
+            return TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source, statistics=statistics)
+
+        elif call_semantics == CallSemantics.PriorityTaskPool:
+
+            pool_name = link.pool_name if stream_cfg.id_service == service_config.id else link.income_pool_name
+            if pool_name is None:
+                raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "} priority\
+task pool name for link between streams from={source.id} to={consumer.stream.id}")
+
+            priority = link.priority if stream_cfg.id_service == service_config.id else link.income_priority
+            if priority is None:
+                raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "} priority\
+for link between streams from={source.id} to={consumer.stream.id}")
+
+            return PriorityTaskPoolCaller[T](priority_task_pool=runtime.get_priority_task_pool(pool_name),
+                                             priority=priority,
+                                             source=source,
+                                             statistics=statistics)
+
+        raise ValueError(f"Invalid call semantics: {call_semantics}")
 
 
 class RuntimeKeyValueHelpers[K: Hashable, V](RuntimeHelpers[KeyValue[K, V]]):
@@ -633,19 +752,6 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
 
-class ConsumeStatistics(ABC):
-
-    @property
-    @abstractmethod
-    def count(self) -> int:
-        pass
-
-    @property
-    @abstractmethod
-    def link_id(self) -> LinkId:
-        pass
-
-
 class ServiceLoader(ABC):
 
     @abstractmethod
@@ -679,7 +785,7 @@ class ServiceExecutionRuntime(ABC):
         pass
 
     @abstractmethod
-    def register_consume_statistics(self, statistics: ConsumeStatistics) -> None:
+    def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
         pass
 
     @abstractmethod
