@@ -7,4 +7,4 @@ from .metrics import (MetricsEngine, Metrics, MetricsHandler,
                       CounterVec, Counter, GaugeVec,
                       Gauge, Histogram, HistogramVec, Summary,
                       SummaryVec, HistogramOpts, SummaryOpts,
-                      GaugeOpts, CounterOpts)
+                      GaugeOpts, CounterOpts, Labels, LabelValues)

@@ -6,7 +6,7 @@
 from enum import Enum
 
 from pyservicelib.runtime.environment.metrics import MetricsEngine
-from pyservicelib.runtime.telemetry.prometheus.prometheus import PrometheusMetricsEngine
+from pyservicelib.runtime.telemetry.prometheus import PrometheusMetricsEngine
 
 
 class MetricsEngineType(str, Enum):

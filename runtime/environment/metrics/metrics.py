@@ -3,10 +3,14 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from typing import Callable, Iterable, Sequence, Union, Any
+from typing import Callable, Sequence, Any, Union, Optional, Iterable, Mapping
 from abc import ABC, abstractmethod
 
 MetricsHandler = Callable[[], bytes]
+
+type ConstLabels = Mapping[str, str]
+type Labels = Sequence[Any]
+type LabelValues = Sequence[str]
 
 class Counter(ABC):
 
@@ -75,20 +79,18 @@ class SummaryVec(ABC):
         pass
 
 
-type Labels = Iterable[str]
-
 class Opts:
 
     def __init__(self, name: str,
                  documentation: str,
-                 label_names: Labels = (),
+                 const_labels: Optional[ConstLabels] = None,
                  namespace: str = '',
                  subsystem: str = ''):
         self.name: str = name
         self.documentation: str = documentation
         self.namespace: str = namespace
         self.subsystem: str = subsystem
-        self.label_names: Labels = label_names
+        self.const_labels: Optional[ConstLabels] = const_labels
 
 
 class CounterOpts(Opts):
@@ -108,13 +110,13 @@ class HistogramOpts(Opts):
 
     def __init__(self, name: str,
                  documentation: str,
-                 label_names: Labels = (),
+                 const_labels: Optional[ConstLabels] = None,
                  namespace: str = '',
                  subsystem: str = '',
                  buckets: Sequence[Union[float, str]] = DEFAULT_BUCKETS):
         super().__init__(name=name,
                          documentation=documentation,
-                         label_names=label_names,
+                         const_labels=const_labels,
                          namespace=namespace,
                          subsystem=subsystem)
         self.buckets = buckets
@@ -139,19 +141,19 @@ class Metrics(ABC):
         pass
 
     @abstractmethod
-    def counter_vec(self, opts: CounterOpts) -> CounterVec:
+    def counter_vec(self, opts: CounterOpts, label_names: Labels) -> CounterVec:
         pass
 
     @abstractmethod
-    def gauge_vec(self, opts: GaugeOpts) -> GaugeVec:
+    def gauge_vec(self, opts: GaugeOpts, label_names: Labels) -> GaugeVec:
         pass
 
     @abstractmethod
-    def summary_vec(self, opts: SummaryOpts) -> SummaryVec:
+    def summary_vec(self, opts: SummaryOpts, label_names: Labels) -> SummaryVec:
         pass
 
     @abstractmethod
-    def histogram_vec(self, opts: HistogramOpts) -> HistogramVec:
+    def histogram_vec(self, opts: HistogramOpts, label_names: Labels) -> HistogramVec:
         pass
 
 

@@ -4,4 +4,4 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from .telemetry import MetricsEngineType
+from .telemetry import MetricsEngineType, MetricsEngineFactory
