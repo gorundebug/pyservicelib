@@ -7,7 +7,7 @@
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
-from typing import cast
+from typing import cast, ValuesView, Iterable
 
 from pyservicelib.api.models.call_semantics import CallSemantics
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -281,7 +281,7 @@ class DataSource(DataConnector):
 
     @property
     @abstractmethod
-    def runtime(self) -> "ServiceExecutionRuntime":
+    def environment(self) -> "ServiceExecutionEnvironment":
         pass
 
     @abstractmethod
@@ -294,7 +294,7 @@ class DataSource(DataConnector):
 
     @property
     @abstractmethod
-    def endpoints(self) -> list["InputEndpoint"]:
+    def endpoints(self) -> Iterable["InputEndpoint"]:
         pass
 
 
@@ -315,7 +315,7 @@ class InputEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def runtime(self) -> "ServiceExecutionRuntime":
+    def environment(self) -> "ServiceExecutionEnvironment":
         pass
 
     @property
@@ -329,7 +329,7 @@ class InputEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def endpoint_consumers(self) -> list[InputEndpointConsumer]:
+    def endpoint_consumers(self) -> Iterable[InputEndpointConsumer]:
         pass
 
 
@@ -407,6 +407,20 @@ class EndpointReader(ABC):
 
 class EndpointWriter(ABC):
     pass
+
+
+class TypedEndpointReader[T](EndpointReader):
+
+    @abstractmethod
+    def read(self, b: BytesBuffer) -> T:
+        pass
+
+
+class TypedEndpointWriter[T](EndpointWriter):
+
+    @abstractmethod
+    def write(self, b: BytesBuffer) -> bytearray:
+        pass
 
 
 class Stream(ABC):

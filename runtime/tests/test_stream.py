@@ -116,7 +116,7 @@ def test_type_check():
 async def test_input_stream():
     os.chdir(Path(__file__).parent)
 
-    service = await ServiceAppLoader[MockService, MockServiceConfig]().init("MockService", MockServiceDependency(), ConfigSettings())
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService", MockServiceDependency(), ConfigSettings())
     stream = transformation.Input[int]("Input", service)
     assert stream.type_name == "int"
 

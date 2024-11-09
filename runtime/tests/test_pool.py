@@ -23,7 +23,7 @@ async def test_delay_pool():
    delays: list[int] = [1000, 5000, 1200, 3000, 1500, 4000, 1350, 900, 100, 500, 500, 500, 500, 500, 500, 500]
    recorded_delays: list[int] = []
 
-   service = await ServiceAppLoader[MockService, MockServiceConfig]().init(
+   service = await ServiceAppLoader[MockService, MockServiceConfig]().load(
       "MockService", MockServiceDependency(), ConfigSettings())
    ctx = default_context()
 

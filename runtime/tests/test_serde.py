@@ -20,7 +20,7 @@ async def test_serde_type_dict():
     os.chdir(Path(__file__).parent)
     value = {1: True, 2: False, 3: True}
 
-    service = await ServiceAppLoader[MockService, MockServiceConfig]().init("MockService", MockServiceDependency(), ConfigSettings())
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService", MockServiceDependency(), ConfigSettings())
     ctx = default_context()
     ser = cast(Serde[dict[int, bool]], service.get_type_serde("MapType"))
 

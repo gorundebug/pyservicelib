@@ -299,7 +299,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             file_path = arg_path
         return str(Path(file_path).resolve())
 
-    async def init(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
+    async def load(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
         self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #type: ignore[attr-defined]
         if not isinstance(self._service , ServiceApp):
             raise ValueError("Invalid service type. Service must be inherit from ServiceApp class")
