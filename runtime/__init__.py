@@ -8,5 +8,6 @@ from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      RuntimeHelpers, TypedStream, Consumer, StreamConsumer,
                      ServiceStream, Stream, TypedLinkStream, TypedSinkStream,
                      TypedInputStream, TypedSplitStream, TypedBinaryConsumedStream,
-                     TypedBinaryKVConsumedStream, TypedStreamConsumer, Consume)
+                     TypedBinaryKVConsumedStream, TypedStreamConsumer, Consume, TypedEndpointWriter,
+                     TypedEndpointReader, EndpointReader, EndpointWriter)
 

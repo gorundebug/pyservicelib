@@ -350,7 +350,7 @@ class DataSink(DataConnector):
 
     @property
     @abstractmethod
-    def runtime(self) -> "ServiceExecutionRuntime":
+    def environment(self) -> "ServiceExecutionEnvironment":
         pass
 
     @abstractmethod
@@ -363,7 +363,7 @@ class DataSink(DataConnector):
 
     @property
     @abstractmethod
-    def endpoints(self) -> list["SinkEndpoint"]:
+    def endpoints(self) -> Iterable["SinkEndpoint"]:
         pass
 
 class OutputEndpointConsumer(ABC):
@@ -383,12 +383,12 @@ class SinkEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def runtime(self) -> "ServiceExecutionRuntime":
+    def environment(self) -> "ServiceExecutionEnvironment":
         pass
 
     @property
     @abstractmethod
-    def datasource(self) -> DataSink:
+    def datasink(self) -> DataSink:
         pass
 
     @abstractmethod
@@ -397,7 +397,7 @@ class SinkEndpoint(Endpoint):
 
     @property
     @abstractmethod
-    def endpoint_consumers(self) -> list[OutputEndpointConsumer]:
+    def endpoint_consumers(self) -> Iterable[OutputEndpointConsumer]:
         pass
 
 

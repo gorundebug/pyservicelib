@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Optional, Iterable
+from typing import Optional, Iterable, cast
 
 from pyservicelib.runtime import ServiceExecutionEnvironment, Consumer, TypedInputStream
 from pyservicelib.runtime.common import DataSource, InputEndpoint, DataConnector, TypedEndpointReader
@@ -95,7 +95,7 @@ class DataSourceEndpoint(InputEndpoint):
 
     @property
     def data_connector(self) -> DataConnector:
-        return self.datasource
+        return self._data_source
 
 
 class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):
@@ -111,9 +111,12 @@ class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):
             raise ValueError(f"Value type can not be none for input stream '{input_stream.name}'")
         reader = input_stream.environment.get_endpoint_reader(self.endpoint,
                                                               self._input_stream, value_type)
-        if not isinstance(reader, TypedEndpointReader) or reader.type_name != value_type:
-            raise ValueError(f"Invalid endpoint reader type in DataSourceEndpointConsumer")
-        self._reader = reader
+        if reader is not None:
+            if not isinstance(reader, TypedEndpointReader) or reader.type_name != value_type:
+                raise ValueError(f"Invalid endpoint reader type in DataSourceEndpointConsumer")
+            self._reader = cast(TypedEndpointReader[T], reader)
+        else:
+            self._reader = None
 
     async def consume(self, value: T) -> None:
         await self._input_stream.consume(value)
