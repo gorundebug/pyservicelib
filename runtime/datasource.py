@@ -4,11 +4,11 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import ValuesView, Iterable
+from typing import Optional, Iterable
 
-from pyservicelib.runtime import ServiceExecutionEnvironment, Consumer
-from pyservicelib.runtime.common import DataSource, InputEndpoint, ServiceExecutionRuntime, DataConnector, \
-    InputEndpointConsumer, OutputEndpointConsumer
+from pyservicelib.runtime import ServiceExecutionEnvironment, Consumer, TypedInputStream
+from pyservicelib.runtime.common import DataSource, InputEndpoint, DataConnector, TypedEndpointReader
+from pyservicelib.runtime.common import InputEndpointConsumer
 from pyservicelib.runtime.config import DataConnectorConfig, EndpointConfig
 from pyservicelib.runtime.context import Context
 
@@ -98,4 +98,31 @@ class DataSourceEndpoint(InputEndpoint):
         return self.datasource
 
 
-# class DataSourceEndpointConsumer[T](Consumer[T], OutputEndpointConsumer):
+class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):
+    _input_stream: TypedInputStream[T]
+    _endpoint: InputEndpoint
+    _reader: Optional[TypedEndpointReader[T]]
+
+    def __init__(self, endpoint: InputEndpoint, input_stream: TypedInputStream[T]):
+        self._endpoint = endpoint
+        self._input_stream = input_stream
+        value_type = input_stream.config.value_type
+        if value_type is None:
+            raise ValueError(f"Value type can not be none for input stream '{input_stream.name}'")
+        reader = input_stream.environment.get_endpoint_reader(self.endpoint,
+                                                              self._input_stream, value_type)
+        if not isinstance(reader, TypedEndpointReader) or reader.type_name != value_type:
+            raise ValueError(f"Invalid endpoint reader type in DataSourceEndpointConsumer")
+        self._reader = reader
+
+    async def consume(self, value: T) -> None:
+        await self._input_stream.consume(value)
+
+    @property
+    def endpoint(self) -> InputEndpoint:
+        return self._endpoint
+
+    @property
+    def reader(self) -> Optional[TypedEndpointReader[T]]:
+        return self._reader
+

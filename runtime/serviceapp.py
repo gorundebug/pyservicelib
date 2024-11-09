@@ -50,6 +50,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _id: int
     _delay_pool: DelayPool
     _tasks: Set[asyncio.Task[Any]]
+    _storages: list[Storage]
+    _consume_statistics: dict[LinkId, ConsumeStatistics]
 
     def __init__(self):
         self._dataSources = {}
@@ -59,6 +61,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._task_pools = {}
         self._priority_task_pools = {}
         self._tasks = set()
+        self._storages = []
+        self._consume_statistics = {}
 
     def reload_config(self, cfg: Config) -> None:
         pass
@@ -175,10 +179,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         return self._serdes.get(type_name)
 
     def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
-        pass
+        self._consume_statistics[link_id] = statistics
 
     def register_storage(self, storage: Storage) -> None:
-        pass
+        self._storages.append(storage)
 
     def get_task_pool(self, name: str) -> TaskPool:
         return self._task_pools[name]
@@ -216,10 +220,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def get_datasink(self, id_datasink: int) -> DataSink:
         return self._dataSinks[id_datasink]
 
-    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointReader]:
+    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointReader]:
         return None
 
-    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointWriter]:
+    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointWriter]:
         return None
 
     @property

@@ -7,7 +7,7 @@
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
-from typing import cast, ValuesView, Iterable
+from typing import cast, Iterable
 
 from pyservicelib.api.models.call_semantics import CallSemantics
 from pyservicelib.runtime.environment import ServiceEnvironment, ServiceDependency
@@ -402,11 +402,19 @@ class SinkEndpoint(Endpoint):
 
 
 class EndpointReader(ABC):
-    pass
+
+    @property
+    @abstractmethod
+    def type_name(self) -> str:
+        pass
 
 
 class EndpointWriter(ABC):
-    pass
+
+    @property
+    @abstractmethod
+    def type_name(self) -> str:
+        pass
 
 
 class TypedEndpointReader[T](EndpointReader):
@@ -740,11 +748,11 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointReader]:
+    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointReader]:
         pass
 
     @abstractmethod
-    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, value_type: type) -> Optional[EndpointWriter]:
+    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointWriter]:
         pass
 
     @property
