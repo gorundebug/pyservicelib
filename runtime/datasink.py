@@ -3,17 +3,16 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-
+from abc import ABC
 from typing import Optional, Iterable, cast
 
 from pyservicelib.runtime.common import ServiceExecutionEnvironment, Consumer, TypedEndpointWriter
-from pyservicelib.runtime.common import DataSource, DataConnector, DataSink
+from pyservicelib.runtime.common import DataConnector, DataSink
 from pyservicelib.runtime.common import SinkEndpoint, OutputEndpointConsumer, TypedSinkStream
 from pyservicelib.runtime.config import DataConnectorConfig, EndpointConfig
-from pyservicelib.runtime.context import Context
 
 
-class OutputDataSink(DataSink):
+class OutputDataSink(DataSink, ABC):
     _id: int
     _environment: ServiceExecutionEnvironment
     _endpoints: dict[int, SinkEndpoint]
@@ -22,12 +21,6 @@ class OutputDataSink(DataSink):
         self._id = connector_id
         self._environment = env
         self._endpoints = {}
-
-    def start(self, ctx: Context) -> None:
-        pass
-
-    def stop(self, ctx: Context) -> None:
-        pass
 
     @property
     def data_connector(self) -> DataConnectorConfig:
@@ -40,8 +33,8 @@ class OutputDataSink(DataSink):
     def add_endpoint(self, endpoint: SinkEndpoint) -> None:
         self._endpoints[endpoint.id] = endpoint
 
-    def get_endpoint(self, id_endpoint: int) -> SinkEndpoint:
-        return self._endpoints[id_endpoint]
+    def get_endpoint(self, id_endpoint: int) -> Optional[SinkEndpoint]:
+        return self._endpoints.get(id_endpoint)
 
     @property
     def endpoints(self) ->  Iterable[SinkEndpoint]:

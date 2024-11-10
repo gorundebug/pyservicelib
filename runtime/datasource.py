@@ -3,17 +3,16 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-
+from abc import ABC
 from typing import Optional, Iterable, cast
 
 from pyservicelib.runtime import ServiceExecutionEnvironment, Consumer, TypedInputStream
 from pyservicelib.runtime.common import DataSource, InputEndpoint, DataConnector, TypedEndpointReader
 from pyservicelib.runtime.common import InputEndpointConsumer
 from pyservicelib.runtime.config import DataConnectorConfig, EndpointConfig
-from pyservicelib.runtime.context import Context
 
 
-class InputDataSource(DataSource):
+class InputDataSource(DataSource, ABC):
     _id: int
     _environment: ServiceExecutionEnvironment
     _endpoints: dict[int, InputEndpoint]
@@ -22,12 +21,6 @@ class InputDataSource(DataSource):
         self._id = connector_id
         self._environment = env
         self._endpoints = {}
-
-    def start(self, ctx: Context) -> None:
-        pass
-
-    def stop(self, ctx: Context) -> None:
-        pass
 
     @property
     def data_connector(self) -> DataConnectorConfig:
@@ -40,8 +33,8 @@ class InputDataSource(DataSource):
     def add_endpoint(self, endpoint: InputEndpoint) -> None:
         self._endpoints[endpoint.id] = endpoint
 
-    def get_endpoint(self, id_endpoint: int) -> InputEndpoint:
-        return self._endpoints[id_endpoint]
+    def get_endpoint(self, id_endpoint: int) -> Optional[InputEndpoint]:
+        return self._endpoints.get(id_endpoint)
 
     @property
     def endpoints(self) ->  Iterable[InputEndpoint]:
@@ -58,12 +51,12 @@ class InputDataSource(DataSource):
 
 class DataSourceEndpoint(InputEndpoint):
     _id: int
-    _data_source: DataSource
+    _datasource: DataSource
     _endpoint_consumers: list[InputEndpointConsumer]
 
-    def __init__(self, data_source: DataSource, id_endpoint: int):
+    def __init__(self, datasource: DataSource, id_endpoint: int):
         self._id = id_endpoint
-        self._data_source = data_source
+        self._datasource = datasource
         self._endpoint_consumers = []
 
     @property
@@ -72,11 +65,11 @@ class DataSourceEndpoint(InputEndpoint):
 
     @property
     def environment(self) -> ServiceExecutionEnvironment:
-        return self._data_source.environment
+        return self._datasource.environment
 
     @property
     def datasource(self) -> DataSource:
-        return self._data_source
+        return self._datasource
 
     def add_endpoint_consumer(self, consumer: InputEndpointConsumer) -> None:
         self._endpoint_consumers.append(consumer)
@@ -95,7 +88,7 @@ class DataSourceEndpoint(InputEndpoint):
 
     @property
     def data_connector(self) -> DataConnector:
-        return self._data_source
+        return self._datasource
 
 
 class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):

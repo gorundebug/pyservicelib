@@ -267,11 +267,11 @@ class Endpoint(ABC):
 class DataSource(DataConnector):
 
     @abstractmethod
-    def start(self, ctx: Context) -> None:
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
-    def stop(self, ctx: Context) -> None:
+    async def stop(self, ctx: Context) -> None:
         pass
 
     @property
@@ -289,7 +289,7 @@ class DataSource(DataConnector):
         pass
 
     @abstractmethod
-    def get_endpoint(self, id_endpoint: int) -> "InputEndpoint":
+    def get_endpoint(self, id_endpoint: int) -> Optional["InputEndpoint"]:
         pass
 
     @property
@@ -336,11 +336,11 @@ class InputEndpoint(Endpoint):
 class DataSink(DataConnector):
 
     @abstractmethod
-    def start(self, ctx: Context) -> None:
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
-    def stop(self, ctx: Context) -> None:
+    async def stop(self, ctx: Context) -> None:
         pass
 
     @property
@@ -358,7 +358,7 @@ class DataSink(DataConnector):
         pass
 
     @abstractmethod
-    def get_endpoint(self, id_endpoint: int) -> "SinkEndpoint":
+    def get_endpoint(self, id_endpoint: int) -> Optional["SinkEndpoint"]:
         pass
 
     @property
@@ -736,7 +736,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def get_datasource(self, id_datasource: int) -> DataSource:
+    def get_datasource(self, id_datasource: int) -> Optional[DataSource]:
         pass
 
     @abstractmethod
@@ -744,7 +744,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def get_datasink(self, id_datasink: int) -> DataSink:
+    def get_datasink(self, id_datasink: int) -> Optional[DataSink]:
         pass
 
     @abstractmethod
