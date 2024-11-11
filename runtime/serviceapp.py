@@ -211,14 +211,14 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def add_datasource(self, datasource: DataSource) -> None:
         self._dataSources[datasource.id] = datasource
 
-    def get_datasource(self, id_datasource: int) -> Optional[DataSource]:
-        return self._dataSources.get(id_datasource)
+    def get_datasource(self, id_connector: int) -> Optional[DataSource]:
+        return self._dataSources.get(id_connector)
 
     def add_datasink(self, datasink: DataSink) -> None:
         self._dataSinks[datasink.id] = datasink
 
-    def get_datasink(self, id_datasink: int) -> Optional[DataSink]:
-        return self._dataSinks.get(id_datasink)
+    def get_datasink(self, id_connector: int) -> Optional[DataSink]:
+        return self._dataSinks.get(id_connector)
 
     def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointReader]:
         return None

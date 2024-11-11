@@ -6,7 +6,7 @@
 import asyncio
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from typing import Protocol, cast, Any
+from typing import Protocol, cast, Any, Optional
 
 from pyservicelib.runtime import Consume, ServiceExecutionEnvironment
 from pyservicelib.runtime.common import InputEndpoint, TypedInputStream, DataSource
@@ -56,8 +56,8 @@ class CustomInputEndpoint(DataSourceEndpoint):
 
 class CustomDataSource(InputDataSource):
 
-    def __init__(self, id_datasource: int, env: ServiceExecutionEnvironment):
-        super().__init__(connector_id=id_datasource, env=env)
+    def __init__(self, id_connector: int, env: ServiceExecutionEnvironment):
+        super().__init__(connector_id=id_connector, env=env)
 
     async def start(self, ctx: Context) -> None:
         for ep in self.endpoints:
@@ -70,18 +70,20 @@ class CustomDataSource(InputDataSource):
         try:
             await asyncio.wait_for(asyncio.gather(*stop_tasks), timeout=ctx.time_left)
         except asyncio.TimeoutError:
-            self.environment.log.warning(f"Custom datasource '{self.name}' stopped by timeout.")
+            self.environment.log.warning(f"Custom data source '{self.name}' stopped by timeout.")
 
 
 class TypedCustomEndpointConsumer[T](DataSourceEndpointConsumer[T], CustomEndpointConsumer):
     _data_producer: DataProducer[T]
-    _runner_task: asyncio.Task[Any]
+    _runner_task: Optional[asyncio.Task[Any]]
 
     def __init__(self, input_stream: TypedInputStream[T], data_producer: DataProducer[T]):
         env = input_stream.environment
         endpoint = TypedCustomEndpointConsumer._get_custom_datasource_endpoint(
             id_endpoint=input_stream.endpoint_id, env=env)
         super().__init__(endpoint=endpoint, input_stream=input_stream)
+        self._data_producer = data_producer
+        self._runner_task = None
         endpoint.add_endpoint_consumer(self)
 
     async def _runner(self, ctx: Context):
@@ -91,25 +93,25 @@ class TypedCustomEndpointConsumer[T](DataSourceEndpointConsumer[T], CustomEndpoi
         self._runner_task = asyncio.create_task(self._runner(ctx))
 
     async def stop(self, ctx: Context):
-        try:
-            await asyncio.wait_for(asyncio.gather( self._data_producer.stop(ctx), self._runner_task), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            self._input_stream.environment.log.warning(f"Custom datasource endpoint '{self.endpoint.name}' for stream '{self._input_stream.name}' stopped by timeout.")
+        if self._runner_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.gather( self._data_producer.stop(ctx), self._runner_task), timeout=ctx.time_left)
+            except asyncio.TimeoutError:
+                self._input_stream.environment.log.warning(f"Custom datasource endpoint '{self.endpoint.name}' for stream '{self._input_stream.name}' stopped by timeout.")
 
     async def consume(self, value: T) -> None:
         await cast(CustomInputEndpoint, self.endpoint).next_message()
         await super().consume(value)
 
     @classmethod
-    def _get_custom_datasource(cls, id_datasource: int, env: ServiceExecutionEnvironment) -> DataSource:
-        datasource = env.get_datasource(id_datasource)
+    def _get_custom_datasource(cls, id_connector: int, env: ServiceExecutionEnvironment) -> DataSource:
+        datasource = env.get_datasource(id_connector)
         if datasource is not None:
             return datasource
-        cfg = env.config.get_data_connector_by_id(id_datasource)
+        cfg = env.config.get_data_connector_by_id(id_connector)
         custom_datasource = CustomDataSource(cfg.id, env)
         env.add_datasource(custom_datasource)
         return custom_datasource
-
 
     @classmethod
     def _get_custom_datasource_endpoint(cls, id_endpoint: int, env: ServiceExecutionEnvironment) -> InputEndpoint:

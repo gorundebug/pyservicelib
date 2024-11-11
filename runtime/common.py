@@ -736,7 +736,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def get_datasource(self, id_datasource: int) -> Optional[DataSource]:
+    def get_datasource(self, id_connector: int) -> Optional[DataSource]:
         pass
 
     @abstractmethod
@@ -744,7 +744,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    def get_datasink(self, id_datasink: int) -> Optional[DataSink]:
+    def get_datasink(self, id_connector: int) -> Optional[DataSink]:
         pass
 
     @abstractmethod
