@@ -15,7 +15,7 @@ from pyservicelib.runtime.common import InputEndpoint, ServiceExecutionEnvironme
 from pyservicelib.runtime.context import Context
 from pyservicelib.runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 
-def flatten_params(*param_dicts: MultiMapping) -> dict[str, Union[Any, list[Any]]]:
+def _flatten_params(*param_dicts: MultiMapping) -> dict[str, Union[Any, list[Any]]]:
     result: dict[str, Union[Any, list[Any]]] = {}
     for params in param_dicts:
         for key in params:
@@ -48,7 +48,7 @@ class HTTPEndpointRequestData:
     @property
     async def form(self):
         if self._form is None:
-            self._form = flatten_params(self._request.query, await self._request.post())
+            self._form = _flatten_params(self._request.query, await self._request.post())
         return self._form
 
 
@@ -61,7 +61,8 @@ class AIOHttpEndpoint(DataSourceEndpoint):
             raise ValueError(f"Path property can not be None for endpoint '{cfg.name}'")
         if cfg.format is None:
             raise ValueError(f"Format property can not be None for endpoint '{cfg.name}'")
-        elif cfg.format not in ["json", "schema"]:
+        elif (cfg.method == "POST" and cfg.format not in ["json", "schema"] or
+              cfg.method == "GET" and cfg.format != "schema"):
             raise ValueError(f"Format property has invalid value '{cfg.format}' for endpoint '{cfg.name}'")
 
         super().__init__(datasource=datasource, id_endpoint=id_endpoint)
