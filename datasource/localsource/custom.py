@@ -97,7 +97,7 @@ class TypedCustomEndpointConsumer[T](DataSourceEndpointConsumer[T], CustomEndpoi
             try:
                 await asyncio.wait_for(asyncio.gather( self._data_producer.stop(ctx), self._runner_task), timeout=ctx.time_left)
             except asyncio.TimeoutError:
-                self._input_stream.environment.log.warning(f"Custom datasource endpoint '{self.endpoint.name}' for stream '{self._input_stream.name}' stopped by timeout.")
+                self._input_stream.environment.log.warning(f"Custom data source endpoint '{self.endpoint.name}' for stream '{self._input_stream.name}' stopped by timeout.")
 
     async def consume(self, value: T) -> None:
         await cast(CustomInputEndpoint, self.endpoint).next_message()

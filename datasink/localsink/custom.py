@@ -84,7 +84,7 @@ class TypedCustomEndpointConsumer[T](DataSinkEndpointConsumer[T], CustomEndpoint
         try:
             await asyncio.wait_for(asyncio.gather(self._data_consumer.stop(ctx), ), timeout=ctx.time_left)
         except asyncio.TimeoutError:
-            self._sink_stream.environment.log.warning(f"Custom datasource endpoint '{self.endpoint.name}' for stream '{self._sink_stream.name}' stopped by timeout.")
+            self._sink_stream.environment.log.warning(f"Custom data sink endpoint '{self.endpoint.name}' for stream '{self._sink_stream.name}' stopped by timeout.")
 
     async def consume(self, value: T) -> None:
         await self._data_consumer.consume(value)
