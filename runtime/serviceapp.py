@@ -52,6 +52,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _tasks: Set[asyncio.Task[Any]]
     _storages: list[Storage]
     _consume_statistics: dict[LinkId, ConsumeStatistics]
+    _dep: Optional[ServiceDependency]
 
     def __init__(self):
         self._dataSources = {}
@@ -68,6 +69,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         pass
 
     async def service_init(self, name: str, dep: Optional[ServiceDependency], loader: ServiceLoader, cfg: Config) -> None:
+        self._dep = dep
         self._loader = loader
         service_config = cfg.config.get_service_config_by_name(name)
         if service_config is None:
@@ -76,6 +78,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._config = cfg.config
         logs_engine: Optional[LogsEngine] = None
         metrics_engine: Optional[MetricsEngine] = None
+
+        dep = self.service_dependency()
         if dep is not None:
             logs_engine = await dep.get_logs_engine(self)
             metrics_engine = await dep.get_metrics_engine(self)
@@ -95,6 +99,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     async def release(self) -> None:
         await self._logs_engine.release()
+
+    def service_dependency(self) -> Optional["ServiceDependency"]:
+        return self._dep
 
     def _is_primitive_type(self, type_name: str) -> bool:
         if TypeConfig.is_primitive_type(type_name):

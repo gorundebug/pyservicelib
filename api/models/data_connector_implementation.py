@@ -28,6 +28,7 @@ class DataConnectorImplementation(str, Enum):
     """
     NET_SLASH_HTTP = 'net/http'
     FASTHTTP = 'FastHTTP'
+    AIOHTTP = 'aiohttp'
     FUNCTION = 'function'
 
     @classmethod

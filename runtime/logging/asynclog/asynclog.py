@@ -100,6 +100,10 @@ class AsyncLogger(Logger):
                     self._ready = True
         return self
 
+    @property
+    def native_logger(self) -> Any:
+        return self._log
+
 
 class AsyncLogsEngine(LogsEngine):
     _default_logger: AsyncLogger

@@ -1,5 +1,19 @@
-dataConnectors: []
-endpoints: []
+dataConnectors:
+  - host: $dataConnector1Host
+    id: 1
+    implementation: aiohttp
+    name: DataConnector1
+    port: $dataConnector1Port
+    programmingLanguage: 3
+    type: 1
+endpoints:
+  - format: json
+    id: 1
+    idDataConnector: 1
+    method: GET
+    name: Endpoint1
+    param: data
+    path: /
 links: []
 pools:
   - executorsCount: 5

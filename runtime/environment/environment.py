@@ -32,6 +32,11 @@ class ServiceEnvironment(ABC):
     def metrics(self) -> Metrics:
         pass
 
+    @property
+    @abstractmethod
+    def service_dependency(self) -> Optional["ServiceDependency"]:
+        pass
+
 
 class ServiceDependency(ABC):
 
@@ -42,3 +47,5 @@ class ServiceDependency(ABC):
     @abstractmethod
     async def get_metrics_engine(self, env: ServiceEnvironment) -> Optional[MetricsEngine]:
         pass;
+
+

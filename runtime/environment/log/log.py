@@ -3,7 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 from abc import ABC, abstractmethod
 
 from pyservicelib.api.models.log_level import LogLevel
@@ -46,6 +46,11 @@ class Logger(ABC):
 
     @abstractmethod
     def fatal(self, msg, *args, **kwargs):
+        pass
+
+    @property
+    @abstractmethod
+    def native_logger(self) -> Any:
         pass
 
 
