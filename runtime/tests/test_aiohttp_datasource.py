@@ -21,7 +21,7 @@ class RequestData(BaseModel):
     param2: Optional[int] = None
 
 @pytest.mark.asyncio
-async def test_serde_type_dict():
+async def test_aiohttp_datasource():
     os.chdir(Path(__file__).parent)
 
     service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService",
