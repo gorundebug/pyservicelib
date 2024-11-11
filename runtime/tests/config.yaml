@@ -10,7 +10,7 @@ endpoints:
   - format: json
     id: 1
     idDataConnector: 1
-    method: GET
+    method: POST
     name: Endpoint1
     param: data
     path: /

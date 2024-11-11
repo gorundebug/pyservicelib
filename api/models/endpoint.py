@@ -33,13 +33,12 @@ class Endpoint(BaseModel):
     method: Optional[StrictStr] = None
     path: Optional[StrictStr] = None
     format: Optional[DataFormat] = None
-    param: Optional[StrictStr] = None
     function_name: Optional[StrictStr] = Field(default=None, alias="functionName")
     function_package: Optional[StrictStr] = Field(default=None, alias="functionPackage")
     public_function: Optional[StrictBool] = Field(default=None, alias="publicFunction")
     function_description: Optional[StrictStr] = Field(default=None, alias="functionDescription")
     delay: Optional[StrictInt] = None
-    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "method", "path", "format", "param", "functionName", "functionPackage", "publicFunction", "functionDescription", "delay"]
+    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "method", "path", "format", "functionName", "functionPackage", "publicFunction", "functionDescription", "delay"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -98,7 +97,6 @@ class Endpoint(BaseModel):
             "method": obj.get("method"),
             "path": obj.get("path"),
             "format": obj.get("format"),
-            "param": obj.get("param"),
             "functionName": obj.get("functionName"),
             "functionPackage": obj.get("functionPackage"),
             "publicFunction": obj.get("publicFunction"),

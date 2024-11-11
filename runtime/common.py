@@ -423,6 +423,10 @@ class TypedEndpointReader[T](EndpointReader):
     def read(self, b: BytesBuffer) -> T:
         pass
 
+    @abstractmethod
+    def from_dict(self, d: dict[str, Any]) -> T:
+        pass
+
 
 class TypedEndpointWriter[T](EndpointWriter):
 

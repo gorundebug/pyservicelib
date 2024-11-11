@@ -79,7 +79,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         logs_engine: Optional[LogsEngine] = None
         metrics_engine: Optional[MetricsEngine] = None
 
-        dep = self.service_dependency()
+        dep = self.service_dependency
         if dep is not None:
             logs_engine = await dep.get_logs_engine(self)
             metrics_engine = await dep.get_metrics_engine(self)
@@ -100,7 +100,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     async def release(self) -> None:
         await self._logs_engine.release()
 
-    def service_dependency(self) -> Optional["ServiceDependency"]:
+    @property
+    def service_dependency(self) -> Optional[ServiceDependency]:
         return self._dep
 
     def _is_primitive_type(self, type_name: str) -> bool:
@@ -211,8 +212,14 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     async def start(self, ctx: Context) -> None:
         await self._delay_pool.start(ctx)
+        for ds in self._dataSources.values():
+            await ds.start(ctx)
 
     async def stop(self, ctx: Context) -> None:
+        for ds in self._dataSources.values():
+            await ds.stop(ctx)
+
+        await self._delay_pool.stop(ctx)
         await self._loader.stop()
 
     def add_datasource(self, datasource: DataSource) -> None:

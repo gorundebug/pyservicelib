@@ -27,7 +27,7 @@ class DataFormat(str, Enum):
     allowed enum values
     """
     JSON = 'json'
-    GORILLA_SLASH_SCHEMA = 'gorilla/schema'
+    SCHEMA = 'schema'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

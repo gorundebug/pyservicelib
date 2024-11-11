@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 import asyncio
 from datetime import datetime, timedelta
 
@@ -18,7 +18,7 @@ class DelayPoolImpl(DelayPool):
     _task_queue: asyncio.Queue
     _priority_task_queue: asyncio.PriorityQueue
     _executors: list[asyncio.Task[Any]]
-    _timer_executor_task: asyncio.Task[Any]
+    _timer_executor_task: Optional[asyncio.Task[Any]]
     _new_task_event: asyncio.Event
     _stopping: bool
 
@@ -29,6 +29,7 @@ class DelayPoolImpl(DelayPool):
         self._executors = []
         self._new_task_event = asyncio.Event()
         self._stopping = False
+        self._timer_executor_task = None
 
     async def _executor(self):
         while True:
@@ -73,17 +74,18 @@ class DelayPoolImpl(DelayPool):
         self._timer_executor_task = asyncio.create_task(self._timer_executor())
 
     async def stop(self, ctx: Context):
-        self._stopping = True
-        self._new_task_event.set()
+        if self._timer_executor_task is not None:
+            self._stopping = True
+            self._new_task_event.set()
 
-        executors = self._executors + [self._timer_executor_task]
-        try:
-            await asyncio.wait_for(asyncio.gather(*executors), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            tasks_count = self._priority_task_queue.qsize()
-            self._environment.log.warning(
-                f"Delay pool stopped by timeout. (tasks count={tasks_count})"
-            )
+            executors = self._executors + [self._timer_executor_task]
+            try:
+                await asyncio.wait_for(asyncio.gather(*executors), timeout=ctx.time_left)
+            except asyncio.TimeoutError:
+                tasks_count = self._priority_task_queue.qsize()
+                self._environment.log.warning(
+                    f"Delay pool stopped by timeout. (tasks count={tasks_count})"
+                )
 
     async def add_task(self, delay: timedelta, fn: Callable[..., Any], *args, **kwargs):
         execute_time = datetime.now() + delay

@@ -47,14 +47,15 @@ class TaskPoolImpl(TaskPool):
             self._executors.append(executor_task)
 
     async def stop(self, ctx: Context):
-        for _ in self._executors:
-            await self._task_queue.put((None, None, None))
+        if len(self._executors) > 0:
+            for _ in self._executors:
+                await self._task_queue.put((None, None, None))
 
-        try:
-            await asyncio.wait_for(asyncio.gather(*self._executors), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            tasks_count = self._task_queue.qsize()
-            self._environment.log.warning(f"Task pool '{self._name}' stopped by timeout. (tasks count={tasks_count})")
+            try:
+                await asyncio.wait_for(asyncio.gather(*self._executors), timeout=ctx.time_left)
+            except asyncio.TimeoutError:
+                tasks_count = self._task_queue.qsize()
+                self._environment.log.warning(f"Task pool '{self._name}' stopped by timeout. (tasks count={tasks_count})")
 
     async def add_task(self, fn: Callable[..., Any], *args, **kwargs):
         await self._task_queue.put((fn, args, kwargs))
