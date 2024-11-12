@@ -61,8 +61,8 @@ class AIOHttpEndpoint(DataSourceEndpoint):
             raise ValueError(f"Path property can not be None for endpoint '{cfg.name}'")
         if cfg.format is None:
             raise ValueError(f"Format property can not be None for endpoint '{cfg.name}'")
-        elif (cfg.method == "POST" and cfg.format not in ["json", "schema"] or
-              cfg.method == "GET" and cfg.format != "schema"):
+        elif (cfg.method == "POST" and cfg.format not in ["json", "form"] or
+              cfg.method == "GET" and cfg.format != "form"):
             raise ValueError(f"Format property has invalid value '{cfg.format}' for endpoint '{cfg.name}'")
 
         super().__init__(datasource=datasource, id_endpoint=id_endpoint)

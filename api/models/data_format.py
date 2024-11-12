@@ -27,7 +27,7 @@ class DataFormat(str, Enum):
     allowed enum values
     """
     JSON = 'json'
-    SCHEMA = 'schema'
+    FORM = 'form'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
