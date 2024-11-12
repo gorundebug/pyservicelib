@@ -13,6 +13,7 @@ import yaml
 from watchfiles import awatch, Change
 import asyncio
 
+from pyservicelib.api.models.call_semantics import CallSemantics
 from pyservicelib.runtime.environment import ServiceDependency
 from pyservicelib.runtime.config import Config, ServiceConfig, ServiceAppConfig, LinkId
 from pyservicelib.runtime.config import TypeConfig, ConfigSettings, replace_placeholders
@@ -21,7 +22,8 @@ from pyservicelib.runtime.common import DataSink, DataSource, ConsumeStatistics,
 from pyservicelib.runtime.common import Endpoint, ServiceStream, EndpointWriter, EndpointReader, Stream
 from pyservicelib.runtime.common import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from pyservicelib.runtime.environment.metrics import MetricsEngine
-from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool
+from pyservicelib.runtime.pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool, make_task_pool, \
+    make_priority_task_pool
 from pyservicelib.runtime.serde import ListSerde, DictSerde
 from pyservicelib.runtime.serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from pyservicelib.runtime.store import Storage
@@ -96,6 +98,43 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
         self._log = await self._logs_engine.default_logger()
         self._delay_pool = make_delay_pool(self)
+
+        for link in self._config.links:
+            stream_from = self._config.get_stream_config_by_id(link.var_from)
+            stream_to = self._config.get_stream_config_by_id(link.to)
+            if stream_from.id_service == service_config.id or stream_to.id_service == service_config.id:
+                if stream_from.id_service == service_config.id:
+                    call_semantics = link.call_semantics
+                else:
+                    if link.income_call_semantics is None:
+                        raise ValueError(f"Income call semantics does not defined for link from={link.var_from} to={link.to}")
+                    call_semantics = link.income_call_semantics
+                if call_semantics not in [CallSemantics.FunctionCall,
+                                          CallSemantics.TaskPool,
+                                          CallSemantics.PriorityTaskPool]:
+                    raise ValueError(f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}")
+                if call_semantics != CallSemantics.FunctionCall:
+                    if stream_from.id_service == service_config.id:
+                        if link.pool_name is None:
+                            raise ValueError(f"Pool name does not defined for link from={link.var_from} to={link.to}")
+                        if call_semantics == CallSemantics.PriorityTaskPool and link.priority is None:
+                            raise ValueError(f"Priority for link from={link.var_from} to={link.to} does not defines")
+                        pool_name = link.pool_name
+                    else:
+                        if link.income_pool_name is None:
+                            raise ValueError(f"Income pool name does not defined for link from={link.var_from} to={link.to}")
+                        if call_semantics == CallSemantics.PriorityTaskPool and link.income_priority is None:
+                            raise ValueError(f"Income priority for link from={link.var_from} to={link.to} does not defines")
+                        pool_name = link.income_pool_name
+                    pool_cfg = self._config.get_pool_by_name(pool_name)
+                    if pool_cfg is None:
+                        raise ValueError(f"Task pool '{pool_name}' not found for link from={link.var_from} to={link.to}")
+                    if call_semantics == CallSemantics.TaskPool:
+                        if pool_name not in self._task_pools:
+                            self._task_pools[pool_name] = make_task_pool(pool_name, self)
+                    elif call_semantics == CallSemantics.PriorityTaskPool:
+                        if pool_name not in self._priority_task_pools:
+                            self._priority_task_pools[pool_name] = make_priority_task_pool(pool_name, self)
 
     async def release(self) -> None:
         await self._logs_engine.release()

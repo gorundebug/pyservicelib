@@ -597,8 +597,8 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[T]):
-        self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
         self._consumer = value
+        self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
 
     @property
     def stream(self) -> Stream:
@@ -664,8 +664,8 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
 
     @consumer.setter
     def consumer(self, value: StreamConsumer[R]):
-        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
         self._consumer = value
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
 
     @property
     def stream(self) -> Stream:

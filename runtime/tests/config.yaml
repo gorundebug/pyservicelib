@@ -12,9 +12,12 @@ endpoints:
     idDataConnector: 1
     method: POST
     name: Endpoint1
-    param: data
     path: /
-links: []
+links:
+  - callSemantics: 1
+    from: 1
+    inheritedCallSemantics: true
+    to: 2
 pools:
   - executorsCount: 5
     name: Default
@@ -45,10 +48,17 @@ streams:
     idSources: [ ]
     name: Input
     type: 1
-    valueType: IntType
-    xPos: -1293
-    yPos: -1004
-
+    valueType: RequestData
+    xPos: 37
+    yPos: 64
+  - id: 2
+    idService: 1
+    idSource: 1
+    idSources: [ ]
+    name: AppSink
+    type: 14
+    xPos: 261
+    yPos: 189
 types:
   - keyType: IntType
     name: MapType
@@ -62,4 +72,11 @@ types:
   - name: IntType
     publicType: false
     type: int
+    useAlias: false
+  - name: RequestData
+    definitionFormat: 2
+    package: ""
+    transferByValue: false
+    publicType: false
+    type: struct
     useAlias: false

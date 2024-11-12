@@ -33,18 +33,26 @@ def _flatten_params(*param_dicts: MultiMapping) -> dict[str, Union[Any, list[Any
 class HTTPEndpointRequestData:
     _request: web.Request
     _body: Optional[bytes]
+    _json: Optional[bytes]
     _form: Optional[dict[str, Union[Any, list[Any]]]]
 
     def __init__(self, request: web.Request):
         self._request = request
         self._body = None
         self._form = None
+        self._json = None
 
     @property
     async def body(self) -> bytes:
         if self._body is None:
             self._body = await self._request.read()
         return self._body
+
+    @property
+    async def json(self) -> Any:
+        if self._json is None:
+            self._json = await self._request.json()
+        return self._json
 
     @property
     async def form(self):
@@ -146,11 +154,11 @@ class JsonRequestEndpointConsumer[T](EndpointRequestConsumer):
         self._endpoint_consumer = endpoint_consumer
 
     async def endpoint_request(self, request_data: HTTPEndpointRequestData):
-        body = await request_data.body
+        json = await request_data.json
         if self._endpoint_consumer.reader is None:
-            value = cast(T, cast(BaseModel, self._endpoint_consumer.value_type).model_validate_json(body))
+            value = cast(T, cast(BaseModel, self._endpoint_consumer.value_type).model_validate_json(json))
         else:
-            value = self._endpoint_consumer.reader.read(body)
+            value = self._endpoint_consumer.reader.from_dict(json)
         await self._endpoint_consumer.consume(value)
 
 
