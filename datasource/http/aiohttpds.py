@@ -145,7 +145,7 @@ class AIOHttpEndpointConsumer[T](DataSourceEndpointConsumer[T]):
         if self.endpoint.config.format == "json":
             body = await request_data.body
             if self._reader is None:
-                value = cast(BaseModel, self._orig_type).model_validate_json(body)
+                value = cast(T, cast(BaseModel, self._orig_type).model_validate_json(body))
             else:
                 value = self._reader.read(body)
         else:
