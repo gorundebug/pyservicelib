@@ -3,6 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
+from abc import abstractmethod, ABC
 import aiohttp.log
 from aiohttp import web
 import logging
@@ -131,30 +132,63 @@ class AIOHttpDataSource(InputDataSource):
         self._app.router.add_route(method=method, path=path, handler=handler)
 
 
+class EndpointRequestConsumer(ABC):
+
+    @abstractmethod
+    async def endpoint_request(self, request_data: HTTPEndpointRequestData):
+       pass
+
+
+class JsonRequestEndpointConsumer[T](EndpointRequestConsumer):
+    _endpoint_consumer: "AIOHttpEndpointConsumer[T]"
+
+    def __init__(self, endpoint_consumer: "AIOHttpEndpointConsumer[T]"):
+        self._endpoint_consumer = endpoint_consumer
+
+    async def endpoint_request(self, request_data: HTTPEndpointRequestData):
+        body = await request_data.body
+        if self._endpoint_consumer.reader is None:
+            value = cast(T, cast(BaseModel, self._endpoint_consumer.value_type).model_validate_json(body))
+        else:
+            value = self._endpoint_consumer.reader.read(body)
+        await self._endpoint_consumer.consume(value)
+
+
+class FormRequestEndpointConsumer[T](EndpointRequestConsumer):
+    _endpoint_consumer: "AIOHttpEndpointConsumer[T]"
+
+    def __init__(self, endpoint_consumer: "AIOHttpEndpointConsumer[T]"):
+        self._endpoint_consumer = endpoint_consumer
+
+    async def endpoint_request(self, request_data: HTTPEndpointRequestData):
+        form = await request_data.form
+        if self._endpoint_consumer.reader is None:
+            value = self._endpoint_consumer.value_type(**form)
+        else:
+            value = self._endpoint_consumer.reader.from_dict(form)
+        await self._endpoint_consumer.consume(value)
+
+
 class AIOHttpEndpointConsumer[T](DataSourceEndpointConsumer[T]):
     _orig_type: type
+    _request_endpoint_consumer: EndpointRequestConsumer
 
     def __init__(self, input_stream: TypedInputStream[T]):
         endpoint = AIOHttpEndpointConsumer.get_aiohttp_datasource_endpoint(input_stream.endpoint_id,
                                                                             input_stream.environment)
         super().__init__(endpoint=endpoint, input_stream=input_stream)
         endpoint.add_endpoint_consumer(self)
+        if self.endpoint.config.format == "json":
+            self._request_endpoint_consumer = JsonRequestEndpointConsumer(self)
+        else:
+            self._request_endpoint_consumer = FormRequestEndpointConsumer(self)
 
+    @property
+    def value_type(self) -> type:
+        return self._orig_type
 
     async def endpoint_request(self, request_data: HTTPEndpointRequestData):
-        if self.endpoint.config.format == "json":
-            body = await request_data.body
-            if self._reader is None:
-                value = cast(T, cast(BaseModel, self._orig_type).model_validate_json(body))
-            else:
-                value = self._reader.read(body)
-        else:
-            form = await request_data.form
-            if self._reader is None:
-                value = self._orig_type(**form)
-            else:
-                value = self._reader.from_dict(form)
-        await self.consume(cast(T, value))
+        await self._request_endpoint_consumer.endpoint_request(request_data)
 
     async def start(self, ctx: Context):
         genetic_type = self.__orig_class__.__args__[0] #type: ignore[attr-defined]
