@@ -3,8 +3,11 @@ original_dir=$(pwd)
 path=$(dirname "$0")
 cd "$path" || { echo "Error: Failed to change directory to script location"; exit 1; }
 
-#pip install pylint
-pyreverse -p pyservicelib_gorundebug/ ./src/pyservicelib_gorundebug
+if ! pip show pylint > /dev/null 2>&1; then
+    echo "install pylink..."
+    pip install pylint
+fi
+pyreverse -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
 pyreverse -c pyservicelib_gorundebug.runtime.appsink.AppSinkStream -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
 pyreverse -c pyservicelib_gorundebug.runtime.map.MapStream -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
 pyreverse -c pyservicelib_gorundebug.runtime.filter.FilterStream -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
@@ -44,10 +47,5 @@ pyreverse -c pyservicelib_gorundebug.datasink.localsink.custom.TypedCustomEndpoi
  -c pyservicelib_gorundebug.datasink.localsink.custom.CustomDataSink \
  -c pyservicelib_gorundebug.datasink.localsink.custom.CustomSinkEndpoint \
  -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
-
-pyreverse -c pyservicelib_gorundebug.runtime.stub.OutStubBinaryKVStream -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
-pyreverse -c pyservicelib_gorundebug.runtime.stub.OutStubBinaryKVStream -p pyservicelib_gorundebug/ -d ./diagram ./src/pyservicelib_gorundebug
-
-
 
 cd "$original_dir" || { echo "Error: Failed to change directory to '$original_dir'"; exit 1; }
