@@ -1,0 +1,21 @@
+digraph "pyservicelib_gorundebug.runtime.map.MapStream" {
+rankdir=BT
+charset="utf-8"
+"pyservicelib_gorundebug.runtime.common.Consumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Consumer|T : NoneType<br ALIGN="LEFT"/>|<I>consume</I>(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.ServiceStream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>|<I>build</I>()<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.Stream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Stream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.StreamConsumer|T : NoneType<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.StreamFunction" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.StreamFunction|T : NoneType<br ALIGN="LEFT"/>|<I>after_call</I>()<br ALIGN="LEFT"/><I>before_call</I>()<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedStream|T : NoneType<br ALIGN="LEFT"/>consumer<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>serde<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedTransformConsumedStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedTransformConsumedStream|R : NoneType<br ALIGN="LEFT"/>T : NoneType<br ALIGN="LEFT"/>consumer<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.map.MapFunctionContext" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.map.MapFunctionContext|R : NoneType<br ALIGN="LEFT"/>T : NoneType<br ALIGN="LEFT"/>|call(value: T): R<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.map.MapStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.map.MapStream|R : NoneType<br ALIGN="LEFT"/>T : NoneType<br ALIGN="LEFT"/>|consume(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" -> "pyservicelib_gorundebug.runtime.common.Stream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" -> "pyservicelib_gorundebug.runtime.common.Consumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedStream" -> "pyservicelib_gorundebug.runtime.common.ServiceStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedTransformConsumedStream" -> "pyservicelib_gorundebug.runtime.common.StreamConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedTransformConsumedStream" -> "pyservicelib_gorundebug.runtime.common.TypedStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.map.MapFunctionContext" -> "pyservicelib_gorundebug.runtime.common.StreamFunction" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.map.MapStream" -> "pyservicelib_gorundebug.runtime.common.TypedTransformConsumedStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.map.MapFunctionContext" -> "pyservicelib_gorundebug.runtime.map.MapStream" [arrowhead="diamond", arrowtail="none", fontcolor="green", label="_f", style="solid"];
+}

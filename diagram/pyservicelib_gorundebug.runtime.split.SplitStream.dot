@@ -1,0 +1,21 @@
+digraph "pyservicelib_gorundebug.runtime.split.SplitStream" {
+rankdir=BT
+charset="utf-8"
+"pyservicelib_gorundebug.runtime.common.Consumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Consumer|T : NoneType<br ALIGN="LEFT"/>|<I>consume</I>(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.ServiceStream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>|<I>build</I>()<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.Stream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Stream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.StreamConsumer|T : NoneType<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedConsumedStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedConsumedStream|T : NoneType<br ALIGN="LEFT"/>consumer<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedSplitStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedSplitStream|T : NoneType<br ALIGN="LEFT"/>|<I>add_stream</I>(): TypedConsumedStream[T]<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedStream|T : NoneType<br ALIGN="LEFT"/>consumer<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>serde<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.split.SplitStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.split.SplitStream|T : NoneType<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.split.SplitStreamBase" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.split.SplitStreamBase|T : NoneType<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>|add_stream(): TypedConsumedStream[T]<br ALIGN="LEFT"/>build()<br ALIGN="LEFT"/>consume(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" -> "pyservicelib_gorundebug.runtime.common.Stream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" -> "pyservicelib_gorundebug.runtime.common.Consumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedConsumedStream" -> "pyservicelib_gorundebug.runtime.common.StreamConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedConsumedStream" -> "pyservicelib_gorundebug.runtime.common.TypedStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedSplitStream" -> "pyservicelib_gorundebug.runtime.common.TypedConsumedStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedStream" -> "pyservicelib_gorundebug.runtime.common.ServiceStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.split.SplitStream" -> "pyservicelib_gorundebug.runtime.split.SplitStreamBase" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.split.SplitStreamBase" -> "pyservicelib_gorundebug.runtime.common.TypedSplitStream" [arrowhead="empty", arrowtail="none"];
+}

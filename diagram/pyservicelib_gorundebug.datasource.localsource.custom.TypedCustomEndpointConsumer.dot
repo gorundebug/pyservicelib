@@ -1,0 +1,17 @@
+digraph "pyservicelib_gorundebug.datasource.localsource.custom.TypedCustomEndpointConsumer" {
+rankdir=BT
+charset="utf-8"
+"pyservicelib_gorundebug.datasource.localsource.custom.CustomEndpointConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.datasource.localsource.custom.CustomEndpointConsumer|<br ALIGN="LEFT"/>|<I>start</I>(ctx: Context)<br ALIGN="LEFT"/><I>stop</I>(ctx: Context)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.datasource.localsource.custom.TypedCustomEndpointConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.datasource.localsource.custom.TypedCustomEndpointConsumer|T : NoneType<br ALIGN="LEFT"/>|consume(value: T): None<br ALIGN="LEFT"/>start(ctx: Context)<br ALIGN="LEFT"/>stop(ctx: Context)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.Consumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Consumer|T : NoneType<br ALIGN="LEFT"/>|<I>consume</I>(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.Endpoint" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Endpoint|data_connector<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.InputEndpoint" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.InputEndpoint|config<br ALIGN="LEFT"/>datasource<br ALIGN="LEFT"/>endpoint_consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>|<I>add_endpoint_consumer</I>(consumer: InputEndpointConsumer): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.InputEndpointConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.InputEndpointConsumer|endpoint<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer|T : NoneType<br ALIGN="LEFT"/>endpoint<br ALIGN="LEFT"/>reader<br ALIGN="LEFT"/>|consume(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.datasource.localsource.custom.TypedCustomEndpointConsumer" -> "pyservicelib_gorundebug.datasource.localsource.custom.CustomEndpointConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.datasource.localsource.custom.TypedCustomEndpointConsumer" -> "pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.InputEndpoint" -> "pyservicelib_gorundebug.runtime.common.Endpoint" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer" -> "pyservicelib_gorundebug.runtime.common.Consumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer" -> "pyservicelib_gorundebug.runtime.common.InputEndpointConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.InputEndpoint" -> "pyservicelib_gorundebug.runtime.datasource.DataSourceEndpointConsumer" [arrowhead="diamond", arrowtail="none", fontcolor="green", label="_endpoint", style="solid"];
+}

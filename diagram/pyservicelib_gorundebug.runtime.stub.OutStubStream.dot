@@ -1,0 +1,15 @@
+digraph "pyservicelib_gorundebug.runtime.stub.OutStubStream" {
+rankdir=BT
+charset="utf-8"
+"pyservicelib_gorundebug.runtime.common.Consumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Consumer|T : NoneType<br ALIGN="LEFT"/>|<I>consume</I>(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.ServiceStream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>|<I>build</I>()<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.Stream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Stream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.StreamConsumer|T : NoneType<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.TypedStreamConsumer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedStreamConsumer|T : NoneType<br ALIGN="LEFT"/>stream<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.stub.OutStubStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.stub.OutStubStream|T : NoneType<br ALIGN="LEFT"/>|consume(value: T): None<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"pyservicelib_gorundebug.runtime.common.ServiceStream" -> "pyservicelib_gorundebug.runtime.common.Stream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.StreamConsumer" -> "pyservicelib_gorundebug.runtime.common.Consumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedStreamConsumer" -> "pyservicelib_gorundebug.runtime.common.ServiceStream" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.common.TypedStreamConsumer" -> "pyservicelib_gorundebug.runtime.common.StreamConsumer" [arrowhead="empty", arrowtail="none"];
+"pyservicelib_gorundebug.runtime.stub.OutStubStream" -> "pyservicelib_gorundebug.runtime.common.TypedStreamConsumer" [arrowhead="empty", arrowtail="none"];
+}

@@ -11,5 +11,7 @@ openapi-generator-cli generate -g python --skip-validate-spec -i ../servicelib/a
 rm -rf ./src/pyservicelib_gorundebug/api/docs
 rm -rf ./src/pyservicelib_gorundebug/api/test
 
+touch ./src/pyservicelib_gorundebug/api/__init__.py
+touch ./src/pyservicelib_gorundebug/api/models/__init__.py
 
 cd "$original_dir" || { echo "Error: Failed to change directory to '$original_dir'"; exit 1; }
