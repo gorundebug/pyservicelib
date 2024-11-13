@@ -25,6 +25,7 @@ class MockServiceConfig(ServiceAppConfig):
     def load_config(cls, obj: Optional[dict[str, Any]]) -> dict[str, Any]:
         return {}
 
+
 class MockServiceDependency(ServiceDependency):
     async def get_logs_engine(self, env: ServiceEnvironment) -> Optional[LogsEngine]:
         return None
