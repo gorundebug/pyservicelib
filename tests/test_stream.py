@@ -11,10 +11,11 @@ from typing import get_origin, Any, Optional
 from collections.abc import Iterable
 import pytest
 
-from ..pyservicelib.runtime.config import ConfigSettings
-from ..pyservicelib.runtime.serviceapp import ServiceAppLoader
+from pyservicelib_gorundebug.runtime.config import ConfigSettings
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
+from pyservicelib_gorundebug import transformation
+
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
-from ..pyservicelib import transformation
 
 class Value[T]:
     value: Optional[T]

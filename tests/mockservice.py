@@ -6,11 +6,11 @@
 from typing import Any, Optional
 from pydantic import BaseModel
 
-from ..pyservicelib.runtime.environment import ServiceDependency, ServiceEnvironment
-from ..pyservicelib.runtime.environment.log import LogsEngine
-from ..pyservicelib.runtime.environment.metrics import MetricsEngine
-from ..pyservicelib.runtime.serviceapp import ServiceApp
-from ..pyservicelib.runtime.config import ServiceAppConfig
+from pyservicelib_gorundebug.runtime.environment import ServiceDependency, ServiceEnvironment
+from pyservicelib_gorundebug.runtime.environment.log import LogsEngine
+from pyservicelib_gorundebug.runtime.environment.metrics import MetricsEngine
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
+from pyservicelib_gorundebug.runtime.config import ServiceAppConfig
 
 class RequestData(BaseModel):
     param1: Optional[str] = None

@@ -9,12 +9,13 @@ import aiohttp
 import pytest
 from typing import Optional
 
-from ..pyservicelib import transformation
-from ..pyservicelib.datasource.http.aiohttpds import AIOHttpEndpointConsumer
-from ..pyservicelib.runtime import Consume
-from ..pyservicelib.runtime.config import ConfigSettings
-from ..pyservicelib.runtime.context import default_context
-from ..pyservicelib.runtime.serviceapp import ServiceAppLoader
+from pyservicelib_gorundebug import transformation
+from pyservicelib_gorundebug.runtime import Consume
+from pyservicelib_gorundebug.runtime.config import ConfigSettings
+from pyservicelib_gorundebug.runtime.context import default_context
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
+from pyservicelib_gorundebug.datasource.http.aiohttpds import AIOHttpEndpointConsumer
+
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency, RequestData
 
 class MockServiceRequestDataConsumer(Consume[RequestData]):

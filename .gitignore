@@ -1,4 +1,6 @@
-# Python cache files
+# Python cache file
+dist
+*.egg-info
 __pycache__
 *.pyc
 *.pyo

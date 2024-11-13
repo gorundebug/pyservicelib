@@ -8,12 +8,13 @@ import os
 from pathlib import Path
 import pytest
 
-from ..pyservicelib.runtime.serde import Serde
-from ..pyservicelib.runtime.serviceapp import  ServiceAppLoader
-from ..pyservicelib.runtime.context import default_context
-from ..pyservicelib.runtime.config import  ConfigSettings
+from pyservicelib_gorundebug.runtime.serde import Serde
+from pyservicelib_gorundebug.runtime.serviceapp import  ServiceAppLoader
+from pyservicelib_gorundebug.runtime.context import default_context
+from pyservicelib_gorundebug.runtime.config import  ConfigSettings
+from pyservicelib_gorundebug.runtime.serde import IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde
+
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
-from ..pyservicelib.runtime.serde import IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde
 
 @pytest.mark.asyncio
 async def test_serde_type_dict():

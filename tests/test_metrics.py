@@ -5,8 +5,8 @@
 
 import pytest
 
-from ..pyservicelib.runtime.environment.metrics import CounterOpts
-from ..pyservicelib.runtime.telemetry import MetricsEngineFactory, MetricsEngineType
+from pyservicelib_gorundebug.runtime.environment.metrics import CounterOpts
+from pyservicelib_gorundebug.runtime.telemetry import MetricsEngineFactory, MetricsEngineType
 
 @pytest.mark.asyncio
 async def test_metrics():
