@@ -37,6 +37,8 @@ transformation_name_map = {
     TransformationType.MultiJoin: "multiJoin",
     TransformationType.Parallels: "parallels",
     TransformationType.Split: "split",
+    TransformationType.Delay: "delay",
+    TransformationType.AppInput: "appInput",
 }
 
 class ConfigSettings:

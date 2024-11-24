@@ -42,6 +42,7 @@ class TransformationType(int, Enum):
     AppSink = 14
     CycleLink = 15
     Delay = 16
+    AppInput = 17
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

@@ -11,6 +11,7 @@ from ..runtime.flatmap import FlatMapStream as FlatMap
 from ..runtime.flatmapiterable import FlatMapIterableStream as FlatMapIterable
 from ..runtime.foreach import ForEachStream as ForEach
 from ..runtime.input import InputStream as Input
+from ..runtime.appinput import AppInputStream as AppInput
 from ..runtime.join import JoinStream as Join
 from ..runtime.keyby import KeyByStream as KeyBy
 from ..runtime.link import LinkStream as Link
