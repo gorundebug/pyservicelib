@@ -1,9 +1,0 @@
-digraph "pyservicelib_gorundebug.runtime.stub.InStubKVStream" {
-rankdir=BT
-charset="utf-8"
-"pyservicelib_gorundebug.runtime.common.TypedBinaryKVConsumedStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.TypedBinaryKVConsumedStream|K : NoneType<br ALIGN="LEFT"/>V : NoneType<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.serde.serde.StreamKeyValueSerde" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.serde.serde.StreamKeyValueSerde|K : NoneType<br ALIGN="LEFT"/>V : NoneType<br ALIGN="LEFT"/>is_key_value<br ALIGN="LEFT"/>key_serializer<br ALIGN="LEFT"/>value_serializer<br ALIGN="LEFT"/>|deserialize(data: BytesBuffer): KeyValue[K, V]<br ALIGN="LEFT"/>deserialize_key_value(key_data: BytesBuffer, value_data: BytesBuffer): KeyValue[K, V]<br ALIGN="LEFT"/>serialize(obj: KeyValue[K, V]): bytearray<br ALIGN="LEFT"/>serialize_key(obj: KeyValue[K, V]): bytearray<br ALIGN="LEFT"/>serialize_value(obj: KeyValue[K, V]): bytearray<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.stub.InStubKVStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.stub.InStubKVStream|K : NoneType<br ALIGN="LEFT"/>V : NoneType<br ALIGN="LEFT"/>|consume(value: KeyValue[K, V]): None<br ALIGN="LEFT"/>consume_binary(key_data: BytesBuffer, value_data: BytesBuffer)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.stub.InStubKVStream" -> "pyservicelib_gorundebug.runtime.common.TypedBinaryKVConsumedStream" [arrowhead="empty", arrowtail="none"];
-"pyservicelib_gorundebug.runtime.serde.serde.StreamKeyValueSerde" -> "pyservicelib_gorundebug.runtime.stub.InStubKVStream" [arrowhead="odiamond", arrowtail="none", fontcolor="green", label="_kv_serde", style="solid"];
-}

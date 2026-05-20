@@ -1,9 +1,0 @@
-digraph "pyservicelib_gorundebug.runtime.multijoin.MultiJoinLinkStream" {
-rankdir=BT
-charset="utf-8"
-"pyservicelib_gorundebug.runtime.common.Stream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.common.Stream|config<br ALIGN="LEFT"/>consumers<br ALIGN="LEFT"/>environment<br ALIGN="LEFT"/>id<br ALIGN="LEFT"/>name<br ALIGN="LEFT"/>transformation_name<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.multijoin.MultiJoinLinkStream" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.multijoin.MultiJoinLinkStream|<br ALIGN="LEFT"/>|deserialize_value(b: BytesBuffer): Any<br ALIGN="LEFT"/>serialize_value(value: Any): bytearray<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.serde.serde.Serializer" [color="black", fontcolor="black", label=<{pyservicelib_gorundebug.runtime.serde.serde.Serializer|is_stub<br ALIGN="LEFT"/>type_name<br ALIGN="LEFT"/>|<I>deserialize_obj</I>(data: BytesBuffer): Any<br ALIGN="LEFT"/><I>serialize_obj</I>(obj: Any, b: BytesBuffer): bytearray<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
-"pyservicelib_gorundebug.runtime.multijoin.MultiJoinLinkStream" -> "pyservicelib_gorundebug.runtime.common.Stream" [arrowhead="empty", arrowtail="none"];
-"pyservicelib_gorundebug.runtime.serde.serde.Serializer" -> "pyservicelib_gorundebug.runtime.multijoin.MultiJoinLinkStream" [arrowhead="diamond", arrowtail="none", fontcolor="green", label="_serde", style="solid"];
-}
