@@ -6,9 +6,9 @@
 
 from typing import Hashable
 
-from .common import StreamFunction
-from .common import TypedStream, TypedTransformConsumedStream, RuntimeKeyValueHelpers
-from .datastruct import KeyValue
+from ..runtime.common import StreamFunction, TypedStream, TypedTransformConsumedStream, RuntimeKeyValueHelpers
+from ..runtime.config.stream_types import KeyByStreamConfig
+from ..runtime.datastruct import KeyValue
 from .functions import KeyByFunction
 
 
@@ -30,19 +30,10 @@ class KeyByStream[T, K, V](TypedTransformConsumedStream[T, KeyValue[K, V]]):
     _source: TypedStream[T]
     _f: KeyByFunctionContext[T, K, V]
 
-    def __init__(self, name: str, stream: TypedStream[T], fn: KeyByFunction[T, K, V]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"KeyByStream configuration names '{name}' not found")
-        if cfg.key_type is None:
-            raise ValueError(f"The key type of the KeyByStream with name '{name}' is not defined")
-        if cfg.value_type is None:
-            raise ValueError(f"The value type of the KeyByStream with name '{name}' is not defined")
-
+    def __init__(self, cfg: KeyByStreamConfig, stream: TypedStream[T], fn: KeyByFunction[T, K, V]):
         super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeKeyValueHelpers[K, V](stream.environment).
-                         make_key_value_stream_serde(key_type_name=cfg.key_type,
-                                              value_type_name=cfg.value_type))
+                         serde=RuntimeKeyValueHelpers[K, V](stream.environment).make_key_value_stream_serde(
+                             key_type_name=cfg.key_type, value_type_name=cfg.value_type))
         self._source = stream
         self._f = KeyByFunctionContext[T, K, V](self, fn)
         stream.consumer = self

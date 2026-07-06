@@ -9,6 +9,8 @@ from typing import Optional
 from ..config import ServiceAppConfig, ServiceConfig
 from .log import Logger, LogsEngine
 from .metrics import Metrics, MetricsEngine
+from .tracing import Tracing, TracingEngine
+
 
 class ServiceEnvironment(ABC):
 
@@ -34,6 +36,11 @@ class ServiceEnvironment(ABC):
 
     @property
     @abstractmethod
+    def tracing(self) -> Optional[Tracing]:
+        pass
+
+    @property
+    @abstractmethod
     def service_dependency(self) -> Optional["ServiceDependency"]:
         pass
 
@@ -42,10 +49,11 @@ class ServiceDependency(ABC):
 
     @abstractmethod
     async def get_logs_engine(self, env: ServiceEnvironment) -> Optional[LogsEngine]:
-        pass;
+        pass
 
     @abstractmethod
     async def get_metrics_engine(self, env: ServiceEnvironment) -> Optional[MetricsEngine]:
-        pass;
+        pass
 
-
+    async def get_tracing_engine(self, env: ServiceEnvironment) -> Optional[TracingEngine]:
+        return None

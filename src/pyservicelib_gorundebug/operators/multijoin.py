@@ -5,19 +5,39 @@
 #   file for details.
 
 from typing import Hashable, Any, cast
+from datetime import timedelta
 from abc import ABC
 
-
-from ..api.models.join_storage_type import JoinStorageType
-from .common import StreamFunction, Collect, Stream, StreamConsumer
-from .common import TypedStream, TypedMultiJoinConsumedStream, RuntimeHelpers
-from .common import ServiceExecutionEnvironment
-from .config import StreamConfig
-from .datastruct import KeyValue
+from ..runtime.common import (StreamFunction, Collect, Collector, Stream, StreamConsumer,
+                              ServiceExecutionEnvironment, TypedStream, TypedMultiJoinConsumedStream, RuntimeHelpers)
+from ..runtime.config import StreamConfig
+from ..runtime.config.stream_types import MultiJoinStreamConfig
+from ..runtime.datastruct import KeyValue
+from ..runtime.serde import Serializer, BytesBuffer, StreamKeyValueSerde
+from ..runtime.store import JoinStorageFactory, JoinStorage
+from ..runtime.store.storage import JoinStorageConfig
 from .functions import MultiJoinFunction
-from .serde import Serializer, BytesBuffer, StreamKeyValueSerde
-from .store import JoinStorageFactory, JoinStorage
-from .serviceapp import JoinStreamStorageConfig
+
+
+class _MultiJoinStorageConfig(JoinStorageConfig):
+    __slots__ = ('_name', '_ttl', '_renew_ttl')
+
+    def __init__(self, cfg: MultiJoinStreamConfig) -> None:
+        self._name = cfg.name
+        self._ttl = timedelta(milliseconds=cfg.ttl)
+        self._renew_ttl = cfg.renew_ttl
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def ttl(self) -> timedelta:
+        return self._ttl
+
+    @property
+    def renew_ttl(self) -> bool:
+        return self._renew_ttl
 
 
 class MultiJoinFunctionContext[K: Hashable, T, R](StreamFunction[R]):
@@ -33,37 +53,40 @@ class MultiJoinFunctionContext[K: Hashable, T, R](StreamFunction[R]):
         self.after_call()
 
 
-class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R], Collect[R]):
-
+class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
     _source: TypedStream[KeyValue[K, T]]
     _f: MultiJoinFunctionContext[K, T, R]
     _join_storage: JoinStorage[K]
     _links: list["MultiJoinLinkStream"]
+    _collector: Collector[R]
 
-    def __init__(self, name: str, stream: TypedStream[KeyValue[K, T]],
+    def __init__(self, cfg: MultiJoinStreamConfig, stream: TypedStream[KeyValue[K, T]],
                  fn: MultiJoinFunction[K, T, R]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"MultiJoinStream configuration names '{name}' not found")
-        if cfg.value_type is None:
-            raise ValueError(f"The value type of the MultiJoinStream with name '{name}' is not defined")
-
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = MultiJoinFunctionContext[K, T, R](self, fn)
+        self._links = []
+        self._collector = Collector[R](None)
         stream.consumer = self
-        join_storage_type = JoinStorageType.HashMap if cfg.join_storage is None else cfg.join_storage
-        self._join_storage = JoinStorageFactory[K]().make_storage(join_storage_type,
-                                                                  stream.environment,
-                                                                  JoinStreamStorageConfig(self))
+        self._join_storage = JoinStorageFactory[K]().make_storage(
+            cfg.join_storage, stream.environment, _MultiJoinStorageConfig(cfg))
         self.environment.runtime.register_storage(self._join_storage)
 
+    @property
+    def consumer(self):
+        return self._consumer
+
+    @consumer.setter
+    def consumer(self, value):
+        self._consumer = value
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
+        self._collector = Collector(self._caller)
 
     async def _consume(self, key: K, index: int, value: Any):
         async def _join_callback(values: list[list[Any]]):
             if len(values) > 0 and len(values[0]) > 0:
-                await self._f.call(key, values, self)
+                await self._f.call(key, values, self._collector)
 
         await self._join_storage.join_value(key, index, value, _join_callback)
 
@@ -72,10 +95,6 @@ class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R], 
 
     async def consume_right(self, index: int, value: KeyValue[K, Any]) -> None:
         await self._consume(value.key, index, value.value)
-
-    async def out(self, value: R) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
 
     def add_link(self, link: "MultiJoinLinkStream") -> int:
         index = len(self._links) + 1
@@ -140,7 +159,7 @@ class MultiJoinLink[K: Hashable, T1, T2, R](MultiJoinLinkStream, StreamConsumer[
 
     @property
     def stream(self) -> Stream:
-        return self._multi_join_stream.stream
+        return self._multi_join_stream
 
     async def consume(self, value: KeyValue[K, T2]) -> None:
         await self._multi_join_stream.consume_right(self._index, value)

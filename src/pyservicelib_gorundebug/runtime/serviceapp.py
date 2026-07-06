@@ -29,9 +29,10 @@ from .serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from .store import Storage
 from .environment.metrics.metrics import Metrics
 from .environment.log import LogsEngine, Logger
-from .logging import LogsEngineFactory, LogsEngineType
+from .environment.tracing import Tracing, TracingEngine
+from .logging import create_asynclog_engine
 from .store import JoinStorageConfig
-from .telemetry import MetricsEngineFactory, MetricsEngineType
+from .telemetry import create_prometheus_metrics_engine
 
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
@@ -48,6 +49,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _loader: ServiceLoader
     _logs_engine: LogsEngine
     _metrics_engine: MetricsEngine
+    _tracing_engine: Optional[TracingEngine]
     _log: Logger
     _id: int
     _delay_pool: DelayPool
@@ -66,6 +68,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._tasks = set()
         self._storages = []
         self._consume_statistics = {}
+        self._tracing_engine = None
 
     def reload_config(self, cfg: Config) -> None:
         pass
@@ -81,22 +84,27 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         logs_engine: Optional[LogsEngine] = None
         metrics_engine: Optional[MetricsEngine] = None
 
+        tracing_engine: Optional[TracingEngine] = None
+
         dep = self.service_dependency
         if dep is not None:
             logs_engine = await dep.get_logs_engine(self)
             metrics_engine = await dep.get_metrics_engine(self)
+            tracing_engine = await dep.get_tracing_engine(self)
 
         if logs_engine is None:
-            self._logs_engine = await LogsEngineFactory.create_logs_engine(LogsEngineType.ASYNCLOG)
+            self._logs_engine = await create_asynclog_engine()
         else:
             self._logs_engine = logs_engine
 
         if metrics_engine is None:
-            self._metrics_engine = await MetricsEngineFactory.create_metrics_engine(MetricsEngineType.PROMETHEUS)
+            self._metrics_engine = create_prometheus_metrics_engine()
         else:
             self._metrics_engine = metrics_engine
 
-        self._log = await self._logs_engine.default_logger()
+        self._tracing_engine = tracing_engine
+
+        self._log = self._logs_engine.default_logger()
         self._delay_pool = make_delay_pool(self)
 
         for link in self._config.links:
@@ -137,7 +145,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                             self._priority_task_pools[pool_name] = make_priority_task_pool(pool_name, self)
 
     async def release(self) -> None:
-        await self._logs_engine.release()
+        await self._logs_engine.shutdown()
 
     @property
     def service_dependency(self) -> Optional[ServiceDependency]:
@@ -281,7 +289,13 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     @property
     def metrics(self) -> Metrics:
-        return self._metrics
+        return self._metrics_engine.metrics
+
+    @property
+    def tracing(self) -> Optional[Tracing]:
+        if self._tracing_engine is None:
+            return None
+        return self._tracing_engine.tracing
 
     def set_config(self, cfg: Config) -> None:
         pass

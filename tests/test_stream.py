@@ -117,7 +117,9 @@ async def test_input_stream():
     os.chdir(Path(__file__).parent)
 
     service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService", MockServiceDependency(), ConfigSettings())
-    stream = transformation.Input[int]("Input", service)
+    cfg = service.config.get_input_stream_config("Input")
+    assert cfg is not None
+    stream = transformation.Input[int](cfg, service)
     assert stream.type_name == "int"
 
 @pytest.mark.benchmark(group="slots")

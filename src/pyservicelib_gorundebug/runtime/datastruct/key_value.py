@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 from collections.abc import Hashable
 
-@dataclass
+@dataclass(slots=True)
 class KeyValue[K: Hashable, V]:
     key: K
     value: V

@@ -22,7 +22,9 @@ class Context:
         return time.perf_counter() >= self.__deadline
 
     @property
-    def time_left(self) -> float:
+    def time_left(self) -> Optional[float]:
+        if self.__deadline == float('inf'):
+            return None
         return max(0.0, self.__deadline - time.perf_counter())
 
 def default_context() -> Context:

@@ -4,34 +4,46 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from ..runtime.appsink import AppSinkStream as AppSink
-from ..runtime.map import MapStream as Map
-from ..runtime.filter import FilterStream as Filter
-from ..runtime.flatmap import FlatMapStream as FlatMap
-from ..runtime.flatmapiterable import FlatMapIterableStream as FlatMapIterable
-from ..runtime.foreach import ForEachStream as ForEach
-from ..runtime.input import InputStream as Input
-from ..runtime.appinput import AppInputStream as AppInput
-from ..runtime.join import JoinStream as Join
-from ..runtime.keyby import KeyByStream as KeyBy
-from ..runtime.link import LinkStream as Link
-from ..runtime.merge import MergeStream as Merge
-from ..runtime.multijoin import MultiJoinStream as MultiJoin
-from ..runtime.multijoin import MultiJoinLinkStream as MultiJoinLink
-from ..runtime.parallels import ParallelsStream as Parallels
-from ..runtime.delay import DelayStream as Delay
-from ..runtime.sink import SinkStream as Sink
-from ..runtime.split import SplitStream as Split
-from ..runtime.split import TypedBinarySplitStream as SplitInStub
-from ..runtime.split import TypedBinaryKVSplitStream as SplitInStubKV
-from ..runtime.stub import InStubStream as InStub
-from ..runtime.stub import InStubKVStream as InStubKV
-from ..runtime.stub import OutStubStream as OutStub
-from ..runtime.stub import OutStubBinaryStream as OutStubBinary
-from ..runtime.stub import OutStubBinaryKVStream as OutStubBinaryKV
-
-
-
-
-
-
+from ..operators.map import MapStream as Map
+from ..operators.filter import FilterStream as Filter
+from ..operators.flatmap import FlatMapStream as FlatMap
+from ..operators.flatmapiterable import FlatMapIterableStream as FlatMapIterable
+from ..operators.input import InputStream as Input
+from ..operators.join import JoinStream as Join, JoinLink
+from ..operators.keyby import KeyByStream as KeyBy
+from ..operators.link import LinkStream as Link
+from ..operators.merge import MergeStream as Merge
+from ..operators.multijoin import MultiJoinStream as MultiJoin, MultiJoinLink, MultiJoinLinkStream
+from ..operators.process import ProcessStream as Process
+from ..operators.delay import DelayStream as Delay
+from ..operators.sink import SinkStream as Sink
+from ..operators.split import SplitStream as Split, TypedBinarySplitStream as SplitBinary
+from ..operators.split import TypedBinaryKVSplitStream as SplitBinaryKV
+from ..operators.functions import (
+    MapFunction,
+    FilterFunction,
+    FlatMapFunction,
+    JoinFunction,
+    MultiJoinFunction,
+    KeyByFunction,
+    ProcessFunction,
+    DelayFunction,
+)
+from ..runtime.config.stream_types import (
+    InputStreamConfig,
+    MapStreamConfig,
+    FilterStreamConfig,
+    FlatMapStreamConfig,
+    FlatMapIterableStreamConfig,
+    JoinStreamConfig,
+    MultiJoinStreamConfig,
+    ProcessStreamConfig,
+    KeyByStreamConfig,
+    MergeStreamConfig,
+    SplitStreamConfig,
+    DelayStreamConfig,
+    SinkStreamConfig,
+    CycleLinkStreamConfig,
+    CaseStreamConfig,
+    WhenStreamConfig,
+)

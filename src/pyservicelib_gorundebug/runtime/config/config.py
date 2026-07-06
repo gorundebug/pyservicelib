@@ -7,6 +7,11 @@ from typing import Any, Union, Self, cast, Optional, ClassVar
 from pydantic import Field, ConfigDict, StrictStr
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+import re
+
+def _to_camel_case(snake: str) -> str:
+    parts = snake.split('_')
+    return parts[0] + ''.join(p.capitalize() for p in parts[1:])
 
 from ...api.models.data_type import DataType
 from ...api.models.transformation_type import TransformationType
@@ -22,30 +27,48 @@ from ...api.models.stream_app import StreamApp
 
 
 transformation_name_map = {
-    TransformationType.AppSink: "appSink",
     TransformationType.CycleLink: "cycleLink",
     TransformationType.Sink: "sink",
     TransformationType.Filter: "filter",
     TransformationType.FlatMap: "flatMap",
     TransformationType.FlatMapIterable: "flatMapIterable",
-    TransformationType.ForEach: "forEach",
+    TransformationType.Process: "process",
     TransformationType.Input: "input",
     TransformationType.Join: "join",
     TransformationType.KeyBy: "keyBy",
     TransformationType.Map: "map",
     TransformationType.Merge: "merge",
     TransformationType.MultiJoin: "multiJoin",
-    TransformationType.Parallels: "parallels",
     TransformationType.Split: "split",
     TransformationType.Delay: "delay",
-    TransformationType.AppInput: "appInput",
+    TransformationType.Error: "error",
+    TransformationType.Case: "case",
+    TransformationType.When: "when",
 }
 
 class ConfigSettings:
     pass
 
+def _properties_getattr(obj: Any, item: str) -> Any:
+    try:
+        props = object.__getattribute__(obj, 'properties')
+    except AttributeError:
+        raise AttributeError(f'{type(obj).__name__!r} object has no attribute {item!r}')
+    if props is not None:
+        if item in props:
+            return props[item]
+        camel = _to_camel_case(item)
+        if camel in props:
+            return props[camel]
+    raise AttributeError(f'{type(obj).__name__!r} object has no attribute {item!r}')
+
+
 class StreamConfig(Stream):
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -67,11 +90,16 @@ class StreamConfig(Stream):
                 self.type == TransformationType.FlatMap or
                 self.type == TransformationType.FlatMapIterable or
                 self.type == TransformationType.KeyBy or
-                self.type == TransformationType.Parallels)
+                self.type == TransformationType.When)
 
 
 class DataConnectorConfig(DataConnector):
+    implementation: Optional[StrictStr] = Field(default=None)
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -82,6 +110,28 @@ class DataConnectorConfig(DataConnector):
 
 class EndpointConfig(Endpoint):
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        if item not in ('method', 'format'):
+            return _properties_getattr(self, item)
+        raise AttributeError(f'{type(self).__name__!r} object has no attribute {item!r}')
+
+    @property
+    def method(self) -> Optional[str]:
+        if self.properties:
+            m = self.properties.get('method')
+            if m:
+                return m
+        if self.http_method_type:
+            return str(self.http_method_type.value)
+        return None
+
+    @property
+    def format(self) -> Optional[str]:
+        if self.properties:
+            return self.properties.get('format')
+        return None
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -93,6 +143,10 @@ class EndpointConfig(Endpoint):
 
 class PoolConfig(Pool):
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -104,45 +158,45 @@ class PoolConfig(Pool):
 
 class TypeConfig(Type):
     primitive_types: ClassVar[set[str]] = {
-        cast(str, DataType.INT),
-        cast(str, DataType.UINT),
-        cast(str, DataType.BYTE),
-        cast(str, DataType.CHAR),
-        cast(str, DataType.BOOLEAN),
-        cast(str, DataType.UNICODE_CHAR),
-        cast(str, DataType.STRING),
-        cast(str, DataType.UNICODE_STRING),
-        cast(str, DataType.FLOAT),
-        cast(str, DataType.DOUBLE),
-        cast(str, DataType.INT8),
-        cast(str, DataType.INT16),
-        cast(str, DataType.INT32),
-        cast(str, DataType.INT64),
-        cast(str, DataType.UINT8),
-        cast(str, DataType.UINT16),
-        cast(str, DataType.UINT32),
-        cast(str, DataType.UINT64)
+        cast(str, DataType.int),
+        cast(str, DataType.uint),
+        cast(str, DataType.byte),
+        cast(str, DataType.char),
+        cast(str, DataType.boolean),
+        cast(str, DataType.unicodeChar),
+        cast(str, DataType.string),
+        cast(str, DataType.unicodeString),
+        cast(str, DataType.float),
+        cast(str, DataType.double),
+        cast(str, DataType.int8),
+        cast(str, DataType.int16),
+        cast(str, DataType.int32),
+        cast(str, DataType.int64),
+        cast(str, DataType.uint8),
+        cast(str, DataType.uint16),
+        cast(str, DataType.uint32),
+        cast(str, DataType.uint64),
     }
 
     serde_type_map: ClassVar[dict[str, str]] = {
-        cast(str, DataType.INT): 'int',
-        cast(str, DataType.UINT): 'uint',
-        cast(str, DataType.BYTE): 'int8',
-        cast(str, DataType.CHAR): 'int32',
-        cast(str, DataType.BOOLEAN): 'bool',
-        cast(str, DataType.UNICODE_CHAR): 'str',
-        cast(str, DataType.STRING): 'str',
-        cast(str, DataType.UNICODE_STRING): 'str',
-        cast(str, DataType.FLOAT): 'float32,',
-        cast(str, DataType.DOUBLE): 'float64',
-        cast(str, DataType.INT8): 'int8',
-        cast(str, DataType.INT16): 'int16',
-        cast(str, DataType.INT32): 'int32',
-        cast(str, DataType.INT64): 'int64',
-        cast(str, DataType.UINT8): 'uint8',
-        cast(str, DataType.UINT16): 'uint16',
-        cast(str, DataType.UINT32): 'uint32',
-        cast(str, DataType.UINT64): 'uint64'
+        cast(str, DataType.int): 'int',
+        cast(str, DataType.uint): 'uint',
+        cast(str, DataType.byte): 'int8',
+        cast(str, DataType.char): 'rune',
+        cast(str, DataType.boolean): 'bool',
+        cast(str, DataType.unicodeChar): 'str',
+        cast(str, DataType.string): 'str',
+        cast(str, DataType.unicodeString): 'str',
+        cast(str, DataType.float): 'float32',
+        cast(str, DataType.double): 'float64',
+        cast(str, DataType.int8): 'int8',
+        cast(str, DataType.int16): 'int16',
+        cast(str, DataType.int32): 'int32',
+        cast(str, DataType.int64): 'int64',
+        cast(str, DataType.uint8): 'uint8',
+        cast(str, DataType.uint16): 'uint16',
+        cast(str, DataType.uint32): 'uint32',
+        cast(str, DataType.uint64): 'uint64',
     }
 
     properties: dict[str, Any] = Field(default=None, exclude=True)
@@ -172,15 +226,19 @@ class TypeConfig(Type):
 
     @property
     def is_array(self) -> bool:
-        return self.type == DataType.ARRAY
+        return self.type == DataType.array
 
     @property
     def is_dict(self) -> bool:
-        return self.type == DataType.MAP
+        return self.type == DataType.map
 
 
 class ServiceConfig(Service):
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -192,6 +250,10 @@ class ServiceConfig(Service):
 
 class LinkConfig(Link):
     properties: dict[str, Any] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -233,7 +295,7 @@ def replace_placeholders(config: dict[str, Any], values: dict[str, Any]) -> dict
         raise ValueError("The result must be a dictionary.")
     return result
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LinkId:
     from_id: int
     to_id: int
@@ -374,6 +436,86 @@ class ServiceAppConfig(StreamApp, Config):
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
         link_id = LinkId(from_id=from_id, to_id=to_id)
         return self.runtime_config.links_by_id.get(link_id)
+
+    def get_input_stream_config(self, name: str):
+        from .stream_types import InputStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return InputStreamConfig(cfg) if cfg is not None else None
+
+    def get_map_stream_config(self, name: str):
+        from .stream_types import MapStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return MapStreamConfig(cfg) if cfg is not None else None
+
+    def get_filter_stream_config(self, name: str):
+        from .stream_types import FilterStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return FilterStreamConfig(cfg) if cfg is not None else None
+
+    def get_flatmap_stream_config(self, name: str):
+        from .stream_types import FlatMapStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return FlatMapStreamConfig(cfg) if cfg is not None else None
+
+    def get_flatmap_iterable_stream_config(self, name: str):
+        from .stream_types import FlatMapIterableStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return FlatMapIterableStreamConfig(cfg) if cfg is not None else None
+
+    def get_join_stream_config(self, name: str):
+        from .stream_types import JoinStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return JoinStreamConfig(cfg) if cfg is not None else None
+
+    def get_multi_join_stream_config(self, name: str):
+        from .stream_types import MultiJoinStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return MultiJoinStreamConfig(cfg) if cfg is not None else None
+
+    def get_process_stream_config(self, name: str):
+        from .stream_types import ProcessStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return ProcessStreamConfig(cfg) if cfg is not None else None
+
+    def get_key_by_stream_config(self, name: str):
+        from .stream_types import KeyByStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return KeyByStreamConfig(cfg) if cfg is not None else None
+
+    def get_merge_stream_config(self, name: str):
+        from .stream_types import MergeStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return MergeStreamConfig(cfg) if cfg is not None else None
+
+    def get_split_stream_config(self, name: str):
+        from .stream_types import SplitStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return SplitStreamConfig(cfg) if cfg is not None else None
+
+    def get_delay_stream_config(self, name: str):
+        from .stream_types import DelayStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return DelayStreamConfig(cfg) if cfg is not None else None
+
+    def get_sink_stream_config(self, name: str):
+        from .stream_types import SinkStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return SinkStreamConfig(cfg) if cfg is not None else None
+
+    def get_cycle_link_stream_config(self, name: str):
+        from .stream_types import CycleLinkStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return CycleLinkStreamConfig(cfg) if cfg is not None else None
+
+    def get_case_stream_config(self, name: str):
+        from .stream_types import CaseStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return CaseStreamConfig(cfg) if cfg is not None else None
+
+    def get_when_stream_config(self, name: str):
+        from .stream_types import WhenStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return WhenStreamConfig(cfg) if cfg is not None else None
 
     @property
     def config(self) -> "ServiceAppConfig":

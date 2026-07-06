@@ -3,21 +3,53 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from enum import Enum
-
 from ..environment.metrics import MetricsEngine
-from .prometheus.prometheus import PrometheusMetricsEngine
+from ..environment.tracing import TracingEngine
+from ..environment.log import LogsEngine
+from .opentelemetry import opentelemetrytracing as _tracing
+from .opentelemetry import opentelemetrylogging as _logging
+from .opentelemetry.opentelemetry import PrometheusMetricsEngine, OTLPMetricsEngine
 
 
-class MetricsEngineType(str, Enum):
+def create_prometheus_metrics_engine() -> MetricsEngine:
+    """Metrics via Prometheus exporter (OTel Prometheus bridge)."""
+    return PrometheusMetricsEngine()
 
-    PROMETHEUS = 'PROMETHEUS'
+
+def create_otlp_metrics_engine(endpoint: str = 'localhost:4317',
+                                insecure: bool = True) -> MetricsEngine:
+    """Metrics exported via OTLP gRPC."""
+    return OTLPMetricsEngine(endpoint=endpoint, insecure=insecure)
 
 
-class MetricsEngineFactory:
+def create_stdout_tracing_engine(service_name: str,
+                                  context_sampler: bool = False) -> TracingEngine:
+    """Tracing: spans printed to stdout as JSON."""
+    return _tracing.create_stdout_tracing_engine(service_name, context_sampler=context_sampler)
 
-    @classmethod
-    async def create_metrics_engine(cls, engine_type: MetricsEngineType) -> MetricsEngine:
-        if engine_type == MetricsEngineType.PROMETHEUS:
-            return await PrometheusMetricsEngine.engine()
-        raise ValueError(f"Unsupported metrics engine type {engine_type}")
+
+def create_otlp_tracing_engine(service_name: str,
+                                endpoint: str = 'localhost:4317',
+                                insecure: bool = True,
+                                context_sampler: bool = False) -> TracingEngine:
+    """Tracing: spans exported via OTLP gRPC."""
+    return _tracing.create_otlp_tracing_engine(service_name, endpoint=endpoint, insecure=insecure,
+                                               context_sampler=context_sampler)
+
+
+def create_pretty_tracing_engine(service_name: str,
+                                  context_sampler: bool = False) -> TracingEngine:
+    """Tracing: human-readable single-line span output for local debugging."""
+    return _tracing.create_pretty_tracing_engine(service_name, context_sampler=context_sampler)
+
+
+def create_stdout_logs_engine(service_name: str) -> LogsEngine:
+    """Logging: structured records written to stdout via OTel."""
+    return _logging.create_stdout_logs_engine(service_name)
+
+
+def create_otlp_logs_engine(service_name: str,
+                             endpoint: str = 'localhost:4317',
+                             insecure: bool = True) -> LogsEngine:
+    """Logging: structured records exported via OTLP gRPC."""
+    return _logging.create_otlp_logs_engine(service_name, endpoint=endpoint, insecure=insecure)

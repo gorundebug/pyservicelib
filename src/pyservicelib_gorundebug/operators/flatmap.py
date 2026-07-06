@@ -4,8 +4,8 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from .common import StreamFunction, Collect, Collector
-from .common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from ..runtime.common import StreamFunction, Collect, Collector, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from ..runtime.config.stream_types import FlatMapStreamConfig
 from .functions import FlatMapFunction
 
 
@@ -25,22 +25,25 @@ class FlatMapFunctionContext[T, R](StreamFunction[R]):
 class FlatMapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
     _f: FlatMapFunctionContext[T, R]
+    _collector: Collector[R]
 
-    def __init__(self, name: str, stream: TypedStream[T], fn: FlatMapFunction[T, R]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"FlatMapStream configuration names '{name}' not found")
-        if cfg.value_type is None:
-            raise ValueError(f"The value type of the FlatMapStream with name '{name}' is not defined")
-
+    def __init__(self, cfg: FlatMapStreamConfig, stream: TypedStream[T], fn: FlatMapFunction[T, R]):
         super().__init__(stream_id=cfg.id, env=stream.environment,
                          serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = FlatMapFunctionContext[T, R](self, fn)
+        self._collector = Collector[R](None)
         stream.consumer = self
 
+    @property
+    def consumer(self):
+        return self._consumer
+
+    @consumer.setter
+    def consumer(self, value):
+        self._consumer = value
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
+        self._collector = Collector(self._caller)
+
     async def consume(self, value: T) -> None:
-        if self._caller is not None:
-           await self._f.call(value, Collector[R](self._caller))
-
-
+        await self._f.call(value, self._collector)

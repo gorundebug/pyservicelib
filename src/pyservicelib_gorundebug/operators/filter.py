@@ -4,8 +4,8 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from .common import StreamFunction
-from .common import TypedStream, TypedConsumedStream
+from ..runtime.common import StreamFunction, TypedStream, TypedConsumedStream
+from ..runtime.config.stream_types import FilterStreamConfig
 from .functions import FilterFunction
 
 
@@ -27,11 +27,7 @@ class FilterStream[T](TypedConsumedStream[T]):
     _source: TypedStream[T]
     _f: FilterFunctionContext[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], fn: FilterFunction[T]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"FilterStream configuration names '{name}' not found")
-
+    def __init__(self, cfg: FilterStreamConfig, stream: TypedStream[T], fn: FilterFunction[T]):
         super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._source = stream
         self._f = FilterFunctionContext[T](self, fn)

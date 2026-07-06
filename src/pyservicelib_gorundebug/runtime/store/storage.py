@@ -10,6 +10,17 @@ from datetime import timedelta
 
 from ..context import Context
 
+
+class StoreAlreadyStartedError(RuntimeError):
+    def __init__(self):
+        super().__init__("store already started")
+
+
+class StoreStoppedError(RuntimeError):
+    def __init__(self):
+        super().__init__("store stopped")
+
+
 class Storage(ABC):
 
     @abstractmethod

@@ -5,7 +5,7 @@
 
 from typing import Hashable
 
-from ..environment import ServiceEnvironment
+from ..common import ServiceEnvironment
 from ...api.models.join_storage_type import JoinStorageType
 from .storage import JoinStorageConfig, JoinStorage
 from .hashmap import make_hashmap_storage

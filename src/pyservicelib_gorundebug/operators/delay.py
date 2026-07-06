@@ -6,8 +6,8 @@
 
 from datetime import timedelta
 
-from .common import StreamFunction
-from .common import TypedStream, TypedConsumedStream
+from ..runtime.common import StreamFunction, TypedStream, TypedConsumedStream
+from ..runtime.config.stream_types import DelayStreamConfig
 from .functions import DelayFunction
 
 
@@ -29,11 +29,7 @@ class DelayStream[T](TypedConsumedStream[T]):
     _source: TypedStream[T]
     _f: DelayFunctionContext[T]
 
-    def __init__(self, name: str, stream: TypedStream[T], fn: DelayFunction[T]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"DelayStream configuration names '{name}' not found")
-
+    def __init__(self, cfg: DelayStreamConfig, stream: TypedStream[T], fn: DelayFunction[T]):
         super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._source = stream
         self._f = DelayFunctionContext[T](self, fn)

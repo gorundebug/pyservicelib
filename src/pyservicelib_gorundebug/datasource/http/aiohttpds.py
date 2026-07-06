@@ -109,9 +109,10 @@ class AIOHttpDataSource(InputDataSource):
     def __init__(self, connector_id: int, env: ServiceExecutionEnvironment):
         super().__init__(connector_id=connector_id, env=env)
 
+        native = getattr(env.log, 'native_logger', None)
         self._app = web.Application(
-            logger=cast(logging.Logger, env.log.native_logger) if isinstance(env.log.native_logger,
-                                                                             logging.Logger) else aiohttp.log.web_logger)
+            logger=cast(logging.Logger, native) if isinstance(native, logging.Logger)
+            else aiohttp.log.web_logger)
         self._runner = None
         self._site = None
 

@@ -1,18 +1,20 @@
 #  Copyright (c) 2024 Sergey Alexeev
 #  Email: sergeyalexeev@yahoo.com
 #
-#   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
+#   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
+#   file for details.
 
-from .common import TypedStream, TypedConsumedStream, StreamConsumer, Stream, ServiceExecutionEnvironment
-from .config import StreamConfig
+from ..runtime.common import TypedStream, TypedConsumedStream, StreamConsumer, Stream, ServiceExecutionEnvironment
+from ..runtime.config import StreamConfig
+from ..runtime.config.stream_types import MergeStreamConfig
+
 
 class MergeLink[T](Stream, StreamConsumer[T]):
     _merge_stream: "MergeStream[T]"
     _source: TypedStream[T]
     _index: int
 
-    def __init__(self, merge_stream: "MergeStream[T]", index: int,
-                 stream: TypedStream[T]):
+    def __init__(self, merge_stream: "MergeStream[T]", index: int, stream: TypedStream[T]):
         self._merge_stream = merge_stream
         self._source = stream
         self._index = index
@@ -57,20 +59,12 @@ class MergeLink[T](Stream, StreamConsumer[T]):
 class MergeStream[T](TypedConsumedStream[T]):
     _links: list[MergeLink[T]]
 
-    def __init__(self, name: str, stream: TypedStream[T], *streams: TypedStream[T]):
-        cfg = stream.environment.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"MergeStream configuration names '{name}' not found")
-
+    def __init__(self, cfg: MergeStreamConfig, stream: TypedStream[T], *streams: TypedStream[T]):
         super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._links = [MergeLink(self, 0, stream)]
-
         for i, s in enumerate(streams):
-            self._links.append(MergeLink(self, i+1, stream))
-
+            self._links.append(MergeLink(self, i + 1, s))
 
     async def consume(self, value: T) -> None:
         if self._consumer is not None:
             await self._consumer.consume(value)
-
-

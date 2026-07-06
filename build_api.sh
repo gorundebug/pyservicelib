@@ -6,7 +6,7 @@ cd "$path" || { echo "Error: Failed to change directory to script location"; exi
 
 rm -rf ./src/pyservicelib_gorundebug/api/models
 
-openapi-generator-cli generate -g python --skip-validate-spec -i ../servicelib/api/serviceapi.yaml --additional-properties packageName=. --global-property models -o ./src/pyservicelib_gorundebug/api
+openapi-generator generate -g python --skip-validate-spec -i ../servicelib/api/serviceapi.yaml --additional-properties packageName=. --global-property models -o ./src/pyservicelib_gorundebug/api
 
 rm -rf ./src/pyservicelib_gorundebug/api/docs
 rm -rf ./src/pyservicelib_gorundebug/api/test

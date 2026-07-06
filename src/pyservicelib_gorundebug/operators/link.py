@@ -1,26 +1,21 @@
 #  Copyright (c) 2024 Sergey Alexeev
 #  Email: sergeyalexeev@yahoo.com
 #
-#   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
+#   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
+#   file for details.
 
 from typing import Optional
 
-from .common import ServiceExecutionEnvironment, TypedLinkStream, TypedStream, StreamConsumer, Stream
+from ..runtime.common import ServiceExecutionEnvironment, TypedLinkStream, TypedStream, StreamConsumer
+from ..runtime.config.stream_types import CycleLinkStreamConfig
 
 
 class LinkStream[T](TypedLinkStream[T]):
-
     _source: Optional[TypedStream[T]]
     _consumer: Optional[StreamConsumer[T]]
 
-    def __init__(self, name: str, env: ServiceExecutionEnvironment):
-        cfg = env.config.get_stream_config_by_name(name)
-        if cfg is None:
-            raise ValueError(f"LinkStream configuration names '{name}' not found")
-
-        super().__init__(stream_id=cfg.id,
-                         env=env)
-
+    def __init__(self, cfg: CycleLinkStreamConfig, env: ServiceExecutionEnvironment):
+        super().__init__(stream_id=cfg.id, env=env)
         self._source = None
         self._consumer = None
 
@@ -40,4 +35,3 @@ class LinkStream[T](TypedLinkStream[T]):
         self._source = stream
         self._serde = stream.serde
         stream.consumer = self
-

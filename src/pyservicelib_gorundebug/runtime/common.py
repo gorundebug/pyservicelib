@@ -845,9 +845,9 @@ class StreamFunction[T]:
 
 
 class Collector[T](Collect[T]):
-    _caller: Caller[T]
+    _caller: Optional[Caller[T]]
 
-    def __init__(self, caller: Caller[T]):
+    def __init__(self, caller: Optional[Caller[T]]):
         self._caller = caller
 
     async def out(self, value: T):

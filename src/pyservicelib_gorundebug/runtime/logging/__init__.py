@@ -3,4 +3,5 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from .logging import LogsEngineType, LogsEngineFactory
+from .logging import create_asynclog_engine
+from .asynclog.asynclog import AsyncLogsEngine, AsyncLogger
