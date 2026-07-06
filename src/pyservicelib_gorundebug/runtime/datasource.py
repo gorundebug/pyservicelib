@@ -7,7 +7,7 @@ from abc import ABC
 from typing import Optional, Iterable, cast, Any
 
 from .common import ServiceExecutionEnvironment, Consumer, TypedInputStream
-from .common import DataSource, InputEndpoint, DataConnector, TypedEndpointReader
+from .common import DataSource, InputEndpoint, DataConnector
 from .common import InputEndpointConsumer, StreamContext, CollectFunc, ErrorStream
 from .config import DataConnectorConfig, EndpointConfig
 
@@ -91,25 +91,13 @@ class DataSourceEndpoint(InputEndpoint):
         return self._datasource
 
 
-class DataSourceEndpointConsumer[T, R=Any, E=Any](Consumer[T], InputEndpointConsumer):
+class DataSourceEndpointConsumer[T, R, E](Consumer[T], InputEndpointConsumer):
     _input_stream: TypedInputStream[T, R, E]
     _endpoint: InputEndpoint
-    _reader: Optional[TypedEndpointReader[T]]
 
     def __init__(self, endpoint: InputEndpoint, input_stream: TypedInputStream[T, R, E]):
         self._endpoint = endpoint
         self._input_stream = input_stream
-        value_type = input_stream.config.value_type
-        if value_type is None:
-            raise ValueError(f"Value type can not be none for input stream '{input_stream.name}'")
-        reader = input_stream.environment.get_endpoint_reader(self.endpoint,
-                                                              self._input_stream, value_type)
-        if reader is not None:
-            if not isinstance(reader, TypedEndpointReader) or reader.type_name != value_type:
-                raise ValueError(f"Invalid endpoint reader type in DataSourceEndpointConsumer")
-            self._reader = cast(TypedEndpointReader[T], reader)
-        else:
-            self._reader = None
 
     async def consume(self, value: T) -> None:
         await self._input_stream.consume(value)
@@ -121,8 +109,4 @@ class DataSourceEndpointConsumer[T, R=Any, E=Any](Consumer[T], InputEndpointCons
     @property
     def endpoint(self) -> InputEndpoint:
         return self._endpoint
-
-    @property
-    def reader(self) -> Optional[TypedEndpointReader[T]]:
-        return self._reader
 

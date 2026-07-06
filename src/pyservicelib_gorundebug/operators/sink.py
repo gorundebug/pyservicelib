@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Optional, Any
+from typing import Optional
 
 from ..runtime.common import (
     TypedSinkStream, TypedSinkStreamWithResult, TypedConsumedStream, TypedStream,
@@ -14,7 +14,7 @@ from ..runtime.config.stream_types import SinkStreamConfig
 from ..runtime.serde.serde import StreamSerde, StubSerde
 
 
-class SinkStream[T, E=Any](TypedSinkStream[T, E]):
+class SinkStream[T, E](TypedSinkStream[T, E]):
     _source: TypedStream[T]
     _sink_consumer: Optional[Consumer[T]]
     _error_stream: ErrorStream[E]
@@ -48,7 +48,7 @@ class SinkStream[T, E=Any](TypedSinkStream[T, E]):
         return self._endpoint_id
 
 
-class SinkStreamWithResult[T, R, E=Any](TypedSinkStreamWithResult[T, R, E]):
+class SinkStreamWithResult[T, R, E](TypedSinkStreamWithResult[T, R, E]):
     _source: TypedStream[T]
     _sink_consumer: Optional[Consumer[T]]
     _error_stream: ErrorStream[E]

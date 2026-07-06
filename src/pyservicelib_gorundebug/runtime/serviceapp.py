@@ -19,7 +19,7 @@ from .config import Config, ServiceConfig, ServiceAppConfig, LinkId
 from .config import TypeConfig, ConfigSettings, replace_placeholders
 from .context import Context
 from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
-from .common import Endpoint, ServiceStream, EndpointWriter, EndpointReader, Stream
+from .common import Endpoint, ServiceStream, Stream
 from .common import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from .environment.metrics import MetricsEngine
 from .pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool, make_task_pool, \
@@ -280,12 +280,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     def get_datasink(self, id_connector: int) -> Optional[DataSink]:
         return self._dataSinks.get(id_connector)
-
-    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointReader]:
-        return None
-
-    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointWriter]:
-        return None
 
     @property
     def metrics(self) -> Metrics:

@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Any, Optional
+from typing import Optional
 
 from ..runtime.common import (
     ServiceExecutionEnvironment, TypedInputStream, TypedConsumedStream, TypedStream,
@@ -29,7 +29,7 @@ class _ResultLink[T, R, E](StreamConsumer[R]):
         return self._input_stream
 
 
-class InputStream[T, R=Any, E=Any](TypedInputStream[T, R, E]):
+class InputStream[T, R, E](TypedInputStream[T, R, E]):
     _id_endpoint: int
     _error_stream: ErrorStream[E]
     _result_consumer: Optional[Consumer[R]]
@@ -92,7 +92,7 @@ class _ResultLinkKV[K, V, R, E](StreamConsumer[R]):
         return self._input_stream
 
 
-class InputKVStream[K, V, R=Any, E=Any](TypedInputStream[KeyValue[K, V], R, E]):
+class InputKVStream[K, V, R, E](TypedInputStream[KeyValue[K, V], R, E]):
     _id_endpoint: int
     _error_stream: ErrorStream[E]
     _result_consumer: Optional[Consumer[R]]

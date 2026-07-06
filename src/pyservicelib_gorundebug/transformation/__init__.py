@@ -18,8 +18,7 @@ from ..operators.process import ProcessStream as Process
 from ..operators.delay import DelayStream as Delay
 from ..operators.sink import SinkStream as Sink, SinkStreamWithResult as SinkWithResult
 from ..operators.case import CaseStream as Case, WhenStream as When
-from ..operators.split import SplitStream as Split, TypedBinarySplitStream as SplitBinary
-from ..operators.split import TypedBinaryKVSplitStream as SplitBinaryKV
+from ..operators.split import SplitStream as Split
 from ..operators.functions import (
     MapFunction,
     FilterFunction,

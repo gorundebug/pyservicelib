@@ -35,28 +35,6 @@ class Consumer[T](ABC):
         pass
 
 
-class ConsumerBinary[T](ABC):
-    @abstractmethod
-    async def consume_binary(self, data: BytesBuffer) -> None:
-        pass
-
-
-class ConsumerBinaryKV[T](ABC):
-    @abstractmethod
-    async def consume_binary(self, key_data: BytesBuffer, value_data: BytesBuffer) -> None:
-        pass
-
-
-class BinaryConsume[T](Protocol):
-
-    async def consume(self, data: BytesBuffer) -> None:
-        ...
-
-
-class BinaryKVConsume[T](Protocol):
-
-    async def consume(self, key_data: BytesBuffer, value_data: BytesBuffer) -> None:
-        ...
 
 
 class ConsumeStatistics(ABC):
@@ -411,39 +389,6 @@ class SinkEndpoint(Endpoint):
         pass
 
 
-class EndpointReader(ABC):
-
-    @property
-    @abstractmethod
-    def type_name(self) -> str:
-        pass
-
-
-class EndpointWriter(ABC):
-
-    @property
-    @abstractmethod
-    def type_name(self) -> str:
-        pass
-
-
-class TypedEndpointReader[T](EndpointReader):
-
-    @abstractmethod
-    def read(self, b: BytesBuffer) -> T:
-        pass
-
-    @abstractmethod
-    def from_dict(self, d: dict[str, Any]) -> T:
-        pass
-
-
-class TypedEndpointWriter[T](EndpointWriter):
-
-    @abstractmethod
-    def write(self, b: BytesBuffer) -> bytearray:
-        pass
-
 
 class Stream(ABC):
 
@@ -532,8 +477,7 @@ class TypedStream[T](ServiceStream):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: Optional[TypedStreamSerde[T]] = None):
         super().__init__(stream_id=stream_id, env=env)
-        if not hasattr(self, '_serde'):
-            self._serde = serde
+        self._serde = serde
 
     @property
     @abstractmethod
@@ -578,7 +522,7 @@ class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
         return self
 
 
-class TypedSinkStream[T, E=Any](ServiceStream, StreamConsumer[T], ABC):
+class TypedSinkStream[T, E](ServiceStream, StreamConsumer[T], ABC):
     _serde: Optional[TypedStreamSerde[T]]
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment",
@@ -648,7 +592,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         return [self._consumer.stream]
 
 
-class TypedInputStream[T, R=Any, E=Any](TypedConsumedStream[T]):
+class TypedInputStream[T, R, E](TypedConsumedStream[T]):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
@@ -726,7 +670,7 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
         return [self._consumer.stream]
 
 
-class TypedSinkStreamWithResult[T, R, E=Any](TypedSinkStream[T, E], TypedTransformConsumedStream[T, R]):
+class TypedSinkStreamWithResult[T, R, E](TypedTransformConsumedStream[T, R]):
 
     @property
     @abstractmethod
@@ -793,19 +737,6 @@ class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStre
         pass
 
 
-class TypedBinaryConsumedStream[T](TypedConsumedStream[T], ConsumerBinary[T], ABC):
-
-    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
-        super().__init__(stream_id=stream_id, env=env, serde=serde)
-
-
-class TypedBinaryKVConsumedStream[K: Hashable, V](TypedConsumedStream[KeyValue[K, V]], ConsumerBinaryKV[KeyValue[K, V]], ABC):
-
-    def __init__(self, stream_id: int,
-                 env: "ServiceExecutionEnvironment",
-                 serde: TypedStreamKeyValueSerde[KeyValue[K, V]]):
-        super().__init__(stream_id=stream_id, env=env, serde=serde)
-
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
     @abstractmethod
@@ -846,14 +777,6 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
 
     @abstractmethod
     def get_datasink(self, id_connector: int) -> Optional[DataSink]:
-        pass
-
-    @abstractmethod
-    def get_endpoint_reader(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointReader]:
-        pass
-
-    @abstractmethod
-    def get_endpoint_writer(self, endpoint: Endpoint, stream: Stream, type_name: str) -> Optional[EndpointWriter]:
         pass
 
     @property
@@ -1013,11 +936,11 @@ class StreamContext[T, R, E]:
 class SinkStreamContext[T, R, E]:
     """Bundles the typed sink stream and collectors for datasink handlers."""
 
-    stream: "TypedSinkStream[T, E]"
+    stream: "TypedSinkStreamWithResult[T, R, E]"
     _collect: Collect[R]
     _error_collect: Collect[E]
 
-    def __init__(self, stream: "TypedSinkStream[T, E]",
+    def __init__(self, stream: "TypedSinkStreamWithResult[T, R, E]",
                  collect: Collect[R],
                  error_collect: Collect[E]):
         self.stream = stream

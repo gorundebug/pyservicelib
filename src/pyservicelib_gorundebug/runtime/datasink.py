@@ -6,7 +6,7 @@
 from abc import ABC
 from typing import Optional, Iterable, cast, Any
 
-from .common import ServiceExecutionEnvironment, Consumer, TypedEndpointWriter
+from .common import ServiceExecutionEnvironment, Consumer
 from .common import DataConnector, DataSink
 from .common import SinkEndpoint, OutputEndpointConsumer, TypedSinkStream
 from .config import DataConnectorConfig, EndpointConfig
@@ -91,7 +91,7 @@ class DataSinkEndpoint(SinkEndpoint):
         return self._data_sink
 
 
-class DataSinkEndpointConsumer[T, E=Any](OutputEndpointConsumer):
+class DataSinkEndpointConsumer[T, E](OutputEndpointConsumer):
     """Data holder for sink endpoint consumers. Derived classes implement consume()."""
     _sink_stream: TypedSinkStream[T, E]
     _endpoint: SinkEndpoint
