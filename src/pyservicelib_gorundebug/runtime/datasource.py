@@ -4,11 +4,11 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 from abc import ABC
-from typing import Optional, Iterable, cast
+from typing import Optional, Iterable, cast, Any
 
 from .common import ServiceExecutionEnvironment, Consumer, TypedInputStream
 from .common import DataSource, InputEndpoint, DataConnector, TypedEndpointReader
-from .common import InputEndpointConsumer
+from .common import InputEndpointConsumer, StreamContext, CollectFunc, ErrorStream
 from .config import DataConnectorConfig, EndpointConfig
 
 
@@ -91,12 +91,12 @@ class DataSourceEndpoint(InputEndpoint):
         return self._datasource
 
 
-class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):
-    _input_stream: TypedInputStream[T]
+class DataSourceEndpointConsumer[T, R=Any, E=Any](Consumer[T], InputEndpointConsumer):
+    _input_stream: TypedInputStream[T, R, E]
     _endpoint: InputEndpoint
     _reader: Optional[TypedEndpointReader[T]]
 
-    def __init__(self, endpoint: InputEndpoint, input_stream: TypedInputStream[T]):
+    def __init__(self, endpoint: InputEndpoint, input_stream: TypedInputStream[T, R, E]):
         self._endpoint = endpoint
         self._input_stream = input_stream
         value_type = input_stream.config.value_type
@@ -113,6 +113,10 @@ class DataSourceEndpointConsumer[T](Consumer[T], InputEndpointConsumer):
 
     async def consume(self, value: T) -> None:
         await self._input_stream.consume(value)
+
+    @property
+    def stream(self) -> TypedInputStream[T, R, E]:
+        return self._input_stream
 
     @property
     def endpoint(self) -> InputEndpoint:

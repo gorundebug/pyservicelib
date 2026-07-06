@@ -6,28 +6,11 @@
 
 from ..runtime.common import (
     StreamFunction, Collect, Collector, TypedStream,
-    TypedTransformConsumedStream, TypedConsumedStream, RuntimeHelpers,
+    TypedTransformConsumedStream, TypedConsumedStream, RuntimeHelpers, ErrorStream,
 )
 from ..runtime.config.stream_types import ProcessStreamConfig
 from ..runtime.serde.serde import StreamSerde, StubSerde
 from .functions import ProcessFunction
-
-
-class _ErrorStream[E](TypedConsumedStream[E], Collect[E]):
-    def __init__(self, stream_id: int, env, serde):
-        super().__init__(stream_id=stream_id, env=env, serde=serde)
-
-    @property
-    def name(self) -> str:
-        return f"error:{super().name}"
-
-    async def consume(self, value: E) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
-
-    async def out(self, value: E) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
 
 
 class ProcessFunctionContext[T, R, E](StreamFunction[R]):
@@ -46,7 +29,7 @@ class ProcessFunctionContext[T, R, E](StreamFunction[R]):
 class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
     _f: ProcessFunctionContext[T, R, E]
-    _error_stream: _ErrorStream[E]
+    _error_stream: ErrorStream[E]
     _out_collector: Collector[R]
 
     def __init__(self, cfg: ProcessStreamConfig, stream: TypedStream[T], fn: ProcessFunction[T, R, E]):
@@ -54,7 +37,7 @@ class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
                          serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = ProcessFunctionContext[T, R, E](self, fn)
-        self._error_stream = _ErrorStream[E](
+        self._error_stream = ErrorStream[E](
             stream_id=cfg.id,
             env=stream.environment,
             serde=StreamSerde(StubSerde('error')),
@@ -73,7 +56,7 @@ class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
         self._out_collector = Collector(self._caller)
 
     @property
-    def error_stream(self) -> TypedConsumedStream[E]:
+    def error_stream(self) -> ErrorStream[E]:
         return self._error_stream
 
     async def consume(self, value: T) -> None:

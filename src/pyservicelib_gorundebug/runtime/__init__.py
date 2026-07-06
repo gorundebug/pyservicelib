@@ -7,6 +7,7 @@
 from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      TypedStream, Consumer, StreamConsumer,
                      ServiceStream, Stream, TypedLinkStream, TypedSinkStream,
+                     TypedSinkStreamWithResult, TypedCaseStream, TypedWhenStream,
                      TypedInputStream, TypedSplitStream, TypedBinaryConsumedStream,
                      TypedBinaryKVConsumedStream, TypedStreamConsumer, Consume, TypedEndpointWriter,
                      TypedEndpointReader, EndpointReader, EndpointWriter)

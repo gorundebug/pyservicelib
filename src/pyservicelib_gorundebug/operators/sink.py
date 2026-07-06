@@ -4,35 +4,99 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Optional
+from typing import Optional, Any
 
-from ..runtime.common import TypedSinkStream, TypedStream, StreamConsumer
+from ..runtime.common import (
+    TypedSinkStream, TypedSinkStreamWithResult, TypedConsumedStream, TypedStream,
+    Consumer, StreamConsumer, ErrorStream, RuntimeHelpers,
+)
 from ..runtime.config.stream_types import SinkStreamConfig
+from ..runtime.serde.serde import StreamSerde, StubSerde
 
 
-class SinkStream[T](TypedSinkStream[T]):
+class SinkStream[T, E=Any](TypedSinkStream[T, E]):
     _source: TypedStream[T]
-    _consumer: Optional[StreamConsumer[T]]
+    _sink_consumer: Optional[Consumer[T]]
+    _error_stream: ErrorStream[E]
     _endpoint_id: int
 
     def __init__(self, cfg: SinkStreamConfig, stream: TypedStream[T]):
         super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
         self._source = stream
         self._endpoint_id = cfg.id_endpoint
-        self._consumer = None
+        self._sink_consumer = None
+        self._error_stream = ErrorStream[E](
+            stream_id=cfg.id,
+            env=stream.environment,
+            serde=StreamSerde(StubSerde('error')),
+        )
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        if self._consumer is not None:
-            await self._consumer.consume(value)
+        if self._sink_consumer is not None:
+            await self._sink_consumer.consume(value)
 
     @property
-    def consumer(self) -> Optional[StreamConsumer[T]]:
+    def error_stream(self) -> TypedConsumedStream[E]:
+        return self._error_stream
+
+    def set_sink_consumer(self, consumer: Consumer[T]) -> None:
+        self._sink_consumer = consumer
+
+    @property
+    def endpoint_id(self) -> int:
+        return self._endpoint_id
+
+
+class SinkStreamWithResult[T, R, E=Any](TypedSinkStreamWithResult[T, R, E]):
+    _source: TypedStream[T]
+    _sink_consumer: Optional[Consumer[T]]
+    _error_stream: ErrorStream[E]
+    _consumer: Optional[StreamConsumer[R]]
+    _endpoint_id: int
+
+    def __init__(self, cfg: SinkStreamConfig, stream: TypedStream[T]):
+        env = stream.environment
+        value_type = cfg.value_type
+        if value_type:
+            serde = RuntimeHelpers[R](env).make_stream_serde(type_name=value_type)
+        else:
+            serde = StreamSerde(StubSerde('result'))
+        super().__init__(stream_id=cfg.id, env=env, serde=serde)
+        self._source = stream
+        self._endpoint_id = cfg.id_endpoint
+        self._sink_consumer = None
+        self._consumer = None
+        self._error_stream = ErrorStream[E](
+            stream_id=cfg.id,
+            env=env,
+            serde=StreamSerde(StubSerde('error')),
+        )
+        stream.consumer = self
+
+    @property
+    def consumer(self) -> Optional[StreamConsumer[R]]:
         return self._consumer
 
     @consumer.setter
-    def consumer(self, value: StreamConsumer[T]):
+    def consumer(self, value: StreamConsumer[R]) -> None:
         self._consumer = value
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
+
+    async def consume(self, value: T) -> None:
+        if self._sink_consumer is not None:
+            await self._sink_consumer.consume(value)
+
+    async def consume_result(self, value: R) -> None:
+        if self._caller is not None:
+            await self._caller.consume(value)
+
+    @property
+    def error_stream(self) -> TypedConsumedStream[E]:
+        return self._error_stream
+
+    def set_sink_consumer(self, consumer: Consumer[T]) -> None:
+        self._sink_consumer = consumer
 
     @property
     def endpoint_id(self) -> int:

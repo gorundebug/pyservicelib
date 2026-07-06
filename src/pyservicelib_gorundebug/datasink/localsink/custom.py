@@ -3,53 +3,81 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 import asyncio
-from typing import Protocol, cast, Any
+from typing import Protocol, Optional, Any, cast
 from abc import ABC, abstractmethod
 
-from ...runtime.common import TypedSinkStream, ServiceExecutionEnvironment
-from ...runtime.common import DataSink, SinkEndpoint
+from ...runtime.common import (
+    TypedSinkStream, TypedConsumedStream, ServiceExecutionEnvironment,
+    DataSink, SinkEndpoint, Consumer, Collect, CollectFunc,
+)
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
 
 
-class DataConsumer[T](Protocol):
+class EndpointHandler[HandlerState, T, E](Protocol):
+    """
+    Handler for custom (local) sink messages.
 
-    async def start(self, ctx: Context):
+    Pipeline lifecycle per value:
+        GetStreamID → BeginRequest → ConsumeMessage → EndRequest
+
+    GetStreamID returns a logical identifier for the incoming value.
+    BeginRequest initialises per-message handler state.
+    ConsumeMessage processes value T; push results back via result_stream.Out().
+    EndRequest finalises the request.
+    """
+
+    def get_stream_id(self, ctx: Context, value: T) -> str:
         ...
 
-    async def stop(self, ctx: Context):
+    async def begin_request(
+        self, ctx: Context, stream: TypedSinkStream[T, E],
+    ) -> tuple[Context, HandlerState]:
         ...
 
-    async def consume(self, value: T):
+    async def consume_message(
+        self, ctx: Context, stream: TypedSinkStream[T, E],
+        handler_state: HandlerState, value: T,
+        result_stream: Collect[E],
+    ) -> Optional[Exception]:
+        ...
+
+    async def end_request(
+        self, ctx: Context, stream: TypedSinkStream[T, E],
+        err: Optional[Exception], handler_state: HandlerState,
+    ) -> None:
         ...
 
 
 class CustomEndpointConsumer(ABC):
 
     @abstractmethod
-    async def start(self, ctx:Context):
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
-    async def stop(self, ctx:Context):
+    async def stop(self, ctx: Context) -> None:
         pass
 
 
 class CustomSinkEndpoint(DataSinkEndpoint):
+    _consumer: Optional[CustomEndpointConsumer]
 
     def __init__(self, data_sink: DataSink, id_endpoint: int):
         super().__init__(data_sink=data_sink, id_endpoint=id_endpoint)
+        self._consumer = None
 
-    async def start(self, ctx: Context):
-        for ec in self.endpoint_consumers:
-            await cast(CustomEndpointConsumer, ec).start(ctx)
+    async def start(self, ctx: Context) -> None:
+        if self._consumer is not None:
+            await self._consumer.start(ctx)
 
-    async def stop(self, ctx: Context):
-        for ec in self.endpoint_consumers:
-            await cast(CustomEndpointConsumer, ec).stop(ctx)
+    async def stop(self, ctx: Context) -> None:
+        if self._consumer is not None:
+            await self._consumer.stop(ctx)
 
 
 class CustomDataSink(OutputDataSink):
+
     def __init__(self, id_connector: int, env: ServiceExecutionEnvironment):
         super().__init__(connector_id=id_connector, env=env)
 
@@ -63,49 +91,67 @@ class CustomDataSink(OutputDataSink):
             stop_tasks.append(asyncio.create_task(cast(CustomSinkEndpoint, ep).stop(ctx)))
         try:
             await asyncio.wait_for(asyncio.gather(*stop_tasks), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            self.environment.log.warning(f"Custom data sink '{self.name}' stopped by timeout.")
+        except (asyncio.TimeoutError, TypeError):
+            self.environment.log.warn(f"Custom data sink '{self.name}' stopped by timeout.")
 
 
-class TypedCustomEndpointConsumer[T](DataSinkEndpointConsumer[T], CustomEndpointConsumer):
-    _data_consumer: DataConsumer[T]
+class _TypedCustomEndpointConsumer[HandlerState, T, E](
+        DataSinkEndpointConsumer[T, E], Consumer[T], CustomEndpointConsumer):
+    _handler: EndpointHandler[HandlerState, T, E]
+    _ctx: Optional[Context]
 
-    def __init__(self, sink_stream: TypedSinkStream[T], _data_consumer: DataConsumer[T]):
-        env = sink_stream.environment
-        endpoint = TypedCustomEndpointConsumer._get_custom_datasink_endpoint(
-            id_endpoint=sink_stream.endpoint_id, env=env)
-        super().__init__(endpoint=endpoint, sink_stream=sink_stream)
-        endpoint.add_endpoint_consumer(self)
-
-    async def start(self, ctx: Context):
-        await self._data_consumer.start(ctx)
-
-    async def stop(self, ctx: Context):
-        try:
-            await asyncio.wait_for(asyncio.gather(self._data_consumer.stop(ctx), ), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            self._sink_stream.environment.log.warning(f"Custom data sink endpoint '{self.endpoint.name}' for stream '{self._sink_stream.name}' stopped by timeout.")
+    def __init__(self, endpoint: SinkEndpoint, sink_stream: TypedSinkStream[T, E],
+                 handler: EndpointHandler[HandlerState, T, E]):
+        DataSinkEndpointConsumer.__init__(self, endpoint=endpoint, sink_stream=sink_stream)
+        self._handler = handler
+        self._ctx = None
 
     async def consume(self, value: T) -> None:
-        await self._data_consumer.consume(value)
+        ctx = self._ctx or Context()
+        stream = self.stream
+        handler_ctx, handler_state = await self._handler.begin_request(ctx, stream)
+        rs: Collect[E] = CollectFunc[E](stream.error_stream.consume)
+        err = await self._handler.consume_message(handler_ctx, stream, handler_state, value, rs)
+        await self._handler.end_request(handler_ctx, stream, err, handler_state)
 
-    @classmethod
-    def _get_custom_datasink(cls, id_connector: int, env: ServiceExecutionEnvironment) -> DataSink:
-        datasink = env.get_datasink(id_connector)
-        if datasink is not None:
-            return datasink
-        cfg = env.config.get_data_connector_by_id(id_connector)
-        custom_datasink = CustomDataSink(cfg.id, env)
-        env.add_datasink(custom_datasink)
-        return custom_datasink
+    async def start(self, ctx: Context) -> None:
+        self._ctx = ctx
 
-    @classmethod
-    def _get_custom_datasink_endpoint(cls, id_endpoint: int, env: ServiceExecutionEnvironment) -> SinkEndpoint:
-        cfg = env.config.get_endpoint_config_by_id(id_endpoint)
-        data_sink = cls._get_custom_datasink(cfg.id_data_connector, env)
-        endpoint = data_sink.get_endpoint(id_endpoint)
-        if endpoint is not None:
-            return endpoint
-        custom_endpoint = CustomSinkEndpoint(data_sink=data_sink, id_endpoint=id_endpoint)
-        data_sink.add_endpoint(custom_endpoint)
-        return custom_endpoint
+    async def stop(self, ctx: Context) -> None:
+        pass
+
+
+def make_custom_endpoint_consumer[HandlerState, T, E](
+        sink_stream: TypedSinkStream[T, E],
+        handler: EndpointHandler[HandlerState, T, E],
+) -> Consumer[T]:
+    env = sink_stream.environment
+    endpoint = _get_or_create_sink_endpoint(sink_stream.endpoint_id, env)
+    consumer: _TypedCustomEndpointConsumer[HandlerState, T, E] = (
+        _TypedCustomEndpointConsumer(endpoint=endpoint, sink_stream=sink_stream, handler=handler)
+    )
+    sink_stream.set_sink_consumer(consumer)
+    cast(CustomSinkEndpoint, endpoint)._consumer = consumer
+    endpoint.add_endpoint_consumer(consumer)
+    return consumer
+
+
+def _get_or_create_datasink(id_connector: int, env: ServiceExecutionEnvironment) -> DataSink:
+    datasink = env.get_datasink(id_connector)
+    if datasink is not None:
+        return datasink
+    cfg = env.config.get_data_connector_by_id(id_connector)
+    custom_datasink = CustomDataSink(cfg.id, env)
+    env.add_datasink(custom_datasink)
+    return custom_datasink
+
+
+def _get_or_create_sink_endpoint(id_endpoint: int, env: ServiceExecutionEnvironment) -> SinkEndpoint:
+    cfg = env.config.get_endpoint_config_by_id(id_endpoint)
+    datasink = _get_or_create_datasink(cfg.id_data_connector, env)
+    endpoint = datasink.get_endpoint(id_endpoint)
+    if endpoint is not None:
+        return endpoint
+    custom_endpoint = CustomSinkEndpoint(data_sink=datasink, id_endpoint=id_endpoint)
+    datasink.add_endpoint(custom_endpoint)
+    return custom_endpoint

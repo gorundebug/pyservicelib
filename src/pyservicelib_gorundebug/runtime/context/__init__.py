@@ -5,4 +5,4 @@
 #   file for details.
 
 from .context import Context, default_context
-from .request import request_deadline, request_cancelled
+from .request import request_deadline, request_cancelled, request_stream_id, new_stream_id, stream_id_from_context, with_stream_id

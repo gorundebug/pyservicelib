@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 from abc import ABC
-from typing import Optional, Iterable, cast
+from typing import Optional, Iterable, cast, Any
 
 from .common import ServiceExecutionEnvironment, Consumer, TypedEndpointWriter
 from .common import DataConnector, DataSink
@@ -91,32 +91,20 @@ class DataSinkEndpoint(SinkEndpoint):
         return self._data_sink
 
 
-class DataSinkEndpointConsumer[T](Consumer[T], OutputEndpointConsumer):
-    _sink_stream: TypedSinkStream[T]
+class DataSinkEndpointConsumer[T, E=Any](OutputEndpointConsumer):
+    """Data holder for sink endpoint consumers. Derived classes implement consume()."""
+    _sink_stream: TypedSinkStream[T, E]
     _endpoint: SinkEndpoint
-    _writer: Optional[TypedEndpointWriter[T]]
 
-    def __init__(self, endpoint: SinkEndpoint, sink_stream: TypedSinkStream[T]):
+    def __init__(self, endpoint: SinkEndpoint, sink_stream: TypedSinkStream[T, E]):
         self._endpoint = endpoint
         self._sink_stream = sink_stream
-        value_type = sink_stream.config.value_type
-        if value_type is None:
-            raise ValueError(f"Value type can not be none for sink stream '{sink_stream.name}'")
-        writer = sink_stream.environment.get_endpoint_writer(self.endpoint,
-                                                              self._sink_stream, value_type)
-        if writer is not None:
-            if not isinstance(writer, TypedEndpointWriter) or writer.type_name != value_type:
-                raise ValueError(f"Invalid endpoint writer type in DataSinkEndpointConsumer")
-            self._writer = cast(TypedEndpointWriter[T], writer)
 
-    async def consume(self, value: T) -> None:
-        await self._sink_stream.consume(value)
+    @property
+    def stream(self) -> TypedSinkStream[T, E]:
+        return self._sink_stream
 
     @property
     def endpoint(self) -> SinkEndpoint:
         return self._endpoint
-
-    @property
-    def writer(self) -> Optional[TypedEndpointWriter[T]]:
-        return self._writer
 

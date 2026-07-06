@@ -5,53 +5,126 @@
 #   file for details.
 import asyncio
 from abc import ABC, abstractmethod
-from datetime import timedelta
-from typing import Protocol, cast, Any, Optional
+from typing import Protocol, Optional, Any, cast
 
-from ...runtime.common import Consume, ServiceExecutionEnvironment
-from ...runtime.common import InputEndpoint, TypedInputStream, DataSource
+from ...runtime.common import (
+    Consume, ServiceExecutionEnvironment, InputEndpoint, TypedInputStream,
+    DataSource, StreamContext, CollectFunc,
+)
 from ...runtime.context import Context
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
 
 
 class DataProducer[T](Protocol):
 
-    async def start(self, ctx: Context, consumer: Consume[T]):
+    async def start(self, ctx: Context, consumer: Consume[T]) -> None:
         ...
 
-    async def stop(self, ctx: Context):
+    async def stop(self, ctx: Context) -> None:
         ...
+
+
+class ResultCallback[HandlerState, T, R, E](Protocol):
+
+    def __call__(self, ctx: Context, sc: StreamContext[T, R, E],
+                 handler_state: HandlerState, value: R) -> bool:
+        ...
+
+
+class ResultContext[HandlerState, T, R, E](ABC):
+
+    @abstractmethod
+    def set_result_callback(self, message_id: str,
+                            cb: ResultCallback[HandlerState, T, R, E]) -> None:
+        pass
+
+    @abstractmethod
+    def done(self) -> None:
+        pass
+
+
+class EndpointHandler[HandlerState, T, R, E](Protocol):
+    """
+    Handler for custom (local) source messages.
+
+    Lifecycle per value:
+        BeginRequest → ConsumeMessage → EndRequest
+
+    If a result stream exists (has_result=True):
+        BeginRequest → ConsumeMessage → [await done] → EndRequest
+    """
+
+    def concurrency(self, sc: StreamContext[T, R, E]) -> int:
+        ...
+
+    async def begin_request(
+        self, ctx: Context, sc: StreamContext[T, R, E],
+    ) -> tuple[Context, HandlerState, Optional[Exception]]:
+        ...
+
+    async def consume_message(
+        self, ctx: Context, sc: StreamContext[T, R, E],
+        handler_state: HandlerState, value: T,
+        result_ctx: ResultContext[HandlerState, T, R, E],
+    ) -> Optional[Exception]:
+        ...
+
+    def get_message_id(
+        self, ctx: Context, sc: StreamContext[T, R, E],
+        handler_state: HandlerState, value: R,
+    ) -> str:
+        ...
+
+    async def end_request(
+        self, ctx: Context, sc: StreamContext[T, R, E],
+        err: Optional[Exception], handler_state: HandlerState,
+    ) -> None:
+        ...
+
+
+class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
+    _handler_state: HandlerState
+    _done: asyncio.Event
+    _message_callbacks: dict[str, Any]
+
+    def __init__(self, handler_state: HandlerState):
+        self._handler_state = handler_state
+        self._done = asyncio.Event()
+        self._message_callbacks = {}
+
+    def set_result_callback(self, message_id: str,
+                            cb: ResultCallback[HandlerState, T, R, E]) -> None:
+        self._message_callbacks[message_id] = cb
+
+    def done(self) -> None:
+        self._done.set()
 
 
 class CustomEndpointConsumer(ABC):
 
     @abstractmethod
-    async def start(self, ctx:Context):
+    async def start(self, ctx: Context) -> None:
         pass
 
     @abstractmethod
-    async def stop(self, ctx:Context):
+    async def stop(self, ctx: Context) -> None:
         pass
 
 
 class CustomInputEndpoint(DataSourceEndpoint):
-    _delay: timedelta
+    _consumer: Optional[CustomEndpointConsumer]
 
     def __init__(self, datasource: DataSource, id_endpoint: int):
         super().__init__(datasource=datasource, id_endpoint=id_endpoint)
+        self._consumer = None
 
-    async def start(self, ctx: Context):
-        for ec in self.endpoint_consumers:
-            await cast(CustomEndpointConsumer, ec).start(ctx)
+    async def start(self, ctx: Context) -> None:
+        if self._consumer is not None:
+            await self._consumer.start(ctx)
 
-    async def stop(self, ctx: Context):
-        for ec in self.endpoint_consumers:
-            await cast(CustomEndpointConsumer, ec).stop(ctx)
-
-    async def next_message(self):
-        total_seconds = self._delay.total_seconds()
-        if total_seconds > 0:
-            await asyncio.sleep(total_seconds)
+    async def stop(self, ctx: Context) -> None:
+        if self._consumer is not None:
+            await self._consumer.stop(ctx)
 
 
 class CustomDataSource(InputDataSource):
@@ -69,42 +142,132 @@ class CustomDataSource(InputDataSource):
             stop_tasks.append(asyncio.create_task(cast(CustomInputEndpoint, ep).stop(ctx)))
         try:
             await asyncio.wait_for(asyncio.gather(*stop_tasks), timeout=ctx.time_left)
-        except asyncio.TimeoutError:
-            self.environment.log.warning(f"Custom data source '{self.name}' stopped by timeout.")
+        except (asyncio.TimeoutError, TypeError):
+            self.environment.log.warn(f"Custom data source '{self.name}' stopped by timeout.")
 
 
-class TypedCustomEndpointConsumer[T](DataSourceEndpointConsumer[T], CustomEndpointConsumer):
+class TypedCustomEndpointConsumer[HandlerState, T, R, E](
+        DataSourceEndpointConsumer[T, R, E], CustomEndpointConsumer):
+    _handler: EndpointHandler[HandlerState, T, R, E]
     _data_producer: DataProducer[T]
+    _sc: StreamContext[T, R, E]
+    _has_result: bool
+    _concurrency_limit: int
+    _semaphore: Optional[asyncio.Semaphore]
     _runner_task: Optional[asyncio.Task[Any]]
+    _tasks: set[asyncio.Task[Any]]
+    _stopped: bool
+    _ctx: Optional[Context]
 
-    def __init__(self, input_stream: TypedInputStream[T], data_producer: DataProducer[T]):
+    def __init__(self, input_stream: TypedInputStream[T, R, E],
+                 data_producer: DataProducer[T],
+                 handler: EndpointHandler[HandlerState, T, R, E]):
         env = input_stream.environment
-        endpoint = TypedCustomEndpointConsumer._get_custom_datasource_endpoint(
+        endpoint = self._get_or_create_endpoint(
             id_endpoint=input_stream.endpoint_id, env=env)
         super().__init__(endpoint=endpoint, input_stream=input_stream)
         self._data_producer = data_producer
+        self._handler = handler
+        self._has_result = input_stream.get_result_stream() is not None
+        self._concurrency_limit = 0
+        self._semaphore = None
         self._runner_task = None
+        self._tasks = set()
+        self._stopped = False
+        self._ctx = None
+
+        error_collect = CollectFunc[E](input_stream.error_stream.consume)
+        collect = CollectFunc[T](self.out)
+        self._sc = StreamContext[T, R, E](
+            stream=input_stream,
+            result_stream=input_stream.get_result_stream(),
+            collect=collect,
+            error_collect=error_collect,
+        )
+
+        cast(CustomInputEndpoint, endpoint)._consumer = self
         endpoint.add_endpoint_consumer(self)
 
-    async def _runner(self, ctx: Context):
-        await self._data_producer.start(ctx, self)
+    async def out(self, value: T) -> None:
+        """Push a value into the pipeline (used by StreamContext.collect)."""
+        await self._input_stream.consume(value)
 
-    async def start(self, ctx: Context):
-        self._runner_task = asyncio.create_task(self._runner(ctx))
+    async def _endpoint_request(self, value: T) -> None:
+        ctx = self._ctx or Context()
+        handler_ctx, handler_state, err = await self._handler.begin_request(ctx, self._sc)
+        if err is not None:
+            return
 
-    async def stop(self, ctx: Context):
-        if self._runner_task is not None:
+        result: _CustomResult[HandlerState, T, R, E] = _CustomResult(handler_state)
+
+        err = await self._handler.consume_message(
+            handler_ctx, self._sc, handler_state, value, result)
+
+        if self._has_result and err is None:
             try:
-                await asyncio.wait_for(asyncio.gather( self._data_producer.stop(ctx), self._runner_task), timeout=ctx.time_left)
-            except asyncio.TimeoutError:
-                self._input_stream.environment.log.warning(f"Custom data source endpoint '{self.endpoint.name}' for stream '{self._input_stream.name}' stopped by timeout.")
+                time_left = ctx.time_left
+                await asyncio.wait_for(result._done.wait(), timeout=time_left)
+            except (asyncio.TimeoutError, TypeError):
+                err = TimeoutError("result wait timeout")
+
+        await self._handler.end_request(handler_ctx, self._sc, err, handler_state)
 
     async def consume(self, value: T) -> None:
-        await cast(CustomInputEndpoint, self.endpoint).next_message()
-        await super().consume(value)
+        """Entry point from data producer — applies concurrency control."""
+        if self._stopped:
+            return
+        limit = self._handler.concurrency(self._sc)
+        if limit == 0:
+            task = asyncio.create_task(self._endpoint_request(value))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        else:
+            if self._semaphore is None or self._concurrency_limit != limit:
+                self._semaphore = asyncio.Semaphore(limit)
+                self._concurrency_limit = limit
+            await self._semaphore.acquire()
+            semaphore = self._semaphore
+
+            async def _run() -> None:
+                try:
+                    await self._endpoint_request(value)
+                finally:
+                    semaphore.release()
+
+            task = asyncio.create_task(_run())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _runner(self, ctx: Context) -> None:
+        await self._data_producer.start(ctx, self)
+
+    async def start(self, ctx: Context) -> None:
+        self._ctx = ctx
+        self._runner_task = asyncio.create_task(self._runner(ctx))
+
+    async def stop(self, ctx: Context) -> None:
+        self._stopped = True
+        gather_tasks: list[Any] = []
+        if self._runner_task is not None:
+            gather_tasks.append(self._data_producer.stop(ctx))
+            gather_tasks.append(asyncio.shield(self._runner_task))
+        if self._tasks:
+            gather_tasks.extend(self._tasks)
+        if gather_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*gather_tasks, return_exceptions=True),
+                    timeout=ctx.time_left,
+                )
+            except (asyncio.TimeoutError, TypeError):
+                self._input_stream.environment.log.warn(
+                    f"Custom data source endpoint '{self.endpoint.name}' "
+                    f"for stream '{self._input_stream.name}' stopped by timeout."
+                )
 
     @classmethod
-    def _get_custom_datasource(cls, id_connector: int, env: ServiceExecutionEnvironment) -> DataSource:
+    def _get_or_create_datasource(
+            cls, id_connector: int, env: ServiceExecutionEnvironment) -> DataSource:
         datasource = env.get_datasource(id_connector)
         if datasource is not None:
             return datasource
@@ -114,9 +277,10 @@ class TypedCustomEndpointConsumer[T](DataSourceEndpointConsumer[T], CustomEndpoi
         return custom_datasource
 
     @classmethod
-    def _get_custom_datasource_endpoint(cls, id_endpoint: int, env: ServiceExecutionEnvironment) -> InputEndpoint:
+    def _get_or_create_endpoint(
+            cls, id_endpoint: int, env: ServiceExecutionEnvironment) -> InputEndpoint:
         cfg = env.config.get_endpoint_config_by_id(id_endpoint)
-        datasource = cls._get_custom_datasource(cfg.id_data_connector, env)
+        datasource = cls._get_or_create_datasource(cfg.id_data_connector, env)
         endpoint = datasource.get_endpoint(id_endpoint)
         if endpoint is not None:
             return endpoint

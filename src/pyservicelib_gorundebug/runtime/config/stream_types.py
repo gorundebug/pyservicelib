@@ -181,6 +181,10 @@ class SinkStreamConfig(_TypedStreamConfig):
     def id_endpoint(self) -> int:
         return self._require_int('id_endpoint', 'id_endpoint')
 
+    @property
+    def value_type(self) -> Optional[str]:
+        return getattr(self._cfg, 'value_type', None)
+
 
 class CycleLinkStreamConfig(_TypedStreamConfig):
     pass

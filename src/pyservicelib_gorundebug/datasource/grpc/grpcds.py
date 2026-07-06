@@ -1,0 +1,493 @@
+#  Copyright (c) 2024 Sergey Alexeev
+#  Email: sergeyalexeev@yahoo.com
+#
+#   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
+
+"""
+gRPC datasource endpoint consumers for all four streaming modes.
+
+Equivalent to Go's datasource/grpc/ package (grpc.go + nostreaming.go +
+serverstreaming.go + clientstreaming.go + bidistreaming.go).
+
+In Python/grpcio.aio, gRPC method implementations are coroutines passed to the
+server. Each make_* function returns:
+  - A Consumer[T] that the stream uses to receive pipeline results.
+  - An async handler coroutine whose signature matches the generated servicer method.
+
+The user passes the returned handler directly as the gRPC servicer method.
+"""
+
+import asyncio
+from abc import abstractmethod, ABC
+from typing import Optional, Protocol, Any, AsyncIterator, cast
+
+import grpc  # type: ignore[import-untyped]
+import grpc.aio  # type: ignore[import-untyped]
+
+
+def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext) -> Optional[str]:
+    metadata = context.invocation_metadata()
+    if not metadata:
+        return None
+    for k, v in metadata:  # type: ignore[union-attr]
+        key = k.decode('utf-8') if isinstance(k, bytes) else k
+        if key == 'x-stream-id':
+            return v.decode('utf-8') if isinstance(v, bytes) else v  # type: ignore[return-value]
+    return None
+
+from ...runtime.common import (
+    TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
+    Consumer, StreamContext, CollectFunc,
+)
+from ...runtime.context import Context
+from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
+from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
+from ...runtime.store.rotatingmap import RotatingMap
+
+_PENDING_ROTATION_INTERVAL = 30.0  # seconds
+
+
+class Sender[ResR](Protocol):
+    """Sends a result value back to the gRPC client. Equivalent to Go's Sender[R, ResR]."""
+    async def send(self, value: ResR) -> None: ...
+
+
+class ResultCallback[HandlerState, T, ResR, R, E](Protocol):
+    """Return True to deregister; False to keep active. Equivalent to Go's ResultCallback."""
+    def __call__(
+        self,
+        sc: StreamContext[T, R, E],
+        handler_state: HandlerState,
+        value: R,
+        sender: Sender[ResR],
+    ) -> bool: ...
+
+
+class ResultContext[HandlerState, T, ResR, R, E](ABC):
+    """
+    Allows the handler to register result callbacks and signal completion.
+    Equivalent to Go's datasource/grpc ResultContext.
+    """
+
+    @abstractmethod
+    def set_result_callback(
+        self,
+        message_id: str,
+        cb: "ResultCallback[HandlerState, T, ResR, R, E]",
+    ) -> None: ...
+
+    @abstractmethod
+    def done(self) -> None: ...
+
+
+class _NoopResultContext[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, ResR, R, E]):
+    def set_result_callback(self, message_id: str, cb: Any) -> None:
+        pass
+
+    def done(self) -> None:
+        pass
+
+
+class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, ResR, R, E]):
+    handler_state: HandlerState
+    sender: Sender[ResR]
+    _done: asyncio.Event
+    _callbacks: dict[str, Any]
+    _cb_lock: asyncio.Lock
+
+    def __init__(self, handler_state: HandlerState, sender: Sender[ResR]):
+        self.handler_state = handler_state
+        self.sender = sender
+        self._done = asyncio.Event()
+        self._callbacks = {}
+        self._cb_lock = asyncio.Lock()
+
+    def set_result_callback(
+        self,
+        message_id: str,
+        cb: "ResultCallback[HandlerState, T, ResR, R, E]",
+    ) -> None:
+        self._callbacks[message_id] = cb
+
+    def done(self) -> None:
+        self._done.set()
+
+
+class EndpointHandler[HandlerState, ReqT, ResR, T, R, E](Protocol):
+    """
+    User-supplied handler for gRPC source calls.
+
+    Lifecycle (unary, server-streaming):
+        begin_request → consume_message → eof → [await result] → end_request
+
+    Lifecycle (client-streaming, bidi-streaming):
+        begin_request → consume_message (N times) → eof → [await result] → end_request
+
+    Equivalent to Go's datasource/grpc EndpointHandler.
+    """
+
+    async def begin_request(
+        self,
+        sc: StreamContext[T, R, E],
+    ) -> "tuple[HandlerState, Optional[Exception]]": ...
+
+    async def consume_message(
+        self,
+        sc: StreamContext[T, R, E],
+        handler_state: HandlerState,
+        req: ReqT,
+        result_ctx: "ResultContext[HandlerState, T, ResR, R, E]",
+        sender: Sender[ResR],
+    ) -> Optional[Exception]: ...
+
+    def get_message_id(
+        self,
+        sc: StreamContext[T, R, E],
+        handler_state: HandlerState,
+        value: R,
+    ) -> str: ...
+
+    def eof(
+        self,
+        sc: StreamContext[T, R, E],
+        handler_state: HandlerState,
+    ) -> None: ...
+
+    async def end_request(
+        self,
+        sc: StreamContext[T, R, E],
+        err: Optional[Exception],
+        handler_state: HandlerState,
+    ) -> Optional[Exception]: ...
+
+
+class _GrpcDataSource(InputDataSource):
+    async def start(self, ctx: Context) -> None:
+        for ep in self.endpoints:
+            await cast("_GrpcEndpoint", ep).start(ctx)
+
+    async def stop(self, ctx: Context) -> None:
+        for ep in self.endpoints:
+            await cast("_GrpcEndpoint", ep).stop(ctx)
+
+
+class _GrpcEndpoint(DataSourceEndpoint):
+    _consumer_obj: Optional["_GrpcTypedEndpointConsumer"]
+
+    def __init__(self, datasource: _GrpcDataSource, id_endpoint: int):
+        super().__init__(datasource=datasource, id_endpoint=id_endpoint)
+        self._consumer_obj = None
+
+    async def start(self, ctx: Context) -> None:
+        if self._consumer_obj is not None:
+            await self._consumer_obj.start(ctx)
+
+    async def stop(self, ctx: Context) -> None:
+        if self._consumer_obj is not None:
+            await self._consumer_obj.stop(ctx)
+
+
+class _ResultConsumerProxy[R](Consumer[R]):
+    def __init__(self, consumer: "_GrpcTypedEndpointConsumer") -> None:  # type: ignore[type-arg]
+        self._consumer = consumer
+
+    async def consume(self, value: R) -> None:
+        await self._consumer._consume_result(value)  # type: ignore[arg-type]
+
+
+class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEndpointConsumer[T, R, E]):
+    _handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E]
+    _sc: StreamContext[T, R, E]
+    _has_result: bool
+    _pending: Optional[RotatingMap[str, _GrpcResult[HandlerState, T, ResR, R, E]]]
+
+    def __init__(
+        self,
+        endpoint: _GrpcEndpoint,
+        stream: TypedInputStream[T, R, E],
+        handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+    ):
+        super().__init__(endpoint=endpoint, input_stream=stream)
+        self._handler = handler
+        self._has_result = stream.get_result_stream() is not None
+        self._pending = None
+
+        self._sc = StreamContext[T, R, E](
+            stream=stream,
+            result_stream=stream.get_result_stream(),
+            collect=CollectFunc[T](stream.consume),
+            error_collect=CollectFunc[E](stream.error_stream.consume),
+        )
+
+        if self._has_result:
+            stream.set_result_consumer(_ResultConsumerProxy[R](self))  # type: ignore[arg-type]
+
+        endpoint._consumer_obj = self
+        endpoint.add_endpoint_consumer(self)
+
+    async def start(self, ctx: Context) -> None:
+        if self._has_result:
+            self._pending = RotatingMap[str, Any](_PENDING_ROTATION_INTERVAL)
+            await self._pending.start(ctx)
+
+    async def stop(self, ctx: Context) -> None:
+        if self._pending is not None:
+            await self._pending.stop(ctx)
+
+    async def _consume_result(self, value: R) -> None:
+        if not self._has_result or self._pending is None:
+            return
+        sid = stream_id_from_context()
+        if sid is None:
+            return
+        result, found = self._pending.get(sid)
+        if not found or result is None:
+            return
+
+        message_id = self._handler.get_message_id(self._sc, result.handler_state, value)
+
+        async with result._cb_lock:
+            cb = result._callbacks.get(message_id)
+            if cb is None:
+                return
+            remove = cb(self._sc, result.handler_state, value, result.sender)
+            if remove:
+                result._callbacks.pop(message_id, None)
+
+    async def _handle_common(
+        self,
+        sid: str,
+        req: ReqT,
+        sender: "Sender[ResR]",
+        eof_after_first: bool,
+        request_iter: Optional[AsyncIterator[ReqT]] = None,
+        grpc_context: Optional[Any] = None,
+    ) -> Optional[Exception]:
+        """Shared request lifecycle used by all streaming modes."""
+        with_stream_id(sid)
+
+        handler_state, err = await self._handler.begin_request(self._sc)
+        if err is not None:
+            return err
+
+        result: Optional[_GrpcResult[HandlerState, T, ResR, R, E]] = None
+        result_ctx: ResultContext[HandlerState, T, ResR, R, E]
+
+        if self._has_result and self._pending is not None:
+            result = _GrpcResult(handler_state, sender)
+            self._pending.set(sid, result)
+            result_ctx = result
+        else:
+            result_ctx = _NoopResultContext()
+
+        # Process request(s)
+        if request_iter is not None:
+            # Client/bidi streaming: iterate all incoming messages
+            async for r in request_iter:
+                err = await self._handler.consume_message(
+                    self._sc, handler_state, r, result_ctx, sender
+                )
+                if err is not None:
+                    if result is not None and self._pending is not None:
+                        self._pending.pop(sid)
+                    self._handler.eof(self._sc, handler_state)
+                    return await self._handler.end_request(self._sc, err, handler_state)
+        else:
+            # Unary/server streaming: single request
+            err = await self._handler.consume_message(
+                self._sc, handler_state, req, result_ctx, sender
+            )
+            if err is not None:
+                if result is not None and self._pending is not None:
+                    self._pending.pop(sid)
+                self._handler.eof(self._sc, handler_state)
+                return await self._handler.end_request(self._sc, err, handler_state)
+
+        self._handler.eof(self._sc, handler_state)
+
+        if not self._has_result or result is None:
+            return await self._handler.end_request(self._sc, None, handler_state)
+
+        try:
+            await result._done.wait()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._pending is not None:
+                self._pending.pop(sid)
+
+        return await self._handler.end_request(self._sc, None, handler_state)
+
+
+class _UnarySender[ResR](Sender[ResR]):
+    _future: "asyncio.Future[ResR]"
+
+    def __init__(self):
+        self._future: asyncio.Future[ResR] = asyncio.get_event_loop().create_future()
+
+    async def send(self, value: ResR) -> None:
+        if not self._future.done():
+            self._future.set_result(value)
+
+
+class _StreamSender[ResR](Sender[ResR]):
+    _send_fn: Any  # grpc.aio.ServicerContext.write or stream.send
+    _lock: asyncio.Lock
+    _active: bool
+
+    def __init__(self, send_fn: Any):
+        self._send_fn = send_fn
+        self._lock = asyncio.Lock()
+        self._active = True
+
+    async def send(self, value: ResR) -> None:
+        async with self._lock:
+            if not self._active:
+                raise grpc.RpcError("stream is closed")
+            await self._send_fn(value)
+
+    def close(self) -> None:
+        self._active = False
+
+
+def _get_or_create_datasource(
+    id_endpoint: int,
+    env: ServiceExecutionEnvironment,
+) -> "_GrpcDataSource":
+    cfg_ep = env.config.get_endpoint_config_by_id(id_endpoint)
+    datasource = env.get_datasource(cfg_ep.id_data_connector)
+    if datasource is not None:
+        return cast(_GrpcDataSource, datasource)
+    cfg_ds = env.config.get_data_connector_by_id(cfg_ep.id_data_connector)
+    ds = _GrpcDataSource(connector_id=cfg_ds.id, env=env)
+    env.add_datasource(ds)
+    return ds
+
+
+def _get_or_create_endpoint(
+    stream: TypedInputStream,
+    ds: _GrpcDataSource,
+) -> "_GrpcEndpoint":
+    endpoint = ds.get_endpoint(stream.endpoint_id)
+    if endpoint is not None:
+        return cast(_GrpcEndpoint, endpoint)
+    ep = _GrpcEndpoint(datasource=ds, id_endpoint=stream.endpoint_id)
+    ds.add_endpoint(ep)
+    return ep
+
+
+# ---------------------------------------------------------------------------
+# Factory functions — one per gRPC streaming mode
+# ---------------------------------------------------------------------------
+
+def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
+    stream: TypedInputStream[T, R, E],
+    handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
+) -> "tuple[Consumer[T], Any]":
+    """
+    Unary gRPC source: one request → one response.
+
+    Returns (consumer, handler_fn) where handler_fn has signature:
+        async def handler_fn(request: ReqT, context) -> ResR
+    """
+    ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
+    ep = _get_or_create_endpoint(stream, ds)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler)
+
+    async def _handle(request: ReqT, context: grpc.aio.ServicerContext) -> ResR:
+        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        sender = _UnarySender[ResR]()
+        err = await ec._handle_common(sid, request, sender, eof_after_first=True)
+        if err is not None:
+            await context.abort(grpc.StatusCode.INTERNAL, str(err))
+        return await sender._future
+
+    return ec, _handle
+
+
+def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
+    stream: TypedInputStream[T, R, E],
+    handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
+) -> "tuple[Consumer[T], Any]":
+    """
+    Server-streaming gRPC source: one request → N responses.
+
+    Returns (consumer, handler_fn) where handler_fn has signature:
+        async def handler_fn(request: ReqT, context: grpc.aio.ServicerContext) -> None
+    """
+    ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
+    ep = _get_or_create_endpoint(stream, ds)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler)
+
+    async def _handle(request: ReqT, context: grpc.aio.ServicerContext) -> None:
+        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        sender = _StreamSender[ResR](context.write)
+        err = await ec._handle_common(sid, request, sender, eof_after_first=True)
+        sender.close()
+        if err is not None:
+            await context.abort(grpc.StatusCode.INTERNAL, str(err))
+
+    return ec, _handle
+
+
+def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
+    stream: TypedInputStream[T, R, E],
+    handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
+) -> "tuple[Consumer[T], Any]":
+    """
+    Client-streaming gRPC source: N requests → one response.
+
+    Returns (consumer, handler_fn) where handler_fn has signature:
+        async def handler_fn(request_iterator, context: grpc.aio.ServicerContext) -> ResR
+    """
+    ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
+    ep = _get_or_create_endpoint(stream, ds)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler)
+
+    async def _handle(
+        request_iterator: AsyncIterator[ReqT],
+        context: grpc.aio.ServicerContext,
+    ) -> ResR:
+        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        sender = _UnarySender[ResR]()
+        # Pass a dummy req (unused for iterator-based mode)
+        err = await ec._handle_common(
+            sid, cast(ReqT, None), sender, eof_after_first=False,
+            request_iter=request_iterator,
+        )
+        if err is not None:
+            await context.abort(grpc.StatusCode.INTERNAL, str(err))
+        return await sender._future
+
+    return ec, _handle
+
+
+def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
+    stream: TypedInputStream[T, R, E],
+    handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
+) -> "tuple[Consumer[T], Any]":
+    """
+    Bidi-streaming gRPC source: N requests → N responses.
+
+    Returns (consumer, handler_fn) where handler_fn has signature:
+        async def handler_fn(request_iterator, context: grpc.aio.ServicerContext) -> None
+    """
+    ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
+    ep = _get_or_create_endpoint(stream, ds)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler)
+
+    async def _handle(
+        request_iterator: AsyncIterator[ReqT],
+        context: grpc.aio.ServicerContext,
+    ) -> None:
+        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        sender = _StreamSender[ResR](context.write)
+        err = await ec._handle_common(
+            sid, cast(ReqT, None), sender, eof_after_first=False,
+            request_iter=request_iterator,
+        )
+        sender.close()
+        if err is not None:
+            await context.abort(grpc.StatusCode.INTERNAL, str(err))
+
+    return ec, _handle

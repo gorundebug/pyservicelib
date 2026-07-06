@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+import uuid
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
@@ -18,3 +19,21 @@ request_deadline: ContextVar[Optional[datetime]] = ContextVar('request_deadline'
 # (e.g. on HTTP client disconnect). Pool operations check this before accepting
 # or executing tasks — mirrors ctx.Err() check in Go's Delay().
 request_cancelled: ContextVar[Optional[asyncio.Event]] = ContextVar('request_cancelled', default=None)
+
+# Per-request stream ID, analogous to runtime.WithStreamId/StreamIdFromContext in Go.
+# Used to correlate async pipeline results back to the originating request.
+# Propagated to asyncio tasks via copy_context() at create_task() time.
+request_stream_id: ContextVar[Optional[str]] = ContextVar('request_stream_id', default=None)
+
+
+def new_stream_id() -> str:
+    return str(uuid.uuid4())
+
+
+def stream_id_from_context() -> Optional[str]:
+    return request_stream_id.get()
+
+
+def with_stream_id(sid: str) -> str:
+    request_stream_id.set(sid)
+    return sid

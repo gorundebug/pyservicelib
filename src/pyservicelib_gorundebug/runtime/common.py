@@ -142,6 +142,16 @@ class Collect[T](ABC):
         pass
 
 
+class CollectFunc[T](Collect[T]):
+    _fn: Callable
+
+    def __init__(self, fn: Callable):
+        self._fn = fn
+
+    async def out(self, value: T) -> None:
+        await self._fn(value)
+
+
 class RuntimeHelpers[T]:
     _environment: "ServiceExecutionEnvironment"
 
@@ -522,7 +532,8 @@ class TypedStream[T](ServiceStream):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: Optional[TypedStreamSerde[T]] = None):
         super().__init__(stream_id=stream_id, env=env)
-        self._serde = serde
+        if not hasattr(self, '_serde'):
+            self._serde = serde
 
     @property
     @abstractmethod
@@ -567,10 +578,31 @@ class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
         return self
 
 
-class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
+class TypedSinkStream[T, E=Any](ServiceStream, StreamConsumer[T], ABC):
+    _serde: Optional[TypedStreamSerde[T]]
 
-    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
-        super().__init__(stream_id=stream_id, env=env, serde=serde)
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment",
+                 serde: Optional[TypedStreamSerde[T]] = None):
+        super().__init__(stream_id=stream_id, env=env)
+        self._serde = serde
+
+    @property
+    def stream(self) -> Stream:
+        return self
+
+    @property
+    def serde(self) -> TypedStreamSerde[T]:
+        if self._serde is None:
+            raise ValueError("serde is not initialized for TypedSinkStream")
+        return self._serde
+
+    @property
+    def type_name(self) -> str:
+        genetic_type = self.__orig_class__.__args__[0]  # type: ignore[attr-defined]
+        orig_type = get_origin(genetic_type)
+        if orig_type is not None:
+            return orig_type.__name__
+        return genetic_type.__name__
 
     @property
     @abstractmethod
@@ -578,8 +610,13 @@ class TypedSinkStream[T](TypedStream[T], StreamConsumer[T]):
         pass
 
     @property
-    def stream(self) -> Stream:
-        return self
+    @abstractmethod
+    def error_stream(self) -> "TypedConsumedStream[E]":
+        pass
+
+    @abstractmethod
+    def set_sink_consumer(self, consumer: "Consumer[T]") -> None:
+        pass
 
 
 class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
@@ -611,7 +648,7 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         return [self._consumer.stream]
 
 
-class TypedInputStream[T](TypedConsumedStream[T]):
+class TypedInputStream[T, R=Any, E=Any](TypedConsumedStream[T]):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[T]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
@@ -619,6 +656,17 @@ class TypedInputStream[T](TypedConsumedStream[T]):
     @property
     @abstractmethod
     def endpoint_id(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def error_stream(self) -> "TypedConsumedStream[E]":
+        pass
+
+    def get_result_stream(self) -> Optional["TypedStream[R]"]:
+        return None
+
+    def set_result_consumer(self, consumer: "Consumer[R]") -> None:
         pass
 
 
@@ -676,6 +724,55 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
         if self._consumer is None:
             return []
         return [self._consumer.stream]
+
+
+class TypedSinkStreamWithResult[T, R, E=Any](TypedSinkStream[T, E], TypedTransformConsumedStream[T, R]):
+
+    @property
+    @abstractmethod
+    def endpoint_id(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def error_stream(self) -> "TypedConsumedStream[E]":
+        pass
+
+    @abstractmethod
+    def set_sink_consumer(self, consumer: "Consumer[T]") -> None:
+        pass
+
+    @abstractmethod
+    async def consume_result(self, value: R) -> None:
+        pass
+
+
+class TypedWhenStream(Stream, ABC):
+    """Non-generic when-stream interface, equivalent to Go's runtime.WhenStream (embeds Stream)."""
+
+    @abstractmethod
+    def set_index(self, index: int) -> None:
+        pass
+
+    @abstractmethod
+    async def consume_case(self, value: Any) -> None:
+        pass
+
+    @abstractmethod
+    def get_when_consumer(self) -> "Stream":
+        pass
+
+    @property
+    @abstractmethod
+    def type(self) -> type:
+        pass
+
+
+class TypedCaseStream[T](TypedConsumedStream[T]):
+
+    @abstractmethod
+    def add_stream(self, stream: TypedWhenStream) -> None:
+        pass
 
 
 class TypedJoinConsumedStream[K: Hashable, T1, T2, R](TypedTransformConsumedStream[KeyValue[K, T1], R]):
@@ -868,3 +965,67 @@ class ParallelsCollector[T](Collect[T]):
 
     async def out(self, value: T):
         self._env.runtime.create_task(self.consume, value)
+
+
+class ErrorStream[E](TypedConsumedStream[E], Collect[E]):
+    """Shared error stream used by operators that have a typed error output."""
+
+    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[E]):
+        super().__init__(stream_id=stream_id, env=env, serde=serde)
+
+    @property
+    def name(self) -> str:
+        return f"error:{super().name}"
+
+    async def consume(self, value: E) -> None:
+        if self._caller is not None:
+            await self._caller.consume(value)
+
+    async def out(self, value: E) -> None:
+        if self._caller is not None:
+            await self._caller.consume(value)
+
+
+class StreamContext[T, R, E]:
+    """Bundles the typed input stream, result stream, and collectors for datasource handlers."""
+
+    stream: "TypedInputStream[T, R, E]"
+    result_stream: Optional["TypedStream[R]"]
+    _collect: Collect[T]
+    _error_collect: Collect[E]
+
+    def __init__(self, stream: "TypedInputStream[T, R, E]",
+                 result_stream: Optional["TypedStream[R]"],
+                 collect: Collect[T],
+                 error_collect: Collect[E]):
+        self.stream = stream
+        self.result_stream = result_stream
+        self._collect = collect
+        self._error_collect = error_collect
+
+    async def collect(self, value: T) -> None:
+        await self._collect.out(value)
+
+    async def error_collect(self, value: E) -> None:
+        await self._error_collect.out(value)
+
+
+class SinkStreamContext[T, R, E]:
+    """Bundles the typed sink stream and collectors for datasink handlers."""
+
+    stream: "TypedSinkStream[T, E]"
+    _collect: Collect[R]
+    _error_collect: Collect[E]
+
+    def __init__(self, stream: "TypedSinkStream[T, E]",
+                 collect: Collect[R],
+                 error_collect: Collect[E]):
+        self.stream = stream
+        self._collect = collect
+        self._error_collect = error_collect
+
+    async def collect(self, value: R) -> None:
+        await self._collect.out(value)
+
+    async def error_collect(self, value: E) -> None:
+        await self._error_collect.out(value)

@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 from datetime import timedelta
-from typing import Hashable, Any, Protocol
+from typing import Hashable, Any, Protocol, Callable
 
 from ..runtime.common import Stream, Collect
 from ..runtime.datastruct import KeyValue
@@ -41,3 +41,37 @@ class ProcessFunction[T, R, E](Protocol):
 class DelayFunction[T](Protocol):
     async def duration(self, context: Stream, value: T) -> timedelta: ...
     async def delay_error(self, context: Stream, value: T, error: Exception, out: Collect[T]): ...
+
+
+class When(Protocol):
+    @property
+    def type(self) -> type: ...
+    def get_when_consumer(self) -> Stream: ...
+
+
+class BuildSwitchFunction[T](Protocol):
+    def build_switch(self, stream: Stream, when_items: list[When]) -> Callable[[T], int]: ...
+
+
+class BuildSwitchHandler[T]:
+    _fn: Callable[[Stream, list[When]], Callable[[T], int]]
+
+    def __init__(self, fn: Callable[[Stream, list[When]], Callable[[T], int]]):
+        self._fn = fn
+
+    def build_switch(self, stream: Stream, when_items: list[When]) -> Callable[[T], int]:
+        return self._fn(stream, when_items)
+
+
+def default_build_switch[T](when_items: list[When]) -> Callable[[T], int]:
+    type_map: dict[type, int] = {}
+    for i, w in enumerate(when_items):
+        type_map[w.type] = i
+
+    def switch_fn(value: T) -> int:
+        t = type(value)
+        if t in type_map:
+            return type_map[t]
+        raise ValueError(f"Unknown type: {t!r} in case switch")
+
+    return switch_fn
