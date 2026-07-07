@@ -8,20 +8,30 @@ from typing import Optional
 
 from ..runtime.common import ServiceExecutionEnvironment, TypedLinkStream, TypedStream, StreamConsumer
 from ..runtime.config.stream_types import CycleLinkStreamConfig
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 
 
 class LinkStream[T](TypedLinkStream[T]):
     _source: Optional[TypedStream[T]]
     _consumer: Optional[StreamConsumer[T]]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: CycleLinkStreamConfig, env: ServiceExecutionEnvironment):
         super().__init__(stream_id=cfg.id, env=env)
         self._source = None
         self._consumer = None
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     async def consume(self, value: T) -> None:
-        if self._consumer is not None:
-            await self._consumer.consume(value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.link",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                if self._consumer is not None:
+                    await self._consumer.consume(value)
+        finally:
+            span.end()
 
     @property
     def consumer(self) -> Optional[StreamConsumer[T]]:

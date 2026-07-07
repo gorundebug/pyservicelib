@@ -10,13 +10,16 @@ from aiokafka import AIOKafkaConsumer  # type: ignore[import-untyped]
 from aiokafka.structs import ConsumerRecord  # type: ignore[import-untyped]
 
 from ...runtime.common import (
-    TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
+    TypedInputStream, ServiceExecutionEnvironment,
     Consumer, StreamContext, CollectFunc,
 )
 from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.environment.tracing import (
+    Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
@@ -69,12 +72,16 @@ class ResultContext[HandlerState, T, R, E]:
     _done: asyncio.Event
     _callbacks: dict[str, Any]
     _cb_lock: asyncio.Lock
+    _span: Optional[Span]
+    _once: bool
 
     def __init__(self, handler_state: HandlerState):
         self._handler_state = handler_state
         self._done = asyncio.Event()
         self._callbacks = {}
         self._cb_lock = asyncio.Lock()
+        self._span = None
+        self._once = False
 
     def set_result_callback(
         self,
@@ -84,6 +91,9 @@ class ResultContext[HandlerState, T, R, E]:
         self._callbacks[message_id] = cb
 
     def done(self) -> None:
+        if not self._once:
+            self._once = True
+            span_event(self._span, "done_called")
         self._done.set()
 
 
@@ -106,7 +116,7 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
     async def begin_request(
         self,
         sc: StreamContext[T, R, E],
-    ) -> "tuple[HandlerState, Optional[Exception]]": ...
+    ) -> HandlerState: ...
 
     async def consume_message(
         self,
@@ -114,7 +124,7 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
         handler_state: HandlerState,
         msg: ConsumerMessage,
         result_ctx: "ResultContext[HandlerState, T, R, E]",
-    ) -> Optional[Exception]: ...
+    ) -> None: ...
 
     def get_message_id(
         self,
@@ -190,12 +200,14 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
     _active_count: int
     _active_lock: asyncio.Lock
     _active_event: asyncio.Event
+    _tracer: Optional[Tracer]
 
     def __init__(
         self,
         endpoint: _AIOKafkaEndpoint,
         stream: TypedInputStream[T, R, E],
         handler: EndpointHandler[HandlerState, T, R, E],
+        tracer: Optional[Tracer],
     ):
         super().__init__(endpoint=endpoint, input_stream=stream)
         self._handler = handler
@@ -209,6 +221,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._active_lock = asyncio.Lock()
         self._active_event = asyncio.Event()
         self._active_event.set()
+        self._tracer = tracer
 
         self._sc = StreamContext[T, R, E](
             stream=stream,
@@ -300,55 +313,98 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         sid = new_stream_id()
         with_stream_id(sid)
 
-        msg = ConsumerMessage(record, self._kafka_consumer)
-        handler_state, err = await self._handler.begin_request(self._sc)
-        if err is not None:
-            return
-
-        result: ResultContext[HandlerState, T, R, E] = ResultContext(handler_state)
-        if self._has_result and self._pending is not None:
-            self._pending.set(sid, result)
-
-        err = await self._handler.consume_message(self._sc, handler_state, msg, result)
-        if err is not None:
-            if self._has_result and self._pending is not None:
-                self._pending.pop(sid)
-            await self._handler.end_request(self._sc, err, handler_state)
-            return
-
-        if not self._has_result:
-            await self._handler.end_request(self._sc, None, handler_state)
-            return
-
+        ep = cast(DataSourceEndpoint, self._endpoint)
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "kafka.input",
+            string_attr("stream", self._input_stream.name),
+            string_attr("endpoint", ep.name),
+        )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
         try:
-            await result._done.wait()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if self._pending is not None:
-                self._pending.pop(sid)
+            with span.scoped():
+                msg = ConsumerMessage(record, self._kafka_consumer)
+                try:
+                    handler_state = await self._handler.begin_request(self._sc)
+                except Exception as err:
+                    ep.on_begin_request_failed(err)
+                    span_error(span, err)
+                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    end_err = err
+                    return
+                span_event(span, "begin_request")
 
-        await self._handler.end_request(self._sc, None, handler_state)
+                result: ResultContext[HandlerState, T, R, E] = ResultContext(handler_state)
+                result._span = span
+                if self._has_result and self._pending is not None:
+                    self._pending.set(sid, result)
+                    ep.on_pending_add(sid)
+
+                try:
+                    await self._handler.consume_message(self._sc, handler_state, msg, result)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    if self._has_result and self._pending is not None:
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+                    await self._handler.end_request(self._sc, err, handler_state)
+                    return
+                span_event(span, "consume_message")
+
+                if not self._has_result:
+                    await self._handler.end_request(self._sc, None, handler_state)
+                    return
+
+                try:
+                    await result._done.wait()
+                    span_event(span, "done_received")
+                except asyncio.CancelledError:
+                    span_event(span, "context_cancelled")
+                finally:
+                    if self._pending is not None:
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+
+                await self._handler.end_request(self._sc, None, handler_state)
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
 
     async def _consume_result(self, value: R) -> None:
         if not self._has_result or self._pending is None:
             return
+        ep = cast(DataSourceEndpoint, self._endpoint)
         sid = stream_id_from_context()
         if sid is None:
+            ep.on_missing_stream_id()
             return
         result, found = self._pending.get(sid)
         if not found or result is None:
+            ep.on_late_result(sid)
             return
 
         message_id = self._handler.get_message_id(self._sc, result._handler_state, value)
 
         async with result._cb_lock:
-            cb = result._callbacks.get(message_id)
+            cb = result._callbacks.pop(message_id, None)
             if cb is None:
+                ep.on_duplicate_message_id(sid, message_id)
+                span_event(result._span, "duplicate_message_id",
+                           string_attr("message_id", message_id))
                 return
             remove = cb(self._sc, result._handler_state, value)
-            if remove:
-                result._callbacks.pop(message_id, None)
+            if not remove:
+                result._callbacks[message_id] = cb
+
+
+def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
+    tracing = env.tracing
+    if tracing is None:
+        return None
+    return tracing.tracer(env.service_config.name)
 
 
 def make_aiokafka_endpoint_consumer[HandlerState, T, R, E](
@@ -378,4 +434,5 @@ def make_aiokafka_endpoint_consumer[HandlerState, T, R, E](
         endpoint=cast(_AIOKafkaEndpoint, endpoint),
         stream=stream,
         handler=handler,
+        tracer=_make_tracer(stream, env),
     )

@@ -4,11 +4,14 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
+from typing import Optional
+
 from ..runtime.common import (
     StreamFunction, Collect, Collector, TypedStream,
     TypedTransformConsumedStream, TypedConsumedStream, RuntimeHelpers, ErrorStream,
 )
 from ..runtime.config.stream_types import ProcessStreamConfig
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from ..runtime.serde.serde import StreamSerde, StubSerde
 from .functions import ProcessFunction
 
@@ -31,18 +34,22 @@ class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
     _f: ProcessFunctionContext[T, R, E]
     _error_stream: ErrorStream[E]
     _out_collector: Collector[R]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: ProcessStreamConfig, stream: TypedStream[T], fn: ProcessFunction[T, R, E]):
-        super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env,
+                         serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = ProcessFunctionContext[T, R, E](self, fn)
         self._error_stream = ErrorStream[E](
             stream_id=cfg.id,
-            env=stream.environment,
+            env=env,
             serde=StreamSerde(StubSerde('error')),
         )
         self._out_collector = Collector[R](None)
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
 
     @property
@@ -60,4 +67,10 @@ class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
         return self._error_stream
 
     async def consume(self, value: T) -> None:
-        await self._f.call(value, self._out_collector, self._error_stream)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.process",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                await self._f.call(value, self._out_collector, self._error_stream)
+        finally:
+            span.end()

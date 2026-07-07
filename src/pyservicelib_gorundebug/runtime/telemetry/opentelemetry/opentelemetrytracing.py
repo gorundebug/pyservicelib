@@ -3,8 +3,10 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
+from contextlib import contextmanager
 from typing import Tuple, Any
 
+from opentelemetry import context as otel_context
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -40,6 +42,15 @@ class _Span(Span):
 
     def __init__(self, span):
         self._span = span
+
+    @contextmanager
+    def scoped(self):
+        ctx = otel_trace.set_span_in_context(self._span)
+        token = otel_context.attach(ctx)
+        try:
+            yield self
+        finally:
+            otel_context.detach(token)
 
     def end(self) -> None:
         self._span.end()
@@ -83,7 +94,7 @@ class _Tracer(Tracer):
 
     def start(self, span_name: str, *attrs: Attribute) -> Tuple[Any, Span]:
         span = self._tracer.start_span(span_name, attributes=_to_otel_attrs(attrs))
-        return otel_trace.use_span(span), _Span(span)
+        return None, _Span(span)
 
 
 # ── Tracing ───────────────────────────────────────────────────────────────────

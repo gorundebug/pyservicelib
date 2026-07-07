@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
@@ -70,6 +71,12 @@ class Span(ABC):
 
     @abstractmethod
     def span_context(self) -> SpanContext: ...
+
+    @contextmanager
+    def scoped(self):
+        """Set this span as the current span for the duration of the block.
+        Child spans created within the block will be linked to this span."""
+        yield self
 
 
 # ── Noop span ─────────────────────────────────────────────────────────────────

@@ -4,18 +4,20 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-import random
 from typing import Optional, Protocol, Callable, Any, cast
 
 from aiokafka import AIOKafkaProducer  # type: ignore[import-untyped]
 
 from ...runtime.common import (
     Consumer, TypedSinkStream, ServiceExecutionEnvironment, Stream,
-    SinkEndpoint, CollectFunc, OutputEndpointConsumer,
+    SinkEndpoint, OutputEndpointConsumer,
 )
 from ...runtime.context import Context
 from ...runtime.context.request import with_stream_id
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
+from ...runtime.environment.tracing import (
+    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 
 class Partitioner[T](Protocol):
@@ -115,7 +117,7 @@ class EndpointHandler[HandlerState, T, R](Protocol):
         handler_state: HandlerState,
         value: T,
         msg: SinkMessage[R],
-    ) -> Optional[Exception]: ...
+    ) -> None: ...
 
     async def end_request(
         self,
@@ -194,6 +196,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
     _stream: TypedSinkStream[T, R]
     _handler: EndpointHandler[HandlerState, T, R]
     _partitioner: Optional[Partitioner[T]]
+    _tracer: Optional[Tracer]
 
     def __init__(
         self,
@@ -201,11 +204,13 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         stream: TypedSinkStream[T, R],
         handler: EndpointHandler[HandlerState, T, R],
         partitioner: Optional[Partitioner[T]] = None,
+        tracer: Optional[Tracer] = None,
     ):
         self._endpoint = endpoint
         self._stream = stream
         self._handler = handler
         self._partitioner = partitioner
+        self._tracer = tracer
 
         stream.set_sink_consumer(self)
         endpoint._consumer_obj = self
@@ -226,31 +231,59 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         sid = self._handler.get_stream_id(value)
         with_stream_id(sid)
 
-        handler_state = self._handler.begin_request(stream)
-
         ep = self._endpoint
-        ds = cast(_AIOKafkaSinkDataSink, ep.datasink)
-
-        # result_collect pushes R into the error stream (matching Go's pattern)
-        async def _result_collect(r: R) -> None:
-            if hasattr(stream, 'error_stream'):
-                await stream.error_stream.consume(r)  # type: ignore[arg-type]
-
-        def _send_fn(
-            key: Optional[bytes],
-            val: Optional[bytes],
-            on_delivery: Callable,
-        ) -> None:
-            asyncio.create_task(ds.send_message(ep.topic, key, val, on_delivery))
-
-        msg: SinkMessage[R] = SinkMessage[R](
-            topic=ep.topic,
-            send_fn=_send_fn,
-            result_collect=_result_collect,
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "kafka.output",
+            string_attr("stream", stream.name),
+            string_attr("endpoint", ep.name),
+            string_attr("stream_id", sid),
         )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
+        try:
+            with span.scoped():
+                handler_state = self._handler.begin_request(stream)
+                span_event(span, "begin_request")
 
-        err = await self._handler.consume_message(stream, handler_state, value, msg)
-        await self._handler.end_request(stream, err, handler_state)
+                ds = cast(_AIOKafkaSinkDataSink, ep.datasink)
+
+                async def _result_collect(r: R) -> None:
+                    if hasattr(stream, 'error_stream'):
+                        await stream.error_stream.consume(r)  # type: ignore[arg-type]
+
+                def _send_fn(
+                    key: Optional[bytes],
+                    val: Optional[bytes],
+                    on_delivery: Callable,
+                ) -> None:
+                    asyncio.create_task(ds.send_message(ep.topic, key, val, on_delivery))
+
+                msg: SinkMessage[R] = SinkMessage[R](
+                    topic=ep.topic,
+                    send_fn=_send_fn,
+                    result_collect=_result_collect,
+                )
+
+                try:
+                    await self._handler.consume_message(stream, handler_state, value, msg)
+                    span_event(span, "consume_message")
+                    await self._handler.end_request(stream, None, handler_state)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    await self._handler.end_request(stream, err, handler_state)
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
+
+
+def _make_tracer(stream: TypedSinkStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
+    tracing = env.tracing
+    if tracing is None:
+        return None
+    return tracing.tracer(env.service_config.name)
 
 
 def make_aiokafka_endpoint_consumer[HandlerState, T, R](
@@ -282,4 +315,5 @@ def make_aiokafka_endpoint_consumer[HandlerState, T, R](
         stream=stream,
         handler=handler,
         partitioner=partitioner,
+        tracer=_make_tracer(stream, env),
     )

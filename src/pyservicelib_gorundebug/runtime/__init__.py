@@ -9,4 +9,7 @@ from .common import (ServiceExecutionEnvironment, TypedConsumedStream,
                      ServiceStream, Stream, TypedLinkStream, TypedSinkStream,
                      TypedSinkStreamWithResult, TypedCaseStream, TypedWhenStream,
                      TypedInputStream, TypedSplitStream, TypedStreamConsumer, Consume)
+from .environment import Lifecycle
+from .graph import runtime_to_stream_app
+from .statusweb import status_handler, data_handler, graph_handler
 

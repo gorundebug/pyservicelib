@@ -4,9 +4,12 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
+from typing import Optional
+
 from ..runtime.common import TypedStream, TypedConsumedStream, StreamConsumer, Stream, ServiceExecutionEnvironment
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import MergeStreamConfig
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 
 
 class MergeLink[T](Stream, StreamConsumer[T]):
@@ -58,13 +61,23 @@ class MergeLink[T](Stream, StreamConsumer[T]):
 
 class MergeStream[T](TypedConsumedStream[T]):
     _links: list[MergeLink[T]]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: MergeStreamConfig, stream: TypedStream[T], *streams: TypedStream[T]):
-        super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env, serde=stream.serde)
         self._links = [MergeLink(self, 0, stream)]
         for i, s in enumerate(streams):
             self._links.append(MergeLink(self, i + 1, s))
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     async def consume(self, value: T) -> None:
-        if self._consumer is not None:
-            await self._consumer.consume(value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.merge",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                if self._consumer is not None:
+                    await self._consumer.consume(value)
+        finally:
+            span.end()

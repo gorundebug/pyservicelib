@@ -12,13 +12,16 @@ import aiohttp.log
 from aiohttp import web
 
 from ...runtime.common import (
-    TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
+    TypedInputStream, ServiceExecutionEnvironment,
     Consumer, StreamContext, CollectFunc,
 )
 from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.environment.tracing import (
+    Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 _PENDING_ROTATION_INTERVAL = 30.0
 
@@ -121,7 +124,7 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
         self,
         sc: StreamContext[T, R, E],
         data: HandlerData,
-    ) -> "tuple[HandlerData, HandlerState, Optional[Exception]]": ...
+    ) -> "tuple[HandlerData, HandlerState]": ...
 
     async def consume_message(
         self,
@@ -129,7 +132,7 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
         handler_state: HandlerState,
         data: HandlerData,
         result_ctx: "ResultContext[HandlerState, T, R, E]",
-    ) -> Optional[Exception]: ...
+    ) -> None: ...
 
     def get_message_id(
         self,
@@ -153,6 +156,8 @@ class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
     _done: asyncio.Event
     _callbacks: dict[str, Any]
     _cb_lock: asyncio.Lock
+    _span: Optional[Span]
+    _once: bool
 
     def __init__(self, handler_state: HandlerState, data: HandlerData):
         self.handler_state = handler_state
@@ -160,6 +165,8 @@ class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
         self._done = asyncio.Event()
         self._callbacks = {}
         self._cb_lock = asyncio.Lock()
+        self._span = None
+        self._once = False
 
     def set_result_callback(
         self,
@@ -169,6 +176,9 @@ class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
         self._callbacks[message_id] = cb
 
     def done(self) -> None:
+        if not self._once:
+            self._once = True
+            span_event(self._span, "done_called")
         self._done.set()
 
 
@@ -212,17 +222,20 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
     _sc: StreamContext[T, R, E]
     _has_result: bool
     _pending: Optional[RotatingMap[str, _HttpResult[HandlerState, T, R, E]]]
+    _tracer: Optional[Tracer]
 
     def __init__(
         self,
         endpoint: _NetHTTPEndpoint,
         stream: TypedInputStream[T, R, E],
         handler: EndpointHandler[HandlerState, T, R, E],
+        tracer: Optional[Tracer],
     ):
         super().__init__(endpoint=endpoint, input_stream=stream)
         self._handler = handler
         self._has_result = stream.get_result_stream() is not None
         self._pending = None
+        self._tracer = tracer
 
         self._sc = StreamContext[T, R, E](
             stream=stream,
@@ -251,64 +264,112 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
         sid = request.headers.get('x-stream-id') or new_stream_id()
         with_stream_id(sid)
 
-        handler_data, handler_state, err = await self._handler.begin_request(self._sc, data)
-        if err is not None:
-            await self._handler.end_request(self._sc, err, handler_state, handler_data)
-            if not data._response.done():
-                data.set_response(web.Response(status=500, text=str(err)))
-            return await data.get_response()
+        ep = cast(DataSourceEndpoint, self._endpoint)
+        cfg = ep.config
+        method = getattr(cfg, 'method', '') or ''
+        path = getattr(cfg, 'path', '') or ''
 
-        result: _HttpResult[HandlerState, T, R, E] = _HttpResult(handler_state, handler_data)
-        if self._has_result and self._pending is not None:
-            self._pending.set(sid, result)
-
-        err = await self._handler.consume_message(self._sc, handler_state, handler_data, result)
-        if err is not None:
-            if self._has_result and self._pending is not None:
-                self._pending.pop(sid)
-            await self._handler.end_request(self._sc, err, handler_state, handler_data)
-            if not data._response.done():
-                data.set_response(web.Response(status=500, text=str(err)))
-            return await data.get_response()
-
-        if not self._has_result:
-            await self._handler.end_request(self._sc, None, handler_state, handler_data)
-            if not data._response.done():
-                data.set_response(web.Response())
-            return await data.get_response()
-
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "http.input",
+            string_attr("stream", self._input_stream.name),
+            string_attr("endpoint", ep.name),
+            string_attr("method", method),
+            string_attr("path", path),
+        )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
         try:
-            await result._done.wait()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if self._pending is not None:
-                self._pending.pop(sid)
+            with span.scoped():
+                try:
+                    handler_data, handler_state = await self._handler.begin_request(self._sc, data)
+                except Exception as err:
+                    ep.on_begin_request_failed(err)
+                    span_error(span, err)
+                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    end_err = err
+                    if not data._response.done():
+                        data.set_response(web.Response(status=500, text=str(err)))
+                    return await data.get_response()
+                span_event(span, "begin_request")
 
-        await self._handler.end_request(self._sc, None, handler_state, handler_data)
-        if not data._response.done():
-            data.set_response(web.Response())
-        return await data.get_response()
+                result: _HttpResult[HandlerState, T, R, E] = _HttpResult(handler_state, handler_data)
+                result._span = span
+                if self._has_result and self._pending is not None:
+                    self._pending.set(sid, result)
+                    ep.on_pending_add(sid)
+
+                try:
+                    await self._handler.consume_message(self._sc, handler_state, handler_data, result)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    if self._has_result and self._pending is not None:
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+                    await self._handler.end_request(self._sc, err, handler_state, handler_data)
+                    if not data._response.done():
+                        data.set_response(web.Response(status=500, text=str(err)))
+                    return await data.get_response()
+                span_event(span, "consume_message")
+
+                if not self._has_result:
+                    await self._handler.end_request(self._sc, None, handler_state, handler_data)
+                    if not data._response.done():
+                        data.set_response(web.Response())
+                    return await data.get_response()
+
+                try:
+                    await result._done.wait()
+                    span_event(span, "done_received")
+                except asyncio.CancelledError:
+                    span_event(span, "context_cancelled")
+                finally:
+                    if self._pending is not None:
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+
+                await self._handler.end_request(self._sc, None, handler_state, handler_data)
+                if not data._response.done():
+                    data.set_response(web.Response())
+                return await data.get_response()
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
 
     async def _consume_result(self, value: R) -> None:
         if not self._has_result or self._pending is None:
             return
+        ep = cast(DataSourceEndpoint, self._endpoint)
         sid = stream_id_from_context()
         if sid is None:
+            ep.on_missing_stream_id()
             return
         result, found = self._pending.get(sid)
         if not found or result is None:
+            ep.on_late_result(sid)
             return
 
         message_id = self._handler.get_message_id(self._sc, result.handler_state, value)
 
         async with result._cb_lock:
-            cb = result._callbacks.get(message_id)
+            cb = result._callbacks.pop(message_id, None)
             if cb is None:
+                ep.on_duplicate_message_id(sid, message_id)
+                span_event(result._span, "duplicate_message_id",
+                           string_attr("message_id", message_id))
                 return
             remove = cb(self._sc, result.handler_state, value, result.data)
-            if remove:
-                result._callbacks.pop(message_id, None)
+            if not remove:
+                result._callbacks[message_id] = cb
+
+
+def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
+    tracing = env.tracing
+    if tracing is None:
+        return None
+    return tracing.tracer(env.service_config.name)
 
 
 def make_net_http_endpoint_consumer[HandlerState, T, R, E](
@@ -336,4 +397,5 @@ def make_net_http_endpoint_consumer[HandlerState, T, R, E](
         endpoint=cast(_NetHTTPEndpoint, endpoint),
         stream=stream,
         handler=handler,
+        tracer=_make_tracer(stream, env),
     )

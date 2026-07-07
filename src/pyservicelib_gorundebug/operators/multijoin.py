@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Hashable, Any, cast
+from typing import Hashable, Any, cast, Optional
 from datetime import timedelta
 from abc import ABC
 
@@ -13,6 +13,7 @@ from ..runtime.common import (StreamFunction, Collect, Collector, Stream, Stream
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import MultiJoinStreamConfig
 from ..runtime.datastruct import KeyValue
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from ..runtime.serde import Serializer, BytesBuffer, StreamKeyValueSerde
 from ..runtime.store import JoinStorageFactory, JoinStorage
 from ..runtime.store.storage import JoinStorageConfig
@@ -59,18 +60,22 @@ class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
     _join_storage: JoinStorage[K]
     _links: list["MultiJoinLinkStream"]
     _collector: Collector[R]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: MultiJoinStreamConfig, stream: TypedStream[KeyValue[K, T]],
                  fn: MultiJoinFunction[K, T, R]):
-        super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env,
+                         serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = MultiJoinFunctionContext[K, T, R](self, fn)
         self._links = []
         self._collector = Collector[R](None)
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
         self._join_storage = JoinStorageFactory[K]().make_storage(
-            cfg.join_storage, stream.environment, _MultiJoinStorageConfig(cfg))
+            cfg.join_storage, env, _MultiJoinStorageConfig(cfg))
         self.environment.runtime.register_storage(self._join_storage)
 
     @property
@@ -91,7 +96,13 @@ class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
         await self._join_storage.join_value(key, index, value, _join_callback)
 
     async def consume(self, value: KeyValue[K, T]) -> None:
-        await self._consume(value.key, 0, value.value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.join",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                await self._consume(value.key, 0, value.value)
+        finally:
+            span.end()
 
     async def consume_right(self, index: int, value: KeyValue[K, Any]) -> None:
         await self._consume(value.key, index, value.value)

@@ -11,6 +11,7 @@ from ..runtime.common import (
     RuntimeHelpers,
 )
 from ..runtime.config.stream_types import CaseStreamConfig, WhenStreamConfig
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from .functions import BuildSwitchFunction, When
 
 
@@ -66,14 +67,18 @@ class CaseStream[T](TypedCaseStream[T]):
     _when_streams: list[TypedWhenStream]
     _build_switch: BuildSwitchFunction[T]
     _when_func: Optional[Callable[[T], int]]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: CaseStreamConfig, stream: TypedStream[T],
                  build_switch: BuildSwitchFunction[T]):
-        super().__init__(stream_id=cfg.id, env=stream.environment, serde=stream.serde)
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env, serde=stream.serde)
         self._source = stream
         self._when_streams = []
         self._build_switch = build_switch
         self._when_func = None
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
 
     def add_stream(self, stream: TypedWhenStream) -> None:
@@ -81,9 +86,15 @@ class CaseStream[T](TypedCaseStream[T]):
         self._when_streams.append(stream)
 
     async def consume(self, value: T) -> None:
-        if self._when_func is not None:
-            index = self._when_func(value)
-            await self._when_streams[index].consume_case(value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.case",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                if self._when_func is not None:
+                    index = self._when_func(value)
+                    await self._when_streams[index].consume_case(value)
+        finally:
+            span.end()
 
     def build(self) -> None:
         self._when_func = self._build_switch.build_switch(self, self._when_streams)  # type: ignore[arg-type]

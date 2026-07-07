@@ -6,21 +6,24 @@
 import argparse
 import os
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from typing import cast, Optional, Any, Callable, Set
 import aiofiles
 import yaml
+from aiohttp import web
 from watchfiles import awatch, Change
 import asyncio
 
 from ..api.models.call_semantics import CallSemantics
-from .environment import ServiceDependency
+from .environment import ServiceDependency, Lifecycle
 from .config import Config, ServiceConfig, ServiceAppConfig, LinkId
 from .config import TypeConfig, ConfigSettings, replace_placeholders
 from .context import Context
 from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
 from .common import Endpoint, ServiceStream, Stream
 from .common import ServiceExecutionRuntime, ServiceExecutionEnvironment
+from .common import RuntimeLinkInfo, RuntimeEndpointConsumer
 from .environment.metrics import MetricsEngine
 from .pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool, make_task_pool, \
     make_priority_task_pool
@@ -56,7 +59,12 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _tasks: Set[asyncio.Task[Any]]
     _storages: list[Storage]
     _consume_statistics: dict[LinkId, ConsumeStatistics]
+    _runtime_links: list[RuntimeLinkInfo]
+    _endpoint_consumers: dict[int, RuntimeEndpointConsumer]
     _dep: Optional[ServiceDependency]
+    _components: list[Lifecycle]
+    _aiohttp_app: Optional[web.Application]
+    _aiohttp_runner: Optional[web.AppRunner]
 
     def __init__(self):
         self._dataSources = {}
@@ -68,10 +76,29 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._tasks = set()
         self._storages = []
         self._consume_statistics = {}
+        self._runtime_links = []
+        self._endpoint_consumers = {}
         self._tracing_engine = None
+        self._components = []
+        self._aiohttp_app = None
+        self._aiohttp_runner = None
 
     def reload_config(self, cfg: Config) -> None:
         pass
+
+    def add_component(self, component: Lifecycle) -> None:
+        self._components.append(component)
+
+    def has_custom_http_server(self) -> bool:
+        return False
+
+    def register_http_handler(self, path: str, handler: Callable[..., Any]) -> None:
+        if self._aiohttp_app is None:
+            raise RuntimeError("HTTP server was not initialized for application")
+        self._aiohttp_app.router.add_route('*', path, handler)
+
+    def service_context(self) -> Any:
+        return self
 
     async def service_init(self, name: str, dep: Optional[ServiceDependency], loader: ServiceLoader, cfg: Config) -> None:
         self._dep = dep
@@ -119,9 +146,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     call_semantics = link.income_call_semantics
                 if call_semantics not in [CallSemantics.FunctionCall,
                                           CallSemantics.TaskPool,
-                                          CallSemantics.PriorityTaskPool]:
+                                          CallSemantics.PriorityTaskPool,
+                                          CallSemantics.ParallelCall]:
                     raise ValueError(f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}")
-                if call_semantics != CallSemantics.FunctionCall:
+                if call_semantics in [CallSemantics.TaskPool, CallSemantics.PriorityTaskPool]:
                     if stream_from.id_service == service_config.id:
                         if link.pool_name is None:
                             raise ValueError(f"Pool name does not defined for link from={link.var_from} to={link.to}")
@@ -144,8 +172,17 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                         if pool_name not in self._priority_task_pools:
                             self._priority_task_pools[pool_name] = make_priority_task_pool(pool_name, self)
 
+        info_gauge = self._metrics_engine.metrics.scope("service", {
+            "service": service_config.name,
+            "environment": str(service_config.environment),
+        }).gauge("info", "Service information (value is always 1)", {})
+        info_gauge.set(1)
+
+        if not self.has_custom_http_server():
+            self._aiohttp_app = web.Application()
+
     async def release(self) -> None:
-        await self._logs_engine.shutdown()
+        pass
 
     @property
     def service_dependency(self) -> Optional[ServiceDependency]:
@@ -236,6 +273,12 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
         self._consume_statistics[link_id] = statistics
 
+    def register_link_info(self, link_info: RuntimeLinkInfo) -> None:
+        self._runtime_links.append(link_info)
+
+    def register_endpoint_consumer(self, consumer: RuntimeEndpointConsumer) -> None:
+        self._endpoint_consumers[consumer.id] = consumer
+
     def register_storage(self, storage: Storage) -> None:
         self._storages.append(storage)
 
@@ -258,16 +301,75 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         pass
 
     async def start(self, ctx: Context) -> None:
-        await self._delay_pool.start(ctx)
+        from .statusweb import status_handler as _status_handler, data_handler as _data_handler, \
+            graph_handler as _graph_handler
+
+        for stream in self._streams.values():
+            stream.build()
+
         for ds in self._dataSources.values():
             await ds.start(ctx)
+        for ds in self._dataSinks.values():
+            await ds.start(ctx)
+        for storage in self._storages:
+            await storage.start(ctx)
+        await self._delay_pool.start(ctx)
+        for pool in self._task_pools.values():
+            await pool.start(ctx)
+        for pool in self._priority_task_pools.values():
+            await pool.start(ctx)
+        for component in self._components:
+            await component.start(ctx)
+
+        service_config = self.service_config
+        if service_config.status_handler:
+            status_path = '/' + service_config.status_handler.lstrip('/')
+            self.register_http_handler(status_path, partial(_status_handler, self))
+            self.register_http_handler(status_path + '/data', partial(_data_handler, self))
+            self.register_http_handler(status_path + '/graph', partial(_graph_handler, self))
+
+        if service_config.metrics_handler:
+            metrics_path = '/' + service_config.metrics_handler.lstrip('/')
+            mh = self._metrics_engine.metrics_handler
+
+            async def _metrics_http_handler(request: web.Request, _h=mh) -> web.Response:
+                data = _h()
+                return web.Response(body=data, content_type='text/plain; version=0.0.4; charset=utf-8')
+
+            self.register_http_handler(metrics_path, _metrics_http_handler)
+
+        if self._aiohttp_app is not None:
+            self._aiohttp_runner = web.AppRunner(self._aiohttp_app)
+            await self._aiohttp_runner.setup()
+            site = web.TCPSite(self._aiohttp_runner, service_config.http_host, service_config.http_port)
+            await site.start()
 
     async def stop(self, ctx: Context) -> None:
+        # Phase 1: concurrent — loader, pools, components, sources, HTTP server
+        phase1: list[asyncio.Task[Any]] = []
+        phase1.append(asyncio.create_task(self._loader.stop()))
+        phase1.append(asyncio.create_task(self._delay_pool.stop(ctx)))
+        for pool in self._task_pools.values():
+            phase1.append(asyncio.create_task(pool.stop(ctx)))
+        for pool in self._priority_task_pools.values():
+            phase1.append(asyncio.create_task(pool.stop(ctx)))
+        for component in self._components:
+            phase1.append(asyncio.create_task(component.stop(ctx)))
         for ds in self._dataSources.values():
-            await ds.stop(ctx)
+            phase1.append(asyncio.create_task(ds.stop(ctx)))
+        if self._aiohttp_runner is not None:
+            phase1.append(asyncio.create_task(self._aiohttp_runner.cleanup()))
+        await asyncio.gather(*phase1, return_exceptions=True)
 
-        await self._delay_pool.stop(ctx)
-        await self._loader.stop()
+        # Phase 2: concurrent — sinks
+        phase2 = [asyncio.create_task(ds.stop(ctx)) for ds in self._dataSinks.values()]
+        if phase2:
+            await asyncio.gather(*phase2, return_exceptions=True)
+
+        await self._metrics_engine.shutdown()
+        if self._tracing_engine is not None:
+            await self._tracing_engine.shutdown()
+        await self._logs_engine.shutdown()
 
     def add_datasource(self, datasource: DataSource) -> None:
         self._dataSources[datasource.id] = datasource

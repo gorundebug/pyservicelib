@@ -4,12 +4,19 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
 from ..config import ServiceAppConfig, ServiceConfig
+from ..context import Context
 from .log import Logger, LogsEngine
 from .metrics import Metrics, MetricsEngine
 from .tracing import Tracing, TracingEngine
+
+
+@runtime_checkable
+class Lifecycle(Protocol):
+    async def start(self, ctx: Context) -> None: ...
+    async def stop(self, ctx: Context) -> None: ...
 
 
 class ServiceEnvironment(ABC):

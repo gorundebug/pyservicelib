@@ -7,11 +7,14 @@ from typing import Protocol, Optional, Any, cast
 from abc import ABC, abstractmethod
 
 from ...runtime.common import (
-    TypedSinkStream, TypedConsumedStream, ServiceExecutionEnvironment,
+    TypedSinkStream, ServiceExecutionEnvironment,
     DataSink, SinkEndpoint, Consumer, Collect, CollectFunc,
 )
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
+from ...runtime.environment.tracing import (
+    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 
 class EndpointHandler[HandlerState, T, E](Protocol):
@@ -39,7 +42,7 @@ class EndpointHandler[HandlerState, T, E](Protocol):
         self, ctx: Context, stream: TypedSinkStream[T, E],
         handler_state: HandlerState, value: T,
         result_stream: Collect[E],
-    ) -> Optional[Exception]:
+    ) -> None:
         ...
 
     async def end_request(
@@ -99,20 +102,49 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
         DataSinkEndpointConsumer[T, E], Consumer[T], CustomEndpointConsumer):
     _handler: EndpointHandler[HandlerState, T, E]
     _ctx: Optional[Context]
+    _tracer: Optional[Tracer]
 
     def __init__(self, endpoint: SinkEndpoint, sink_stream: TypedSinkStream[T, E],
                  handler: EndpointHandler[HandlerState, T, E]):
         DataSinkEndpointConsumer.__init__(self, endpoint=endpoint, sink_stream=sink_stream)
         self._handler = handler
         self._ctx = None
+        env = sink_stream.environment
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     async def consume(self, value: T) -> None:
         ctx = self._ctx or Context()
         stream = self.stream
-        handler_ctx, handler_state = await self._handler.begin_request(ctx, stream)
-        rs: Collect[E] = CollectFunc[E](stream.error_stream.consume)
-        err = await self._handler.consume_message(handler_ctx, stream, handler_state, value, rs)
-        await self._handler.end_request(handler_ctx, stream, err, handler_state)
+        ep = cast(DataSinkEndpoint, self._endpoint)
+
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "local.output",
+            string_attr("stream", stream.name),
+            string_attr("endpoint", ep.name),
+        )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
+        try:
+            with span.scoped():
+                handler_ctx, handler_state = await self._handler.begin_request(ctx, stream)
+                span_event(span, "begin_request")
+
+                rs: Collect[E] = CollectFunc[E](stream.error_stream.consume)
+                try:
+                    await self._handler.consume_message(
+                        handler_ctx, stream, handler_state, value, rs)
+                    span_event(span, "consume_message")
+                    await self._handler.end_request(handler_ctx, stream, None, handler_state)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    await self._handler.end_request(handler_ctx, stream, err, handler_state)
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
 
     async def start(self, ctx: Context) -> None:
         self._ctx = ctx

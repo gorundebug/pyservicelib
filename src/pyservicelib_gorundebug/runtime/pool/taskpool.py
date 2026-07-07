@@ -58,6 +58,10 @@ class TaskPoolImpl(TaskPool):
         self._task_rejected_counter = scope.counter('events_total', 'Total number of events in task pool', {'event': 'task_rejected'})
         self._task_cancelled_counter = scope.counter('events_total', 'Total number of events in task pool', {'event': 'task_cancelled'})
 
+    @property
+    def name(self) -> str:
+        return self._name
+
     async def _run_task(self, task: _PoolTask) -> None:
         token = request_deadline.set(task.deadline) if task.deadline is not None else None
         cancelled_token = request_cancelled.set(task.cancelled_event) if task.cancelled_event is not None else None

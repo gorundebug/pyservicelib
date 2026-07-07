@@ -12,6 +12,7 @@ from ..runtime.common import (
 )
 from ..runtime.config.stream_types import InputStreamConfig
 from ..runtime.datastruct import KeyValue
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from ..runtime.serde.serde import StreamSerde, StubSerde
 
 
@@ -35,6 +36,7 @@ class InputStream[T, R, E](TypedInputStream[T, R, E]):
     _result_consumer: Optional[Consumer[R]]
     _result_link: Optional[_ResultLink[T, R, E]]
     _result_source: Optional[TypedStream[R]]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: InputStreamConfig, env: ServiceExecutionEnvironment):
         super().__init__(stream_id=cfg.id, env=env,
@@ -48,6 +50,8 @@ class InputStream[T, R, E](TypedInputStream[T, R, E]):
         self._result_consumer = None
         self._result_link = None
         self._result_source = None
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     @property
     def endpoint_id(self) -> int:
@@ -74,8 +78,14 @@ class InputStream[T, R, E](TypedInputStream[T, R, E]):
             await self._result_consumer.consume(value)
 
     async def consume(self, value: T) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.input",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                if self._caller is not None:
+                    await self._caller.consume(value)
+        finally:
+            span.end()
 
 
 class _ResultLinkKV[K, V, R, E](StreamConsumer[R]):
@@ -98,6 +108,7 @@ class InputKVStream[K, V, R, E](TypedInputStream[KeyValue[K, V], R, E]):
     _result_consumer: Optional[Consumer[R]]
     _result_link: Optional[_ResultLinkKV[K, V, R, E]]
     _result_source: Optional[TypedStream[R]]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: InputStreamConfig, env: ServiceExecutionEnvironment):
         super().__init__(
@@ -117,6 +128,8 @@ class InputKVStream[K, V, R, E](TypedInputStream[KeyValue[K, V], R, E]):
         self._result_consumer = None
         self._result_link = None
         self._result_source = None
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     @property
     def endpoint_id(self) -> int:
@@ -143,5 +156,11 @@ class InputKVStream[K, V, R, E](TypedInputStream[KeyValue[K, V], R, E]):
             await self._result_consumer.consume(value)
 
     async def consume(self, value: KeyValue[K, V]) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.input",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                if self._caller is not None:
+                    await self._caller.consume(value)
+        finally:
+            span.end()

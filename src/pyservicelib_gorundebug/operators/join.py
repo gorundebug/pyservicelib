@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
-from typing import Hashable, Any
+from typing import Hashable, Any, Optional
 from datetime import timedelta
 
 from ..runtime.common import (StreamFunction, Collect, Collector, Stream, StreamConsumer,
@@ -12,6 +12,7 @@ from ..runtime.common import (StreamFunction, Collect, Collector, Stream, Stream
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import JoinStreamConfig
 from ..runtime.datastruct import KeyValue
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from ..runtime.store import JoinStorageFactory, JoinStorage
 from ..runtime.store.storage import JoinStorageConfig
 from .functions import JoinFunction
@@ -57,21 +58,25 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
     _join_link: "JoinLink[K, T1, T2, R]"
     _join_storage: JoinStorage[K]
     _collector: Collector[R]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: JoinStreamConfig, stream: TypedStream[KeyValue[K, T1]],
                  right_stream: TypedStream[KeyValue[K, T2]],
                  fn: JoinFunction[K, T1, T2, R]):
         from ..api.models.join_type import JoinType
-        super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env,
+                         serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = JoinFunctionContext[K, T1, T2, R](self, fn)
         self._join_type = cfg.join_type
         self._collector = Collector[R](None)
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
         self._join_link = JoinLink[K, T1, T2, R](self, right_stream)
         self._join_storage = JoinStorageFactory[K]().make_storage(
-            cfg.join_storage, stream.environment, _JoinStorageConfig(cfg))
+            cfg.join_storage, env, _JoinStorageConfig(cfg))
         self.environment.runtime.register_storage(self._join_storage)
 
     @property
@@ -103,7 +108,13 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
         await self._join_storage.join_value(key, index, value, _join_callback)
 
     async def consume(self, value: KeyValue[K, T1]) -> None:
-        await self._consume(value.key, 0, value.value)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.join",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                await self._consume(value.key, 0, value.value)
+        finally:
+            span.end()
 
     async def consume_right(self, value: KeyValue[K, T2]) -> None:
         await self._consume(value.key, 1, value.value)

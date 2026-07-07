@@ -5,6 +5,7 @@
 #   file for details.
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
 from typing import cast, Iterable
@@ -17,6 +18,7 @@ from .serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from .store import Storage
 from .pool import TaskPool, PriorityTaskPool
 from .environment.metrics import Metrics
+from .environment.tracing import Tracer, start_span, span_error, string_attr, sampling_enabled
 from .context import Context
 from .datastruct import KeyValue
 from .config import EndpointConfig, DataConnectorConfig
@@ -65,35 +67,79 @@ class Caller[T](Consumer[T], ABC):
     _statistics: CallerStatistics
     _source: "TypedStream[T]"
     _consumer: "StreamConsumer[T]"
+    _tracer: Optional[Tracer]
 
-    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics):
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
         self._source = source
         if source.consumer is None:
             raise ValueError(f"The source stream named '{source.name}' does not have consumer in Caller constructor")
         self._consumer = source.consumer
         self._statistics = statistics
+        self._tracer = tracer
+
+    @property
+    def is_async(self) -> bool:
+        return False
 
 
 class DirectCaller[T](Caller[T]):
 
-    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics):
-        super().__init__(source=source, statistics=statistics)
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer)
 
     async def consume(self, value: T):
-        await self._consumer.consume(value)
-        self._statistics.inc()
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
+                             string_attr("from", self._source.name),
+                             string_attr("to", self._consumer.stream.name))
+        try:
+            with span.scoped():
+                await self._consumer.consume(value)
+            self._statistics.inc()
+        finally:
+            span.end()
+
+    @property
+    def is_async(self) -> bool:
+        return False
 
 
 class TaskPoolCaller[T](Caller[T]):
     _task_pool: TaskPool
 
-    def __init__(self, task_pool: TaskPool, source: "TypedStream[T]", statistics: CallerStatistics):
-        super().__init__(source=source, statistics=statistics)
+    def __init__(self, task_pool: TaskPool, source: "TypedStream[T]", statistics: CallerStatistics,
+                 tracer: Optional[Tracer] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer)
         self._task_pool = task_pool
 
     async def consume(self, value: T):
-        await self._task_pool.add_task(self.consume, value)
-        self._statistics.inc()
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
+                             string_attr("from", self._source.name),
+                             string_attr("to", self._consumer.stream.name),
+                             string_attr("type", "taskpool"),
+                             string_attr("taskpoolname", self._task_pool.name))
+        consumer = self._consumer
+
+        async def _task():
+            try:
+                with span.scoped():
+                    await consumer.consume(value)
+            except Exception as e:
+                span_error(span, e)
+                raise
+            finally:
+                span.end()
+
+        try:
+            await self._task_pool.add_task(_task)
+            self._statistics.inc()
+        except Exception as e:
+            span_error(span, e)
+            span.end()
+            raise
+
+    @property
+    def is_async(self) -> bool:
+        return True
 
 
 class PriorityTaskPoolCaller[T](Caller[T]):
@@ -103,14 +149,73 @@ class PriorityTaskPoolCaller[T](Caller[T]):
     def __init__(self, priority_task_pool: PriorityTaskPool,
                  priority: int,
                  source: "TypedStream[T]",
-                 statistics: CallerStatistics):
-        super().__init__(source=source, statistics=statistics)
+                 statistics: CallerStatistics,
+                 tracer: Optional[Tracer] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer)
         self._priority_task_pool = priority_task_pool
         self._priority = priority
 
     async def consume(self, value: T):
-        await self._priority_task_pool.add_task(self._priority, self.consume, value)
+        from .context import priority_from_context
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
+                             string_attr("from", self._source.name),
+                             string_attr("to", self._consumer.stream.name),
+                             string_attr("type", "prioritytaskpool"),
+                             string_attr("taskpoolname", self._priority_task_pool.name))
+        priority = priority_from_context()
+        if priority is None:
+            priority = self._priority
+        consumer = self._consumer
+
+        async def _task():
+            try:
+                with span.scoped():
+                    await consumer.consume(value)
+            except Exception as e:
+                span_error(span, e)
+                raise
+            finally:
+                span.end()
+
+        try:
+            await self._priority_task_pool.add_task(priority, _task)
+            self._statistics.inc()
+        except Exception as e:
+            span_error(span, e)
+            span.end()
+            raise
+
+    @property
+    def is_async(self) -> bool:
+        return True
+
+
+class ParallelCaller[T](Caller[T]):
+
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer)
+
+    async def consume(self, value: T):
+        import asyncio
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
+                             string_attr("from", self._source.name),
+                             string_attr("to", self._consumer.stream.name),
+                             string_attr("type", "parallel"))
+        consumer = self._consumer
+
+        async def _task():
+            try:
+                with span.scoped():
+                    await consumer.consume(value)
+            finally:
+                span.end()
+
+        asyncio.create_task(_task())
         self._statistics.inc()
+
+    @property
+    def is_async(self) -> bool:
+        return True
 
 
 class Collect[T](ABC):
@@ -161,36 +266,48 @@ class RuntimeHelpers[T]:
             raise ValueError(f"The source stream named '{source.name}' does not have consumer in make_caller")
 
         link = cfg.get_link(source.id, consumer.stream.id)
-        if link is None:
-            raise ValueError(f"No link found between streams from={source.id} to={consumer.stream.id}")
         stream_cfg = source.config
-        if stream_cfg.id_service == service_config.id:
-            call_semantics = link.call_semantics
-        else:
-            if link.income_call_semantics is None:
-                raise ValueError(f"Invalid income call semantics for link from={source.id} to={consumer.stream.id}")
-            call_semantics = link.income_call_semantics
+        call_semantics: Optional[CallSemantics] = None
+        if link is not None:
+            if stream_cfg.id_service == service_config.id:
+                call_semantics = link.call_semantics
+            else:
+                call_semantics = link.income_call_semantics
+        if call_semantics is None or call_semantics == CallSemantics.Inherited:
+            call_semantics = service_config.default_call_semantics
+        if call_semantics is None or call_semantics == CallSemantics.Inherited:
+            call_semantics = CallSemantics.FunctionCall
 
         statistics = CallerStatistics()
+        runtime.register_consume_statistics(LinkId(from_id=source.id, to_id=consumer.stream.id), statistics)
+        runtime.register_link_info(RuntimeLinkInfo(from_id=source.id, to_id=consumer.stream.id, call_semantics=call_semantics))
+
+        tracing = env.tracing
+        tracer = tracing.tracer(service_config.name) if tracing is not None else None
 
         if call_semantics == CallSemantics.FunctionCall:
-            return DirectCaller[T](source=source, statistics=statistics)
+            return DirectCaller[T](source=source, statistics=statistics, tracer=tracer)
 
         elif call_semantics == CallSemantics.TaskPool:
-
+            if link is None:
+                raise ValueError(f"TaskPool call semantics requires an explicit link config "
+                                 f"for streams from={source.id} to={consumer.stream.id}")
             pool_name = link.pool_name if stream_cfg.id_service == service_config.id else link.income_pool_name
             if pool_name is None:
-                raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "}\
-pool name for link between streams from={source.id} to={consumer.stream.id}")
+                raise ValueError(f"Invalid {'' if stream_cfg.id_service == service_config.id else 'income '}"
+                                 f"pool name for link between streams from={source.id} to={consumer.stream.id}")
 
-            return TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source, statistics=statistics)
+            return TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source,
+                                     statistics=statistics, tracer=tracer)
 
         elif call_semantics == CallSemantics.PriorityTaskPool:
-
+            if link is None:
+                raise ValueError(f"PriorityTaskPool call semantics requires an explicit link config "
+                                 f"for streams from={source.id} to={consumer.stream.id}")
             pool_name = link.pool_name if stream_cfg.id_service == service_config.id else link.income_pool_name
             if pool_name is None:
-                raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "} priority\
-task pool name for link between streams from={source.id} to={consumer.stream.id}")
+                raise ValueError(f"Invalid {'' if stream_cfg.id_service == service_config.id else 'income '}"
+                                 f"priority task pool name for link between streams from={source.id} to={consumer.stream.id}")
 
             priority = link.priority if stream_cfg.id_service == service_config.id else link.income_priority
             if priority is None:
@@ -200,7 +317,11 @@ for link between streams from={source.id} to={consumer.stream.id}")
             return PriorityTaskPoolCaller[T](priority_task_pool=runtime.get_priority_task_pool(pool_name),
                                              priority=priority,
                                              source=source,
-                                             statistics=statistics)
+                                             statistics=statistics,
+                                             tracer=tracer)
+
+        elif call_semantics == CallSemantics.ParallelCall:
+            return ParallelCaller[T](source=source, statistics=statistics, tracer=tracer)
 
         raise ValueError(f"Invalid call semantics: {call_semantics}")
 
@@ -320,6 +441,46 @@ class InputEndpoint(Endpoint):
     def endpoint_consumers(self) -> Iterable[InputEndpointConsumer]:
         pass
 
+    @abstractmethod
+    def on_missing_stream_id(self) -> None:
+        pass
+
+    @abstractmethod
+    def on_late_result(self, stream_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_unknown_message_id(self, stream_id: str, message_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_duplicate_message_id(self, stream_id: str, message_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_pending_add(self, stream_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_pending_remove(self, stream_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_request_start(self) -> float:
+        pass
+
+    @abstractmethod
+    def on_request_end(self, start_time: float, err: Optional[Exception]) -> None:
+        pass
+
+    @abstractmethod
+    def on_invalid_http_method(self, method: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_begin_request_failed(self, err: Exception) -> None:
+        pass
+
 
 class DataSink(DataConnector):
 
@@ -388,6 +549,21 @@ class SinkEndpoint(Endpoint):
     def endpoint_consumers(self) -> Iterable[OutputEndpointConsumer]:
         pass
 
+    @abstractmethod
+    def on_begin_request_failed(self, err: Exception) -> None:
+        pass
+
+    @abstractmethod
+    def on_late_result(self, stream_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_request_start(self) -> float:
+        pass
+
+    @abstractmethod
+    def on_request_end(self, start_time: float, err: Optional[Exception]) -> None:
+        pass
 
 
 class Stream(ABC):
@@ -797,6 +973,47 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
     async def delay(self, duration: timedelta, task: Callable[..., Any], *args, **kwargs):
         pass
 
+    def has_custom_http_server(self) -> bool:
+        return False
+
+    @abstractmethod
+    def register_http_handler(self, path: str, handler: Callable[..., Any]) -> None:
+        pass
+
+    def service_context(self) -> Any:
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLinkInfo:
+    from_id: int
+    to_id: int
+    call_semantics: CallSemantics
+
+
+class RuntimeStream(ABC):
+
+    @abstractmethod
+    def build(self) -> None:
+        pass
+
+    @abstractmethod
+    def get_consumers(self) -> list["Stream"]:
+        pass
+
+    @property
+    @abstractmethod
+    def stream(self) -> "Stream":
+        pass
+
+
+class RuntimeEndpointConsumer(ABC):
+
+    @property
+    @abstractmethod
+    def id(self) -> int:
+        pass
+
 
 class ServiceLoader(ABC):
 
@@ -832,6 +1049,14 @@ class ServiceExecutionRuntime(ABC):
 
     @abstractmethod
     def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
+        pass
+
+    @abstractmethod
+    def register_link_info(self, link_info: RuntimeLinkInfo) -> None:
+        pass
+
+    @abstractmethod
+    def register_endpoint_consumer(self, consumer: RuntimeEndpointConsumer) -> None:
         pass
 
     @abstractmethod

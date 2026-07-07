@@ -4,8 +4,11 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
+from typing import Optional
+
 from ..runtime.common import StreamFunction, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from ..runtime.config.stream_types import MapStreamConfig
+from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from .functions import MapFunction
 
 
@@ -26,15 +29,25 @@ class MapFunctionContext[T, R](StreamFunction[R]):
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
     _f: MapFunctionContext[T, R]
+    _tracer: Optional[Tracer]
 
     def __init__(self, cfg: MapStreamConfig, stream: TypedStream[T], fn: MapFunction[T, R]):
-        super().__init__(stream_id=cfg.id, env=stream.environment,
-                         serde=RuntimeHelpers[R](stream.environment).make_stream_serde(type_name=cfg.value_type))
+        env = stream.environment
+        super().__init__(stream_id=cfg.id, env=env,
+                         serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = MapFunctionContext[T, R](self, fn)
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        v = await self._f.call(value)
-        if self._caller is not None:
-            await self._caller.consume(v)
+        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.map",
+                             string_attr("stream", self.name))
+        try:
+            with span.scoped():
+                v = await self._f.call(value)
+                if self._caller is not None:
+                    await self._caller.consume(v)
+        finally:
+            span.end()

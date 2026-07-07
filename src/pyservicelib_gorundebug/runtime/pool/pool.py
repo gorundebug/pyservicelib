@@ -87,12 +87,22 @@ class DelayPool(Pool):
 
 class PriorityTaskPool(Pool):
 
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
     @abstractmethod
     async def add_task(self, priority: int, fn: Callable[..., Any], *args, **kwargs) -> None:
         pass
 
 
 class TaskPool(Pool):
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
 
     @abstractmethod
     async def add_task(self, fn: Callable[..., Any], *args, **kwargs) -> None:

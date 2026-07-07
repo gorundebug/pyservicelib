@@ -15,6 +15,9 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.context.request import stream_id_from_context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
+from ...runtime.environment.tracing import (
+    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 
 class Requester:
@@ -39,8 +42,19 @@ class Requester:
         """Configure the outgoing request. kwargs are passed to aiohttp.ClientSession.request."""
         self._method = method
         self._url = url
-        self._kwargs = kwargs
+        self._kwargs = dict(kwargs)
         return self
+
+    def set_header(self, name: str, value: str) -> None:
+        """Add or overwrite a request header without exposing _kwargs internals."""
+        headers = self._kwargs.get('headers')
+        if headers is None:
+            headers = {}
+            self._kwargs['headers'] = headers
+        elif not isinstance(headers, dict):
+            headers = dict(headers)
+            self._kwargs['headers'] = headers
+        headers[name] = value
 
     async def execute(self) -> aiohttp.ClientResponse:
         if self._method is None or self._url is None:
@@ -89,7 +103,7 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
     async def begin_request(
         self,
         sc: SinkStreamContext[T, R, E],
-    ) -> "tuple[HandlerState, Optional[Exception]]": ...
+    ) -> HandlerState: ...
 
     async def consume_message(
         self,
@@ -97,14 +111,14 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
         handler_state: HandlerState,
         value: T,
         req: Requester,
-    ) -> Optional[Exception]: ...
+    ) -> None: ...
 
     async def handle_response(
         self,
         sc: SinkStreamContext[T, R, E],
         handler_state: HandlerState,
         resp: Response,
-    ) -> Optional[Exception]: ...
+    ) -> None: ...
 
     async def end_request(
         self,
@@ -165,17 +179,20 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
     _handler: EndpointHandler[HandlerState, T, R, E]
     _session: Optional[aiohttp.ClientSession]
     _sc: SinkStreamContext[T, R, E]
+    _tracer: Optional[Tracer]
 
     def __init__(
         self,
         endpoint: _AIOHttpSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, T, R, E],
+        tracer: Optional[Tracer],
     ):
         self._endpoint = endpoint
         self._stream = stream
         self._handler = handler
         self._session = None
+        self._tracer = tracer
 
         self._sc = SinkStreamContext[T, R, E](
             stream=stream,
@@ -205,38 +222,75 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
             )
             return
 
-        handler_state, err = await self._handler.begin_request(self._sc)
-        if err is not None:
-            return
-
-        # Propagate stream_id as header
-        sid = stream_id_from_context()
-        req = Requester(self._session)
-        if sid is not None:
-            # Handler should set x-stream-id header; we expose sid via req metadata
-            req._kwargs.setdefault('headers', {})
-            if isinstance(req._kwargs['headers'], dict):
-                req._kwargs['headers']['x-stream-id'] = sid
-
-        err = await self._handler.consume_message(self._sc, handler_state, value, req)
-        if err is not None:
-            await self._handler.end_request(self._sc, err, handler_state)
-            return
-
+        ep = self._endpoint
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "http.output",
+            string_attr("stream", self._stream.name),
+            string_attr("endpoint", ep.name),
+        )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
         try:
-            resp_raw = await req.execute()
-        except Exception as e:
-            await self._handler.end_request(self._sc, e, handler_state)
-            return
+            with span.scoped():
+                try:
+                    handler_state = await self._handler.begin_request(self._sc)
+                except Exception as err:
+                    ep.on_begin_request_failed(err)
+                    span_error(span, err)
+                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    end_err = err
+                    return
+                span_event(span, "begin_request")
 
-        async with resp_raw:
-            err = await self._handler.handle_response(self._sc, handler_state, Response(resp_raw))
+                sid = stream_id_from_context()
+                req = Requester(self._session)
+                if sid is not None:
+                    req.set_header('x-stream-id', sid)
 
-        if err is not None:
-            await self._handler.end_request(self._sc, err, handler_state)
-            return
+                try:
+                    await self._handler.consume_message(self._sc, handler_state, value, req)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    await self._handler.end_request(self._sc, err, handler_state)
+                    return
+                span_event(span, "consume_message")
 
-        await self._handler.end_request(self._sc, None, handler_state)
+                try:
+                    resp_raw = await req.execute()
+                except Exception as e:
+                    span_error(span, e)
+                    span_event(span, "http_call.error", string_attr("error", str(e)))
+                    end_err = e
+                    await self._handler.end_request(self._sc, e, handler_state)
+                    return
+                span_event(span, "http_call")
+
+                async with resp_raw:
+                    try:
+                        await self._handler.handle_response(
+                            self._sc, handler_state, Response(resp_raw))
+                    except Exception as err:
+                        span_error(span, err)
+                        span_event(span, "handle_response.error", string_attr("error", str(err)))
+                        end_err = err
+                        await self._handler.end_request(self._sc, err, handler_state)
+                        return
+
+                span_event(span, "handle_response")
+                await self._handler.end_request(self._sc, None, handler_state)
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
+
+
+def _make_tracer(stream: TypedSinkStreamWithResult, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
+    tracing = env.tracing
+    if tracing is None:
+        return None
+    return tracing.tracer(env.service_config.name)
 
 
 def make_net_http_endpoint_consumer[HandlerState, T, R, E](
@@ -269,4 +323,5 @@ def make_net_http_endpoint_consumer[HandlerState, T, R, E](
         endpoint=cast(_AIOHttpSinkEndpoint, endpoint),
         stream=stream,
         handler=handler,
+        tracer=_make_tracer(stream, env),
     )

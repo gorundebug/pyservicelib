@@ -3,4 +3,4 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from .environment import ServiceEnvironment, ServiceDependency
+from .environment import ServiceEnvironment, ServiceDependency, Lifecycle

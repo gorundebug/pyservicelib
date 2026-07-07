@@ -13,6 +13,9 @@ from ...runtime.common import (
 )
 from ...runtime.context import Context
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
+from ...runtime.environment.tracing import (
+    Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
+)
 
 
 class DataProducer[T](Protocol):
@@ -59,14 +62,14 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
     async def begin_request(
         self, ctx: Context, sc: StreamContext[T, R, E],
-    ) -> tuple[Context, HandlerState, Optional[Exception]]:
+    ) -> tuple[Context, HandlerState]:
         ...
 
     async def consume_message(
         self, ctx: Context, sc: StreamContext[T, R, E],
         handler_state: HandlerState, value: T,
         result_ctx: ResultContext[HandlerState, T, R, E],
-    ) -> Optional[Exception]:
+    ) -> None:
         ...
 
     def get_message_id(
@@ -86,17 +89,24 @@ class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E])
     _handler_state: HandlerState
     _done: asyncio.Event
     _message_callbacks: dict[str, Any]
+    _span: Optional[Span]
+    _once: bool
 
     def __init__(self, handler_state: HandlerState):
         self._handler_state = handler_state
         self._done = asyncio.Event()
         self._message_callbacks = {}
+        self._span = None
+        self._once = False
 
     def set_result_callback(self, message_id: str,
                             cb: ResultCallback[HandlerState, T, R, E]) -> None:
         self._message_callbacks[message_id] = cb
 
     def done(self) -> None:
+        if not self._once:
+            self._once = True
+            span_event(self._span, "done_called")
         self._done.set()
 
 
@@ -158,6 +168,7 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
     _tasks: set[asyncio.Task[Any]]
     _stopped: bool
     _ctx: Optional[Context]
+    _tracer: Optional[Tracer]
 
     def __init__(self, input_stream: TypedInputStream[T, R, E],
                  data_producer: DataProducer[T],
@@ -175,6 +186,8 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         self._tasks = set()
         self._stopped = False
         self._ctx = None
+        tracing = env.tracing
+        self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
         error_collect = CollectFunc[E](input_stream.error_stream.consume)
         collect = CollectFunc[T](self.out)
@@ -194,23 +207,57 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
 
     async def _endpoint_request(self, value: T) -> None:
         ctx = self._ctx or Context()
-        handler_ctx, handler_state, err = await self._handler.begin_request(ctx, self._sc)
-        if err is not None:
-            return
+        ep = cast(DataSourceEndpoint, self._endpoint)
 
-        result: _CustomResult[HandlerState, T, R, E] = _CustomResult(handler_state)
+        _, span = start_span(
+            self._tracer if sampling_enabled() else None,
+            "local.input",
+            string_attr("stream", self._input_stream.name),
+            string_attr("endpoint", ep.name),
+        )
+        start_time = ep.on_request_start()
+        end_err: Optional[Exception] = None
+        try:
+            with span.scoped():
+                try:
+                    handler_ctx, handler_state = await self._handler.begin_request(ctx, self._sc)
+                except Exception as err:
+                    ep.on_begin_request_failed(err)
+                    span_error(span, err)
+                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    end_err = err
+                    return
+                span_event(span, "begin_request")
 
-        err = await self._handler.consume_message(
-            handler_ctx, self._sc, handler_state, value, result)
+                result: _CustomResult[HandlerState, T, R, E] = _CustomResult(handler_state)
+                result._span = span
 
-        if self._has_result and err is None:
-            try:
-                time_left = ctx.time_left
-                await asyncio.wait_for(result._done.wait(), timeout=time_left)
-            except (asyncio.TimeoutError, TypeError):
-                err = TimeoutError("result wait timeout")
+                try:
+                    await self._handler.consume_message(
+                        handler_ctx, self._sc, handler_state, value, result)
+                except Exception as err:
+                    span_error(span, err)
+                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    end_err = err
+                    await self._handler.end_request(handler_ctx, self._sc, err, handler_state)
+                    return
+                span_event(span, "consume_message")
 
-        await self._handler.end_request(handler_ctx, self._sc, err, handler_state)
+                if self._has_result:
+                    try:
+                        time_left = ctx.time_left
+                        await asyncio.wait_for(result._done.wait(), timeout=time_left)
+                        span_event(span, "done_received")
+                    except (asyncio.TimeoutError, TypeError):
+                        end_err = TimeoutError("result wait timeout")
+                        span_error(span, end_err)
+                        await self._handler.end_request(handler_ctx, self._sc, end_err, handler_state)
+                        return
+
+                await self._handler.end_request(handler_ctx, self._sc, None, handler_state)
+        finally:
+            ep.on_request_end(start_time, end_err)
+            span.end()
 
     async def consume(self, value: T) -> None:
         """Entry point from data producer — applies concurrency control."""

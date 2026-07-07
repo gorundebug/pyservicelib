@@ -2,7 +2,6 @@
 #  Email: sergeyalexeev@yahoo.com
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
-import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -12,11 +11,10 @@ import pytest
 from aiohttp import web
 
 from pyservicelib_gorundebug.datasource.http.aiohttpds import (
-    HandlerData, EndpointHandler, ResultContext, make_net_http_endpoint_consumer,
+    HandlerData, ResultContext,
 )
-from pyservicelib_gorundebug.runtime.common import StreamContext, TypedInputStream
+from pyservicelib_gorundebug.runtime.common import StreamContext
 from pyservicelib_gorundebug.runtime.config import ConfigSettings
-from pyservicelib_gorundebug.runtime.context import default_context
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency, RequestData
@@ -29,8 +27,8 @@ class RequestDataHandler:
         self,
         sc: StreamContext,
         data: HandlerData,
-    ) -> tuple[HandlerData, None, Optional[Exception]]:
-        return data, None, None
+    ) -> tuple[HandlerData, None]:
+        return data, None
 
     async def consume_message(
         self,
@@ -38,7 +36,7 @@ class RequestDataHandler:
         handler_state: None,
         data: HandlerData,
         result_ctx: ResultContext,
-    ) -> Optional[Exception]:
+    ) -> None:
         try:
             body = await data.request.json()
             value = RequestData(**body)
@@ -46,8 +44,7 @@ class RequestDataHandler:
             data.set_response(web.Response(status=200))
         except Exception as e:
             data.set_response(web.Response(status=400, text=str(e)))
-            return e
-        return None
+            raise
 
     def get_message_id(self, sc: StreamContext, handler_state: None, value: object) -> str:
         return ""
@@ -81,7 +78,7 @@ async def make_request(url: str, payload: dict) -> int:
 async def test_aiohttp_datasource():
     os.chdir(Path(__file__).parent)
 
-    service = await ServiceAppLoader[MockService, MockServiceConfig]().load(
+    await ServiceAppLoader[MockService, MockServiceConfig]().load(
         "MockService", MockServiceDependency(), ConfigSettings()
     )
 

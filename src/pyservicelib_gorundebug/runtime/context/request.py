@@ -37,3 +37,16 @@ def stream_id_from_context() -> Optional[str]:
 def with_stream_id(sid: str) -> str:
     request_stream_id.set(sid)
     return sid
+
+
+# Per-request priority, analogous to runtime.WithPriority/PriorityFromContext in Go.
+# Set by callers that want to override the link-configured priority for a single message.
+request_priority: ContextVar[Optional[int]] = ContextVar('request_priority', default=None)
+
+
+def with_priority(priority: int) -> None:
+    request_priority.set(priority)
+
+
+def priority_from_context() -> Optional[int]:
+    return request_priority.get()
