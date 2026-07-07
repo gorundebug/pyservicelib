@@ -6,7 +6,7 @@
 import threading
 import asyncio
 from asyncio import AbstractEventLoop
-from typing import Callable, Any, Optional
+from typing import Callable, Any
 from queue import Queue
 
 
@@ -27,8 +27,12 @@ class AsyncThread:
 
     async def _executor(self):
         while True:
-            coro, future, args, kwargs = self._task_queue.get()
+            # run_in_executor prevents blocking the event loop while waiting for tasks
+            coro, future, args, kwargs = await self._loop.run_in_executor(
+                None, self._task_queue.get
+            )
             if coro is None:
+                self._task_queue.task_done()
                 break
             try:
                 result = await coro(*args, **kwargs)
@@ -37,40 +41,27 @@ class AsyncThread:
                 future.set_exception(e)
             finally:
                 self._task_queue.task_done()
-        self._loop.stop()
 
     def join(self):
         self._thread.join()
 
 
-class AsyncFuture(object):
-    _event: asyncio.Event
-    _result: Any
-    _exception: Optional[BaseException]
+class AsyncFuture:
+    _future: asyncio.Future
     _loop: AbstractEventLoop
 
     def __init__(self, loop: AbstractEventLoop):
-        self._event = asyncio.Event()
         self._loop = loop
-        self._result = None
-        self._exception = None
+        self._future = loop.create_future()
 
     async def result(self) -> Any:
-        await self._event.wait()
-        if self._exception:
-            raise self._exception
-        return self._result
+        return await self._future
 
-    async def _done(self):
-        self._event.set()
+    def set_result(self, result: Any = None) -> None:
+        self._loop.call_soon_threadsafe(self._future.set_result, result)
 
-    def set_result(self, result: Any = None):
-        self._result = result
-        asyncio.run_coroutine_threadsafe(self._done(), self._loop)
-
-    def set_exception(self, e: BaseException):
-        self._exception = e
-        asyncio.run_coroutine_threadsafe(self._done(), self._loop)
+    def set_exception(self, e: BaseException) -> None:
+        self._loop.call_soon_threadsafe(self._future.set_exception, e)
 
 
 class AsyncThreadPoolExecutor:
