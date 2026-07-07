@@ -20,6 +20,8 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
     _environment: ServiceEnvironment
     _task_queue: asyncio.PriorityQueue[tuple[int | float, int, _PoolTask | None]]
     _executors: list[asyncio.Task[Any]]
+    _all_executors: set[asyncio.Task[Any]]
+    _executor_manager_task: Optional[asyncio.Task[Any]]
     _name: str
     _started: bool
     _stopped: bool
@@ -43,6 +45,8 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         self._environment = env
         self._task_queue = asyncio.PriorityQueue()
         self._executors = []
+        self._all_executors = set()
+        self._executor_manager_task = None
         self._name = name
         self._started = False
         self._stopped = False
@@ -63,6 +67,12 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
     @property
     def name(self) -> str:
         return self._name
+
+    def _spawn_executor(self) -> asyncio.Task[Any]:
+        t = asyncio.create_task(self._executor())
+        self._all_executors.add(t)
+        t.add_done_callback(self._all_executors.discard)
+        return t
 
     async def _run_task(self, task: _PoolTask) -> None:
         token = request_deadline.set(task.deadline) if task.deadline is not None else None
@@ -120,6 +130,69 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
             # else: _after_func already claimed the task and called _run_task; wg.done() is its responsibility
             self._task_queue.task_done()
 
+    async def _executor_manager(self, initial_count: int) -> None:
+        executors_count = initial_count
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                async with self._lock:
+                    if self._stopped:
+                        return
+                cfg = self._environment.config.get_pool_by_name(self._name)
+                if cfg is None:
+                    continue
+                new_count = cfg.executors_count or 1
+                if new_count == executors_count:
+                    continue
+
+                old_executors = self._executors[:]
+                old_count = len(old_executors)
+
+                # Clear current list before sending sentinels — no new executors exist
+                # yet, so sentinels can only be consumed by old executors (no race).
+                self._executors = []
+
+                if old_executors:
+                    # Track completion via done-callbacks, not gather().
+                    # gather() would cancel old executor tasks if manager is cancelled;
+                    # callbacks fire independently regardless of manager lifetime.
+                    remaining = len(old_executors)
+                    old_done = asyncio.Event()
+
+                    def _on_done(_t: asyncio.Task) -> None:
+                        nonlocal remaining
+                        remaining -= 1
+                        if remaining == 0:
+                            old_done.set()
+
+                    for t in old_executors:
+                        t.add_done_callback(_on_done)
+
+                    for _ in old_executors:
+                        seq = self._counter
+                        self._counter += 1
+                        # float('-inf') = highest priority: old executor exits after its
+                        # current task, before picking up any new real task (mirrors Go's
+                        # *pRestart check before cond.Wait / heap.Pop).
+                        await self._task_queue.put((float('-inf'), seq, None))
+
+                    # Wait for all old executors to stop before spawning new ones.
+                    # If manager is cancelled here, old executors keep draining on their
+                    # own; stop() will handle them via _all_executors.
+                    await old_done.wait()
+
+                self._executors = [self._spawn_executor() for _ in range(new_count)]
+                executors_count = new_count
+
+                self._environment.log.info(
+                    'priority task pool executor count changed',
+                    str_field('pool', self._name),
+                    int_field('old_count', old_count),
+                    int_field('new_count', new_count),
+                )
+        except asyncio.CancelledError:
+            pass
+
     async def start(self, ctx: Context):
         async with self._lock:
             if self._stopped:
@@ -131,8 +204,8 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         if cfg is None:
             raise ValueError(f"Priority task pool configuration named '{self._name}' not found")
         executors_count = cfg.executors_count or 1
-        for _ in range(executors_count):
-            self._executors.append(asyncio.create_task(self._executor()))
+        self._executors = [self._spawn_executor() for _ in range(executors_count)]
+        self._executor_manager_task = asyncio.create_task(self._executor_manager(executors_count))
 
     async def stop(self, ctx: Context):
         async with self._lock:
@@ -140,24 +213,31 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
                 return
             self._stopped = True
 
+        # Stop manager first so it cannot spawn new executors or modify _all_executors
+        if self._executor_manager_task is not None:
+            self._executor_manager_task.cancel()
+            await asyncio.gather(self._executor_manager_task, return_exceptions=True)
+
         after_tasks = list(self._after_tasks)
         for t in after_tasks:
             t.cancel()
         await asyncio.gather(*after_tasks, return_exceptions=True)
         self._after_tasks.clear()
 
-        if not self._executors:
+        # Snapshot all live executors (current + any draining from a previous reload)
+        all_executors = list(self._all_executors)
+        if not all_executors:
             await self._wg.wait()
             return
 
-        for _ in self._executors:
+        for _ in all_executors:
             seq = self._counter
             self._counter += 1
             await self._task_queue.put((float('inf'), seq, None))
 
         async def _wait_all():
             await self._wg.wait()
-            await asyncio.gather(*self._executors, return_exceptions=True)
+            await asyncio.gather(*all_executors, return_exceptions=True)
 
         wait_task = asyncio.ensure_future(_wait_all())
         try:

@@ -5,3 +5,4 @@ __pycache__
 *.pyc
 *.pyo
 .benchmarks
+.DS_Store

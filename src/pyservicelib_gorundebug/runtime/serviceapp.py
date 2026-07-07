@@ -21,7 +21,7 @@ from .config import Config, ServiceConfig, ServiceAppConfig, LinkId
 from .config import TypeConfig, ConfigSettings, replace_placeholders
 from .context import Context
 from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
-from .common import Endpoint, ServiceStream, Stream
+from .common import ServiceStream, Stream
 from .common import ServiceExecutionRuntime, ServiceExecutionEnvironment
 from .common import RuntimeLinkInfo, RuntimeEndpointConsumer
 from .environment.metrics import MetricsEngine
@@ -30,7 +30,7 @@ from .pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool, make_t
 from .serde import ListSerde, DictSerde
 from .serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from .store import Storage
-from .environment.metrics.metrics import Metrics
+from .environment.metrics.metrics import Metrics, Int64Counter
 from .environment.log import LogsEngine, Logger
 from .environment.tracing import Tracing, TracingEngine
 from .logging import create_asynclog_engine
@@ -84,6 +84,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._aiohttp_runner = None
 
     def reload_config(self, cfg: Config) -> None:
+        self._config = cfg.config
+        self.on_config_reloaded()
+
+    def on_config_reloaded(self) -> None:
         pass
 
     def add_component(self, component: Lifecycle) -> None:
@@ -291,7 +295,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
         link = self._config.get_link(from_value, to_value)
         if link is None or link.timeout is None:
-            return timedelta(seconds=self._serviceConfig.default_grpc_timeout / 1000)
+            return timedelta(seconds=self.service_config.default_grpc_timeout / 1000)
         return timedelta(seconds=link.timeout / 1000)
 
     def get_serde(self, type_name: str) -> Optional[Serializer]:
@@ -394,7 +398,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         return self._tracing_engine.tracing
 
     def set_config(self, cfg: Config) -> None:
-        pass
+        self._config = cfg.config
 
     @property
     def config(self) -> ServiceAppConfig:
@@ -423,6 +427,8 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
     _watching_flag: asyncio.Event
     _config_data: str
     _service: ServiceType
+    _config_reload_success_counter: Int64Counter
+    _config_reload_error_counter: Int64Counter
 
     async def _watch_config_changes(self, values_file: str):
         cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
@@ -450,8 +456,10 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                             if cfg is None:
                                 raise ValueError("Failed to create updated config")
                             self._service.runtime.reload_config(cfg)
+                            self._config_reload_success_counter.inc()
                         except Exception as e:
                             self._service.log.error(f"Failed to reload configuration: {e}")
+                            self._config_reload_error_counter.inc()
         finally:
             self._service.log.debug("Watch config changes loop exited.")
 
@@ -503,6 +511,11 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             raise ValueError("Failed to create config")
 
         await self._service.runtime.service_init(name, dep, self, cfg)
+        scope = self._service.metrics.scope('service', {'service': self._service.service_config.name})
+        self._config_reload_success_counter = scope.counter(
+            'config_reloads_total', 'Total number of config reload attempts', {'event': 'success'})
+        self._config_reload_error_counter = scope.counter(
+            'config_reloads_total', 'Total number of config reload attempts', {'event': 'error'})
         self._ready_flag.set()
 
         return self._service

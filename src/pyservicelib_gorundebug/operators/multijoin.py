@@ -48,10 +48,11 @@ class MultiJoinFunctionContext[K: Hashable, T, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    async def call(self, key: K, values: list[list[Any]], out: Collect[R]):
+    async def call(self, key: K, values: list[list[Any]], out: Collect[R]) -> bool:
         self.before_call()
-        await self._fn.multi_join(self._context, key, values, out)
+        result = await self._fn.multi_join(self._context, key, values, out)
         self.after_call()
+        return result
 
 
 class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
@@ -89,9 +90,10 @@ class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
         self._collector = Collector(self._caller)
 
     async def _consume(self, key: K, index: int, value: Any):
-        async def _join_callback(values: list[list[Any]]):
+        async def _join_callback(values: list[list[Any]]) -> bool:
             if len(values) > 0 and len(values[0]) > 0:
-                await self._f.call(key, values, self._collector)
+                return await self._f.call(key, values, self._collector)
+            return False
 
         await self._join_storage.join_value(key, index, value, _join_callback)
 

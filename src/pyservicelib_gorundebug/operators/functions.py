@@ -11,7 +11,7 @@ from ..runtime.datastruct import KeyValue
 
 
 class MapFunction[T, R](Protocol):
-    async def map(self, context: Stream, value: T) -> R: ...
+    async def map(self, context: Stream, value: T, out: Collect[R]): ...
 
 
 class FilterFunction[T](Protocol):
@@ -23,15 +23,15 @@ class FlatMapFunction[T, R](Protocol):
 
 
 class JoinFunction[K: Hashable, T1, T2, R](Protocol):
-    async def join(self, context: Stream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]): ...
+    async def join(self, context: Stream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]) -> bool: ...
 
 
 class MultiJoinFunction[K: Hashable, T, R](Protocol):
-    async def multi_join(self, context: Stream, key: K, values: list[list[Any]], out: Collect[R]): ...
+    async def multi_join(self, context: Stream, key: K, values: list[list[Any]], out: Collect[R]) -> bool: ...
 
 
 class KeyByFunction[T, K: Hashable, V](Protocol):
-    async def key_by(self, context: Stream, value: T) -> KeyValue[K, V]: ...
+    async def key_by(self, context: Stream, value: T, out: Collect[KeyValue[K, V]]): ...
 
 
 class ProcessFunction[T, R, E](Protocol):

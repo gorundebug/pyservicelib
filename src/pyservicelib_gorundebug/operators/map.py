@@ -6,7 +6,7 @@
 
 from typing import Optional
 
-from ..runtime.common import StreamFunction, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
+from ..runtime.common import StreamFunction, Collect, Collector, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from ..runtime.config.stream_types import MapStreamConfig
 from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from .functions import MapFunction
@@ -19,16 +19,16 @@ class MapFunctionContext[T, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    async def call(self, value: T) -> R:
+    async def call(self, value: T, out: Collect[R]):
         self.before_call()
-        result = await self._fn.map(self._context, value)
+        await self._fn.map(self._context, value, out)
         self.after_call()
-        return result
 
 
 class MapStream[T, R](TypedTransformConsumedStream[T, R]):
     _source: TypedStream[T]
     _f: MapFunctionContext[T, R]
+    _collector: Collector[R]
     _tracer: Optional[Tracer]
 
     def __init__(self, cfg: MapStreamConfig, stream: TypedStream[T], fn: MapFunction[T, R]):
@@ -37,17 +37,26 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
                          serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
         self._source = stream
         self._f = MapFunctionContext[T, R](self, fn)
+        self._collector = Collector[R](None)
         tracing = env.tracing
         self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
         stream.consumer = self
+
+    @property
+    def consumer(self):
+        return self._consumer
+
+    @consumer.setter
+    def consumer(self, value):
+        self._consumer = value
+        self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
+        self._collector = Collector(self._caller)
 
     async def consume(self, value: T) -> None:
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.map",
                              string_attr("stream", self.name))
         try:
             with span.scoped():
-                v = await self._f.call(value)
-                if self._caller is not None:
-                    await self._caller.consume(v)
+                await self._f.call(value, self._collector)
         finally:
             span.end()

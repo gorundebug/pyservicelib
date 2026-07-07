@@ -46,10 +46,11 @@ class JoinFunctionContext[K: Hashable, T1, T2, R](StreamFunction[R]):
         super().__init__(context)
         self._fn = fn
 
-    async def call(self, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]):
+    async def call(self, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]) -> bool:
         self.before_call()
-        await self._fn.join(self._context, key, left_values, right_values, out)
+        result = await self._fn.join(self._context, key, left_values, right_values, out)
         self.after_call()
+        return result
 
 
 class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
@@ -63,7 +64,6 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
     def __init__(self, cfg: JoinStreamConfig, stream: TypedStream[KeyValue[K, T1]],
                  right_stream: TypedStream[KeyValue[K, T2]],
                  fn: JoinFunction[K, T1, T2, R]):
-        from ..api.models.join_type import JoinType
         env = stream.environment
         super().__init__(stream_id=cfg.id, env=env,
                          serde=RuntimeHelpers[R](env).make_stream_serde(type_name=cfg.value_type))
@@ -92,7 +92,7 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
     async def _consume(self, key: K, index: int, value: Any):
         from ..api.models.join_type import JoinType
 
-        async def _join_callback(values: list[list[Any]]):
+        async def _join_callback(values: list[list[Any]]) -> bool:
             can_call = False
             if self._join_type == JoinType.Inner:
                 can_call = len(values) > 1 and len(values[0]) != 0 and len(values[1]) != 0
@@ -103,7 +103,8 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
             elif self._join_type == JoinType.Outer:
                 can_call = True
             if can_call:
-                await self._f.call(key, values[0], values[1], self._collector)
+                return await self._f.call(key, values[0], values[1], self._collector)
+            return False
 
         await self._join_storage.join_value(key, index, value, _join_callback)
 
