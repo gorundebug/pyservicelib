@@ -2,6 +2,7 @@ aiofiles>=24.1.0
 aiohttp>=3.10.10
 aiokafka>=0.11.0
 grpcio>=1.65.0
+grpc-stubs>=1.53.0
 multidict>=6.1.0
 opentelemetry-sdk>=1.25
 opentelemetry-exporter-prometheus>=0.46b0

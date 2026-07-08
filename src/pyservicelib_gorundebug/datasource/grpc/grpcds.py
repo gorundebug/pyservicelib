@@ -19,10 +19,11 @@ The user passes the returned handler directly as the gRPC servicer method.
 
 import asyncio
 from abc import abstractmethod, ABC
-from typing import Optional, Protocol, Any, AsyncIterator, cast
+from collections.abc import Coroutine
+from typing import Optional, Protocol, Any, AsyncIterator, Callable, cast
 
-import grpc  # type: ignore[import-untyped]
-import grpc.aio  # type: ignore[import-untyped]
+import grpc
+import grpc.aio
 
 from ...runtime.environment.tracing import (
     Tracer, Span, start_span, span_event, span_error, span_attrs,
@@ -40,7 +41,7 @@ from ...runtime.store.rotatingmap import RotatingMap
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
 
-def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext) -> Optional[str]:
+def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> Optional[str]:
     metadata = context.invocation_metadata()
     if not metadata:
         return None
@@ -52,35 +53,25 @@ def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext) -> Optional
 
 
 # ---------------------------------------------------------------------------
-# Server-side streaming Protocol types (mirror Go's grpc.go interfaces)
+# Handler type aliases (one per gRPC streaming mode)
 # ---------------------------------------------------------------------------
 
-class ServerStreamingServer[ResR](Protocol):
-    """Satisfied structurally by grpc.aio.ServicerContext for server-streaming calls."""
-    async def write(self, response: ResR) -> None: ...
-
-
-class ClientStreamingServer[ReqT, ResR](Protocol):
-    """Satisfied structurally by grpcio.aio request iterators + context for client-streaming."""
-    def __aiter__(self) -> AsyncIterator[ReqT]: ...
-    async def __anext__(self) -> ReqT: ...
-
-
-class BidiStreamingServer[ReqT, ResR](Protocol):
-    """Satisfied structurally by grpcio.aio for bidi-streaming calls."""
-    def __aiter__(self) -> AsyncIterator[ReqT]: ...
-    async def __anext__(self) -> ReqT: ...
-    async def write(self, response: ResR) -> None: ...
-
-
-# ---------------------------------------------------------------------------
-# Handler types (mirror Go's UnaryHandler / *StreamingHandler type aliases)
-# ---------------------------------------------------------------------------
-
-UnaryHandler = Any           # async def(ReqT, context) -> ResR
-ServerStreamingHandler = Any # async def(ReqT, context) -> None
-ClientStreamingHandler = Any # async def(request_iterator, context) -> ResR
-BidiStreamingHandler = Any   # async def(request_iterator, context) -> None
+type UnaryHandler[ReqT, ResR] = Callable[
+    [ReqT, grpc.aio.ServicerContext[ReqT, ResR]],
+    Coroutine[Any, Any, ResR],
+]
+type ServerStreamingHandler[ReqT, ResR] = Callable[
+    [ReqT, grpc.aio.ServicerContext[ReqT, ResR]],
+    Coroutine[Any, Any, None],
+]
+type ClientStreamingHandler[ReqT, ResR] = Callable[
+    [AsyncIterator[ReqT], grpc.aio.ServicerContext[ReqT, ResR]],
+    Coroutine[Any, Any, ResR],
+]
+type BidiStreamingHandler[ReqT, ResR] = Callable[
+    [AsyncIterator[ReqT], grpc.aio.ServicerContext[ReqT, ResR]],
+    Coroutine[Any, Any, None],
+]
 
 
 # ---------------------------------------------------------------------------
@@ -558,19 +549,14 @@ def _get_or_create_endpoint(
 def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     stream: TypedInputStream[T, R, E],
     handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
-) -> "tuple[Consumer[T], Any]":
-    """
-    Unary gRPC source: one request → one response.
-
-    Returns (consumer, handler_fn) where handler_fn has signature:
-        async def handler_fn(request: ReqT, context) -> ResR
-    """
+) -> "tuple[Consumer[T], UnaryHandler[ReqT, ResR]]":
+    """Unary gRPC source: one request → one response."""
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
 
-    async def _handle(request: ReqT, context: grpc.aio.ServicerContext) -> ResR:
+    async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> ResR:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _UnarySender[ResR]()
         err = await ec._handle_common(sid, request, sender, eof_after_first=True)
@@ -584,19 +570,14 @@ def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
 def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     stream: TypedInputStream[T, R, E],
     handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
-) -> "tuple[Consumer[T], Any]":
-    """
-    Server-streaming gRPC source: one request → N responses.
-
-    Returns (consumer, handler_fn) where handler_fn has signature:
-        async def handler_fn(request: ReqT, context: grpc.aio.ServicerContext) -> None
-    """
+) -> "tuple[Consumer[T], ServerStreamingHandler[ReqT, ResR]]":
+    """Server-streaming gRPC source: one request → N responses."""
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
 
-    async def _handle(request: ReqT, context: grpc.aio.ServicerContext) -> None:
+    async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> None:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _StreamSender[ResR](context.write)
         err = await ec._handle_common(sid, request, sender, eof_after_first=True)
@@ -610,13 +591,8 @@ def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
 def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     stream: TypedInputStream[T, R, E],
     handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
-) -> "tuple[Consumer[T], Any]":
-    """
-    Client-streaming gRPC source: N requests → one response.
-
-    Returns (consumer, handler_fn) where handler_fn has signature:
-        async def handler_fn(request_iterator, context: grpc.aio.ServicerContext) -> ResR
-    """
+) -> "tuple[Consumer[T], ClientStreamingHandler[ReqT, ResR]]":
+    """Client-streaming gRPC source: N requests → one response."""
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
@@ -624,7 +600,7 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
-        context: grpc.aio.ServicerContext,
+        context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> ResR:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _UnarySender[ResR]()
@@ -642,13 +618,8 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
 def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     stream: TypedInputStream[T, R, E],
     handler: "EndpointHandler[HandlerState, ReqT, ResR, T, R, E]",
-) -> "tuple[Consumer[T], Any]":
-    """
-    Bidi-streaming gRPC source: N requests → N responses.
-
-    Returns (consumer, handler_fn) where handler_fn has signature:
-        async def handler_fn(request_iterator, context: grpc.aio.ServicerContext) -> None
-    """
+) -> "tuple[Consumer[T], BidiStreamingHandler[ReqT, ResR]]":
+    """Bidi-streaming gRPC source: N requests → N responses."""
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
@@ -656,7 +627,7 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
-        context: grpc.aio.ServicerContext,
+        context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> None:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _StreamSender[ResR](context.write)
