@@ -491,7 +491,7 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                 span_event(span, "done_received")
             except asyncio.CancelledError:
                 cancel_err = asyncio.CancelledError()
-                span_error(span, cancel_err)
+                span_error(span, cancel_err)  # type: ignore[arg-type]
                 span_event(span, "context_cancelled", string_attr("error", "cancelled"))
             finally:
                 if self._pending is not None:

@@ -6,7 +6,7 @@
 import asyncio
 from typing import Optional, Protocol, Callable, Any, cast
 
-from aiokafka import AIOKafkaProducer  # type: ignore[import-untyped]
+from aiokafka import AIOKafkaProducer  # type: ignore[import-not-found]
 
 from ...runtime.common import (
     Consumer, TypedSinkStream, ServiceExecutionEnvironment, Stream,

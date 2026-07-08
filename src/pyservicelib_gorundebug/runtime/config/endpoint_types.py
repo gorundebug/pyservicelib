@@ -27,6 +27,10 @@ class EndpointConfig(ABC):
     def id_data_connector(self) -> int:
         pass
 
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        pass
+
     def get_property(self, name: str) -> Any:
         return None
 
@@ -100,6 +104,20 @@ class HttpEndpointConfig(EndpointConfig):
     def function_module(self) -> Optional[str]:
         return self._function_module
 
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "idDataConnector": self._id_data_connector,
+        }
+        if self._http_method_type is not None:
+            result["httpMethodType"] = self._http_method_type.value
+        if self._path is not None:
+            result["path"] = self._path
+        if self._function_name is not None:
+            result["functionName"] = self._function_name
+        return result
+
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
 
@@ -172,6 +190,20 @@ class GrpcEndpointConfig(EndpointConfig):
     @property
     def function_module(self) -> Optional[str]:
         return self._function_module
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "idDataConnector": self._id_data_connector,
+        }
+        if self._grpc_method_type is not None:
+            result["grpcMethodType"] = self._grpc_method_type.value
+        if self._method_name is not None:
+            result["methodName"] = self._method_name
+        if self._function_name is not None:
+            result["functionName"] = self._function_name
+        return result
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
@@ -264,6 +296,26 @@ class KafkaEndpointConfig(EndpointConfig):
     def function_module(self) -> Optional[str]:
         return self._function_module
 
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "idDataConnector": self._id_data_connector,
+        }
+        if self._topic is not None:
+            result["topic"] = self._topic
+        if self._consumer_group is not None:
+            result["consumerGroup"] = self._consumer_group
+        if self._create_topic:
+            result["createTopic"] = self._create_topic
+        if self._partitions:
+            result["partitions"] = self._partitions
+        if self._replication_factor:
+            result["replicationFactor"] = self._replication_factor
+        if self._function_name is not None:
+            result["functionName"] = self._function_name
+        return result
+
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
 
@@ -324,6 +376,16 @@ class CustomEndpointConfig(EndpointConfig):
     @property
     def function_module(self) -> Optional[str]:
         return self._function_module
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "idDataConnector": self._id_data_connector,
+        }
+        if self._function_name is not None:
+            result["functionName"] = self._function_name
+        return result
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)

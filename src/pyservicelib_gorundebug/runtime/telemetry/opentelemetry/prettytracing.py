@@ -5,7 +5,7 @@
 
 import sys
 from io import TextIOBase
-from typing import Sequence
+from typing import Optional, Sequence
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
@@ -21,7 +21,7 @@ class PrettySpanExporter(SpanExporter):
         [1782d516][HotelSearch     ]  23:01:20.365     12ms  grpc.output  ✖ endpoint="Search Rooms"  error="deadline exceeded"
     """
 
-    def __init__(self, out: TextIOBase = None) -> None:
+    def __init__(self, out: Optional[TextIOBase] = None) -> None:
         self._out = out or sys.stdout
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:

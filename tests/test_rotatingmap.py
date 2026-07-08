@@ -38,6 +38,7 @@ async def test_stop_cancels_timer_task():
     ctx = default_context()
     await m.start(ctx)
     await m.stop(ctx)
+    assert m._timer_task is not None
     assert m._timer_task.done()
 
 

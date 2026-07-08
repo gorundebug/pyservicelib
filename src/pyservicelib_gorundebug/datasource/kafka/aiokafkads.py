@@ -6,8 +6,8 @@
 import asyncio
 from typing import Optional, Protocol, Any, cast
 
-from aiokafka import AIOKafkaConsumer  # type: ignore[import-untyped]
-from aiokafka.structs import ConsumerRecord  # type: ignore[import-untyped]
+from aiokafka import AIOKafkaConsumer  # type: ignore[import-not-found]
+from aiokafka.structs import ConsumerRecord  # type: ignore[import-not-found]
 
 from ...runtime.common import (
     TypedInputStream, ServiceExecutionEnvironment,

@@ -977,7 +977,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         return False
 
     @abstractmethod
-    def register_http_handler(self, path: str, handler: Callable[..., Any]) -> None:
+    def register_http_handler(self, path: str, handler: Callable[..., Any], method: str = '*') -> None:
         pass
 
     def service_context(self) -> Any:

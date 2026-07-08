@@ -57,9 +57,9 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         self._wg = _AsyncWaitGroup()
 
         scope = env.metrics.scope('priority_task_pool', {'service': env.service_config.name, 'name': name})
-        self._gauge_queue_length = scope.gauge('queue_length', 'Priority task pool wait queue length', None)
-        self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by priority task pool', None)
-        self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', None)
+        self._gauge_queue_length = scope.gauge('queue_length', 'Priority task pool wait queue length', {})
+        self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by priority task pool', {})
+        self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', {})
         self._stop_timeout_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'stop_timeout'})
         self._task_rejected_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'task_rejected'})
         self._task_expired_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'task_expired'})

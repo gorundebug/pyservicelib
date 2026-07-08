@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 import asyncio
+import sys
 import pytest
 import os
 from pathlib import Path
@@ -34,12 +35,14 @@ def _make_env(executors_count: int = 1, delay_executors: int = 1) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_delay_pool():
-   os.chdir(Path(__file__).parent)
+   config_dir = str(Path(__file__).parent / "mockservice" / "config")
+   sys.argv = [sys.argv[0],
+               "--config", f"{config_dir}/config.yaml"]
    delays: list[int] = [1000, 5000, 1200, 3000, 1500, 4000, 1350, 900, 100, 500, 500, 500, 500, 500, 500, 500]
    recorded_delays: list[int] = []
 
    service = await ServiceAppLoader[MockService, MockServiceConfig]().load(
-      "MockService", MockServiceDependency(), ConfigSettings())
+      "IncomeService", MockServiceDependency(), ConfigSettings())
    ctx = default_context()
 
    delay_pool = make_delay_pool(service)

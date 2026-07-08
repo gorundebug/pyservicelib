@@ -2,8 +2,7 @@
 #  Email: sergeyalexeev@yahoo.com
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
-import os
-from pathlib import Path
+import asyncio
 from typing import Optional
 
 import aiohttp
@@ -14,10 +13,8 @@ from pyservicelib_gorundebug.datasource.http.aiohttpds import (
     HandlerData, ResultContext,
 )
 from pyservicelib_gorundebug.runtime.common import StreamContext
-from pyservicelib_gorundebug.runtime.config import ConfigSettings
-from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 
-from .mockservice import MockService, MockServiceConfig, MockServiceDependency, RequestData
+from .mockservice import RequestData, setup, teardown
 
 
 class RequestDataHandler:
@@ -76,13 +73,13 @@ async def make_request(url: str, payload: dict) -> int:
 
 @pytest.mark.asyncio
 async def test_aiohttp_datasource():
-    os.chdir(Path(__file__).parent)
-
-    await ServiceAppLoader[MockService, MockServiceConfig]().load(
-        "MockService", MockServiceDependency(), ConfigSettings()
-    )
-
-    # TODO: wire up stream + endpoint via config and make_net_http_endpoint_consumer
-    # This test requires a proper config file with HttpDataConnectorConfig.
-    # Skipping until config fixtures are available.
-    pytest.skip("requires HttpDataConnectorConfig fixture")
+    env = await setup()
+    try:
+        event_waiter = asyncio.create_task(env.service.request_data_event.wait())
+        status = await make_request("http://127.0.0.1:9091/data", {"text": "hello"})
+        assert status == 200
+        await asyncio.wait_for(event_waiter, timeout=5.0)
+        assert env.service.request_data is not None
+        assert env.service.request_data.text == "hello"
+    finally:
+        await teardown(env)

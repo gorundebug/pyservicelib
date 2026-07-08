@@ -18,9 +18,7 @@ from ..environment.log import str_field, err_field
 
 class DelayPoolImpl(DelayPool):
     _environment: ServiceEnvironment
-    _task_queue: asyncio.Queue[_PoolTask | None]
     _priority_task_queue: asyncio.PriorityQueue[tuple[float, int, _PoolTask]]
-    _executors: list[asyncio.Task[Any]]
     _timer_executor_task: Optional[asyncio.Task[Any]]
     _new_task_event: asyncio.Event
     _started: bool
@@ -28,7 +26,7 @@ class DelayPoolImpl(DelayPool):
     _counter: int
     _lock: asyncio.Lock
     _wg: _AsyncWaitGroup
-    _running_tasks: set[asyncio.Task]   # detached create_task for immediate-deadline tasks
+    _running_tasks: set[asyncio.Task]
 
     _gauge_wait_queue_length: Int64Gauge
     _tasks_total: Int64Counter
@@ -39,8 +37,6 @@ class DelayPoolImpl(DelayPool):
     def __init__(self, env: ServiceEnvironment):
         self._environment = env
         self._priority_task_queue = asyncio.PriorityQueue()
-        self._task_queue = asyncio.Queue()
-        self._executors = []
         self._new_task_event = asyncio.Event()
         self._started = False
         self._stopped = False
@@ -51,9 +47,9 @@ class DelayPoolImpl(DelayPool):
         self._running_tasks = set()
 
         scope = env.metrics.scope('delay_pool', {'service': env.service_config.name})
-        self._gauge_wait_queue_length = scope.gauge('wait_queue_length', 'Delay pool wait queue length', None)
-        self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by delay pool', None)
-        self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', None)
+        self._gauge_wait_queue_length = scope.gauge('wait_queue_length', 'Delay pool wait queue length', {})
+        self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by delay pool', {})
+        self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', {})
         self._stop_timeout_counter = scope.counter('events_total', 'Total number of events in delay pool', {'event': 'stop_timeout'})
         self._task_cancelled_counter = scope.counter('events_total', 'Total number of events in delay pool', {'event': 'task_cancelled'})
 
@@ -61,7 +57,6 @@ class DelayPoolImpl(DelayPool):
         token = request_deadline.set(task.deadline) if task.deadline is not None else None
         cancelled_token = request_cancelled.set(task.cancelled_event) if task.cancelled_event is not None else None
         try:
-            # Always dispatch — cancelled/expired tasks still reach user code for cleanup/release.
             if task.cancelled_event is not None and task.cancelled_event.is_set():
                 self._task_cancelled_counter.inc()
             start = time.monotonic()
@@ -77,22 +72,16 @@ class DelayPoolImpl(DelayPool):
                 request_cancelled.reset(cancelled_token)
             self._wg.done()
 
-    async def _executor(self):
-        while True:
-            task = await self._task_queue.get()
-            if task is None:
-                self._task_queue.task_done()
-                break
-            await self._run_task(task)
-            self._task_queue.task_done()
+    def _spawn(self, task: _PoolTask) -> None:
+        t = asyncio.create_task(self._run_task(task))
+        self._running_tasks.add(t)
+        t.add_done_callback(self._running_tasks.discard)
 
     async def _timer_executor(self):
         loop = asyncio.get_running_loop()
         while not self._stopped or not self._priority_task_queue.empty():
-
             if not self._priority_task_queue.empty():
                 execute_ts, _seq, task = await self._priority_task_queue.get()
-                # Task has left the wait queue — decrement immediately
                 self._gauge_wait_queue_length.dec()
 
                 delay = max(0.0, execute_ts - loop.time())
@@ -100,7 +89,6 @@ class DelayPoolImpl(DelayPool):
                     try:
                         await asyncio.wait_for(self._new_task_event.wait(), timeout=delay)
                         self._new_task_event.clear()
-                        # Put back into priority queue — gauge goes back up
                         self._gauge_wait_queue_length.inc()
                         await self._priority_task_queue.put((execute_ts, _seq, task))
                         continue
@@ -109,15 +97,11 @@ class DelayPoolImpl(DelayPool):
 
                 async with self._lock:
                     task.state = 'running'
-
                 self._priority_task_queue.task_done()
-                await self._task_queue.put(task)
+                self._spawn(task)
             else:
                 await self._new_task_event.wait()
                 self._new_task_event.clear()
-
-        for _ in self._executors:
-            await self._task_queue.put(None)
 
     async def start(self, ctx: Context):
         async with self._lock:
@@ -126,9 +110,6 @@ class DelayPoolImpl(DelayPool):
             if self._started:
                 raise PoolAlreadyStartedError()
             self._started = True
-        executors_count = self._environment.service_config.delay_executors or 1
-        for _ in range(executors_count):
-            self._executors.append(asyncio.create_task(self._executor()))
         self._timer_executor_task = asyncio.create_task(self._timer_executor())
 
     async def stop(self, ctx: Context):
@@ -142,10 +123,9 @@ class DelayPoolImpl(DelayPool):
             return
 
         self._new_task_event.set()
-        all_infra = self._executors + [self._timer_executor_task]
 
         try:
-            await asyncio.wait_for(asyncio.gather(*all_infra), timeout=ctx.time_left)
+            await asyncio.wait_for(asyncio.shield(self._timer_executor_task), timeout=ctx.time_left)
         except asyncio.TimeoutError:
             self._timer_executor_task.cancel()
             await asyncio.gather(self._timer_executor_task, return_exceptions=True)
@@ -160,11 +140,7 @@ class DelayPoolImpl(DelayPool):
                     if task.state != 'delayed':
                         continue
                     task.state = 'running'
-                asyncio.create_task(self._run_task(task))
-
-            for _ in self._executors:
-                await self._task_queue.put(None)
-            await asyncio.gather(*self._executors, return_exceptions=True)
+                self._spawn(task)
 
             self._environment.log.warn('delay pool stopped by timeout')
             self._stop_timeout_counter.inc()
@@ -205,13 +181,9 @@ class DelayPoolImpl(DelayPool):
         self._wg.add()
 
         if req_deadline_ts is not None and req_deadline_ts <= loop.time():
-            # Already expired — run directly, never touches the wait queue
-            t = asyncio.create_task(self._run_task(task))
-            self._running_tasks.add(t)
-            t.add_done_callback(self._running_tasks.discard)
+            self._spawn(task)
             return
 
-        # Only tasks that enter the priority queue contribute to wait_queue_length
         self._gauge_wait_queue_length.inc()
 
         seq = self._counter

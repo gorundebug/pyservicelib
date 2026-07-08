@@ -27,6 +27,7 @@ class DataConnectorImplementation(str, Enum):
     allowed enum values
     """
     Undefined = ''
+    aiohttp = 'aiohttp'
     NetHTTP = 'net/http'
     Function = 'function'
     IBMsarama = 'IBM/Sarama'

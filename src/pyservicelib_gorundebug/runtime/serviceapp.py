@@ -17,7 +17,7 @@ import asyncio
 
 from ..api.models.call_semantics import CallSemantics
 from .environment import ServiceDependency, Lifecycle
-from .config import Config, ServiceConfig, ServiceAppConfig, LinkId
+from .config import Config, ServiceConfig, ServiceAppConfig, LinkConfig, LinkId
 from .config import TypeConfig, ConfigSettings, replace_placeholders
 from .context import Context
 from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
@@ -36,6 +36,16 @@ from .environment.tracing import Tracing, TracingEngine
 from .logging import create_asynclog_engine
 from .store import JoinStorageConfig
 from .telemetry import create_prometheus_metrics_engine
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
@@ -96,10 +106,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def has_custom_http_server(self) -> bool:
         return False
 
-    def register_http_handler(self, path: str, handler: Callable[..., Any]) -> None:
+    def register_http_handler(self, path: str, handler: Callable[..., Any], method: str = '*') -> None:
         if self._aiohttp_app is None:
             raise RuntimeError("HTTP server was not initialized for application")
-        self._aiohttp_app.router.add_route('*', path, handler)
+        self._aiohttp_app.router.add_route(method, path, handler)
 
     def service_context(self) -> Any:
         return self
@@ -138,7 +148,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._log = self._logs_engine.default_logger()
         self._delay_pool = make_delay_pool(self)
 
-        for link in self._config.links:
+        for link in cast(list[LinkConfig], self._config.links):
             stream_from = self._config.get_stream_config_by_id(link.var_from)
             stream_to = self._config.get_stream_config_by_id(link.to)
             if stream_from.id_service == service_config.id or stream_to.id_service == service_config.id:
@@ -313,14 +323,14 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
         for ds in self._dataSources.values():
             await ds.start(ctx)
-        for ds in self._dataSinks.values():
+        for ds in self._dataSinks.values():  # type: ignore[assignment]
             await ds.start(ctx)
         for storage in self._storages:
             await storage.start(ctx)
         await self._delay_pool.start(ctx)
         for pool in self._task_pools.values():
             await pool.start(ctx)
-        for pool in self._priority_task_pools.values():
+        for pool in self._priority_task_pools.values():  # type: ignore[assignment]
             await pool.start(ctx)
         for component in self._components:
             await component.start(ctx)
@@ -355,7 +365,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         phase1.append(asyncio.create_task(self._delay_pool.stop(ctx)))
         for pool in self._task_pools.values():
             phase1.append(asyncio.create_task(pool.stop(ctx)))
-        for pool in self._priority_task_pools.values():
+        for pool in self._priority_task_pools.values():  # type: ignore[assignment]
             phase1.append(asyncio.create_task(pool.stop(ctx)))
         for component in self._components:
             phase1.append(asyncio.create_task(component.stop(ctx)))
@@ -461,7 +471,10 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                             self._service.log.error(f"Failed to reload configuration: {e}")
                             self._config_reload_error_counter.inc()
         finally:
-            self._service.log.debug("Watch config changes loop exited.")
+            try:
+                self._service.log.debug("Watch config changes loop exited.")
+            except AttributeError:
+                pass
 
     def _get_path(self, arg_path: str) -> str:
         if not os.path.isabs(arg_path):
@@ -483,11 +496,13 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             raise ValueError("Invalid config type. Config must be inherit from ServiceAppConfig class")
 
         parser = argparse.ArgumentParser(description="Service configuration paths")
-        parser.add_argument("--values", default="./values.yaml", help="Service config values path")
         parser.add_argument("--config", default="./config.yaml", help="Service config path")
+        parser.add_argument("--values", default="./values.yaml", help="Service config values path")
+        parser.add_argument("--overrides", default=None, help="Service config overrides path")
         args, _ = parser.parse_known_args()
         config_file = self._get_path(args.config)
         values_file = self._get_path(args.values)
+        overrides_file = self._get_path(args.overrides) if args.overrides else None
 
         self._ready_flag = asyncio.Event()
         self._watching_flag = asyncio.Event()
@@ -496,17 +511,28 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             self._config_data = await file.read()
             config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
 
-        self._watching_task = asyncio.create_task(self._watch_config_changes(values_file))
-        if not self._watching_flag.is_set():
-            await self._watching_flag.wait()
+        if os.path.exists(values_file):
+            self._watching_task = asyncio.create_task(self._watch_config_changes(values_file))
+            if not self._watching_flag.is_set():
+                await self._watching_flag.wait()
 
-        async with aiofiles.open(values_file, 'r') as file:
-            values_data = await file.read()
-            values_dict: dict[str, Any] = yaml.safe_load(values_data)
+            async with aiofiles.open(values_file, 'r') as file:
+                values_data = await file.read()
+                values_dict: dict[str, Any] = yaml.safe_load(values_data)
 
-        result_config: dict[str, Any] = replace_placeholders(config_dict, values_dict)
+            config_dict = replace_placeholders(config_dict, values_dict)
+        else:
+            self._watching_flag.set()
+            self._watching_task = asyncio.get_event_loop().create_future()  # type: ignore[assignment]
+            self._watching_task.cancel()
 
-        cfg = cfg_class.from_dict(result_config)
+        if overrides_file is not None:
+            async with aiofiles.open(overrides_file, 'r') as file:
+                overrides_data = await file.read()
+                overrides_dict: dict[str, Any] = yaml.safe_load(overrides_data)
+            config_dict = _deep_merge(config_dict, overrides_dict)
+
+        cfg = cfg_class.from_dict(config_dict)
         if cfg is None:
             raise ValueError("Failed to create config")
 
@@ -524,8 +550,8 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         self._watching_task.cancel()
         try:
             await self._watching_task
-        except asyncio.CancelledError:
-            self._service.log.debug("Watching task cancelled")
+        except (asyncio.CancelledError, asyncio.InvalidStateError):
+            pass
 
 
 class JoinStreamStorageConfig(JoinStorageConfig):

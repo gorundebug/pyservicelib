@@ -9,7 +9,7 @@ from typing import Optional
 from opentelemetry.sdk.resources import Resource
 from opentelemetry._logs import SeverityNumber
 from opentelemetry.sdk._logs import LoggerProvider
-from opentelemetry.sdk._logs._internal import LogRecord
+from opentelemetry._logs._internal import LogRecord
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, SimpleLogRecordProcessor
 
 from ...environment.log import Logger, LogsEngine, Config, Field, FieldType

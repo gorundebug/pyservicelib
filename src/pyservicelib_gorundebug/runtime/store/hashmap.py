@@ -64,9 +64,9 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
             'service': env.service_config.name,
             'name': cfg.name,
         })
-        self._gauge_count = scope.gauge('count', 'Elements count stored in a join storage', None)
+        self._gauge_count = scope.gauge('count', 'Elements count stored in a join storage', {})
         self._evictions_total = scope.counter('evictions_total',
-                                              'Total number of items evicted from join storage by TTL', None)
+                                              'Total number of items evicted from join storage by TTL', {})
 
     async def _rotate(self):
         try:

@@ -32,6 +32,10 @@ class DataConnectorConfig(ABC):
     def implementation(self) -> DataConnectorImplementation:
         pass
 
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        pass
+
     def get_property(self, name: str) -> Any:
         return None
 
@@ -83,6 +87,23 @@ class HttpDataConnectorConfig(DataConnectorConfig):
     def use_dedicated_listener(self) -> bool:
         return self._use_dedicated_listener
 
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+        }
+        if self._host is not None:
+            result["host"] = self._host
+        if self._port is not None:
+            result["port"] = self._port
+        if self._module is not None:
+            result["module"] = self._module
+        if self._use_dedicated_listener:
+            result["useDedicatedListener"] = self._use_dedicated_listener
+        return result
+
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
 
@@ -122,6 +143,19 @@ class GrpcDataConnectorConfig(DataConnectorConfig):
     @property
     def module(self) -> Optional[str]:
         return self._module
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+        }
+        if self._address is not None:
+            result["address"] = self._address
+        if self._module is not None:
+            result["module"] = self._module
+        return result
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
@@ -179,6 +213,25 @@ class KafkaDataConnectorConfig(DataConnectorConfig):
     def async_(self) -> bool:
         return self._async
 
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+        }
+        if self._brokers is not None:
+            result["brokers"] = self._brokers
+        if self._version is not None:
+            result["version"] = self._version
+        if self._dial_timeout:
+            result["dialTimeout"] = self._dial_timeout
+        if self._use_partitioner:
+            result["usePartitioner"] = self._use_partitioner
+        if self._async:
+            result["async"] = self._async
+        return result
+
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
 
@@ -207,6 +260,14 @@ class CustomDataConnectorConfig(DataConnectorConfig):
     @property
     def implementation(self) -> DataConnectorImplementation:
         return self._implementation
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+        }
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)

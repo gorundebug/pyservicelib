@@ -3,6 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
+import sys
 from typing import cast
 import os
 from pathlib import Path
@@ -21,10 +22,12 @@ from .mockservice import MockService, MockServiceConfig, MockServiceDependency
 
 @pytest.mark.asyncio
 async def test_serde_type_dict():
-    os.chdir(Path(__file__).parent)
+    config_dir = str(Path(__file__).parent / "mockservice" / "config")
+    sys.argv = [sys.argv[0],
+                "--config", f"{config_dir}/config.yaml"]
     value = {1: True, 2: False, 3: True}
 
-    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService", MockServiceDependency(), ConfigSettings())
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("IncomeService", MockServiceDependency(), ConfigSettings())
     ctx = default_context()
     ser = cast(Serde[dict[int, bool]], service.get_type_serde("MapType"))
 

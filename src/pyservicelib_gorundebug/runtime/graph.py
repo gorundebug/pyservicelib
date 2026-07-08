@@ -54,7 +54,7 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
             ep_api = endpoint_config_to_api(ep.config)
             endpoints.append(ep_api)
 
-    for ds in app._dataSinks.values():
+    for ds in app._dataSinks.values():  # type: ignore[assignment]
         data_connectors.append(data_connector_config_to_api(ds.data_connector))
         for ep in ds.endpoints:
             ep_api = endpoint_config_to_api(ep.config)
@@ -72,8 +72,8 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
         cs = li.call_semantics
         if cs == CallSemantics.Inherited or cs == default_cs:
             continue
-        link = Link(
-            var_from=li.from_id,
+        link = Link(  # type: ignore[call-arg]
+            var_from=li.from_id,  # pyright: ignore[reportCallIssue]
             to=li.to_id,
             callSemantics=cs,
         )

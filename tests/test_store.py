@@ -79,7 +79,7 @@ class MockJoinStorageConfig(JoinStorageConfig):
 
 def make_storage(ttl_seconds: float = 3600, renew_ttl: bool = False) -> HashMapJoinStorage:
     cfg = MockJoinStorageConfig(ttl=timedelta(seconds=ttl_seconds), renew_ttl=renew_ttl)
-    return HashMapJoinStorage(env=_ENV, cfg=cfg)
+    return HashMapJoinStorage(env=_ENV, cfg=cfg)  # type: ignore[arg-type]
 
 
 # ---------- construction tests ----------
@@ -108,6 +108,7 @@ async def test_stop_cancels_rotation_task():
     ctx = default_context()
     await s.start(ctx)
     await s.stop(ctx)
+    assert s._timer_task is not None
     assert s._timer_task.done()
 
 
@@ -537,6 +538,7 @@ async def test_after_func_renew_ttl_restarts_timer():
 
     assert first_task is not second_task
     await asyncio.sleep(0)  # yield so event loop processes the cancellation
+    assert first_task is not None
     assert first_task.cancelled()
 
 
@@ -647,7 +649,7 @@ async def test_request_deadline_propagated_to_nested_coroutine():
 def test_join_storage_factory_creates_hashmap():
     from pyservicelib_gorundebug.api.models.join_storage_type import JoinStorageType
     cfg = MockJoinStorageConfig(ttl=timedelta(hours=1))
-    storage = JoinStorageFactory.make_storage(JoinStorageType.HashMap, env=_ENV, cfg=cfg)
+    storage: HashMapJoinStorage = JoinStorageFactory.make_storage(JoinStorageType.HashMap, env=_ENV, cfg=cfg)  # type: ignore[arg-type,assignment]
     assert isinstance(storage, HashMapJoinStorage)
 
 

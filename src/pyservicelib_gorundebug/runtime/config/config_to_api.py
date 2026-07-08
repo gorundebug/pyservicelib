@@ -135,8 +135,8 @@ def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:
 
 def link_config_to_api(l: LinkConfig) -> Link:
     cs = l.call_semantics if l.call_semantics is not None else CallSemantics.Inherited
-    return Link(
-        var_from=l.var_from,
+    return Link(  # type: ignore[call-arg]
+        var_from=l.var_from,  # pyright: ignore[reportCallIssue]
         to=l.to,
         callSemantics=cs,
         poolName=l.pool_name,

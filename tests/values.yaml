@@ -1,6 +1,0 @@
-service1GrpcHost: 0.0.0.0
-service1GrpcPort: 9201
-service1MonitoringHost: 0.0.0.0
-service1MonitoringPort: 9091
-dataConnector1Host: 127.0.0.1
-dataConnector1Port: 8081

@@ -6,6 +6,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 import os
+import sys
 from pathlib import Path
 from typing import get_origin, Any, Optional
 from collections.abc import Iterable
@@ -114,10 +115,12 @@ def test_type_check():
 
 @pytest.mark.asyncio
 async def test_input_stream():
-    os.chdir(Path(__file__).parent)
+    config_dir = str(Path(__file__).parent / "mockservice" / "config")
+    sys.argv = [sys.argv[0],
+                "--config", f"{config_dir}/config.yaml"]
 
-    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("MockService", MockServiceDependency(), ConfigSettings())
-    cfg = service.config.get_input_stream_config("Input")
+    service = await ServiceAppLoader[MockService, MockServiceConfig]().load("IncomeService", MockServiceDependency(), ConfigSettings())
+    cfg = service.config.get_input_stream_config("InputRequest")
     assert cfg is not None
     stream = transformation.Input[int, Any, Any](cfg, service)
     assert stream.type_name == "int"

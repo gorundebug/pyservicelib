@@ -119,7 +119,7 @@ class BuildSwitchHandler[T]:
         return self._fn(stream, when_items)
 
 
-def default_build_switch[T](when_items: list[When]) -> Callable[[T], int]:
+def default_build_switch[T](when_items: list[When]) -> Callable[[T], int]:  # pyright: ignore[reportInvalidTypeVarUse]
     type_map: dict[type, int] = {}
     for i, w in enumerate(when_items):
         type_map[w.type] = i

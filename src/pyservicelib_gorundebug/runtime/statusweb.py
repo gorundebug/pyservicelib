@@ -181,7 +181,7 @@ def _make_edge(app: "ServiceApp", from_id: int, type_name: str, to_id: int, colo
     link_id_key = LinkId(from_id=from_id, to_id=to_id)
     stat = app._consume_statistics.get(link_id_key)
     if stat is not None:
-        label += f"\ncalls: {stat.count()}"
+        label += f"\ncalls: {stat.count}"
     stream = app._streams.get(to_id)
     if stream is not None:
         cfg = stream.config

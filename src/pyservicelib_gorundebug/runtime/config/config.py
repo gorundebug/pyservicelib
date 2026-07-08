@@ -22,6 +22,7 @@ from ...api.models.pool import Pool
 from ...api.models.type import Type
 from ...api.models.service import Service
 from ...api.models.link import Link
+from ...api.models.call_semantics import CallSemantics
 from ...api.models.project_settings import ProjectSettings as ApiProjectSettings
 from ...api.models.stream_app import StreamApp
 
@@ -64,7 +65,7 @@ def _properties_getattr(obj: Any, item: str) -> Any:
 
 
 class StreamConfig(Stream):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
@@ -94,8 +95,8 @@ class StreamConfig(Stream):
 
 
 class DataConnectorConfig(DataConnector):
-    implementation: Optional[StrictStr] = Field(default=None)
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    implementation: Optional[StrictStr] = Field(default=None)  # type: ignore[assignment]
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
@@ -109,7 +110,7 @@ class DataConnectorConfig(DataConnector):
         return _obj
 
 class EndpointConfig(Endpoint):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         if item not in ('method', 'format'):
@@ -142,7 +143,7 @@ class EndpointConfig(Endpoint):
 
 
 class PoolConfig(Pool):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
@@ -199,7 +200,7 @@ class TypeConfig(Type):
         cast(str, DataType.uint64): 'uint64',
     }
 
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -234,7 +235,7 @@ class TypeConfig(Type):
 
 
 class ServiceConfig(Service):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
@@ -249,10 +250,31 @@ class ServiceConfig(Service):
 
 
 class LinkConfig(Link):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
+
+    @property
+    def income_call_semantics(self) -> Optional[CallSemantics]:
+        try:
+            return _properties_getattr(self, 'income_call_semantics')
+        except AttributeError:
+            return None
+
+    @property
+    def income_pool_name(self) -> Optional[str]:
+        try:
+            return _properties_getattr(self, 'income_pool_name')
+        except AttributeError:
+            return None
+
+    @property
+    def income_priority(self) -> Optional[int]:
+        try:
+            return _properties_getattr(self, 'income_priority')
+        except AttributeError:
+            return None
 
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
@@ -264,7 +286,7 @@ class LinkConfig(Link):
 
 
 class ProjectSettings(ApiProjectSettings):
-    properties: dict[str, Any] = Field(default=None, exclude=True)
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
     @classmethod
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
@@ -335,7 +357,7 @@ class Config(ABC):
         pass
 
 class ServiceAppConfig(StreamApp, Config):
-    runtime_config: RuntimeConfig = Field(default=None, exclude=True)
+    runtime_config: RuntimeConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
     log_level: StrictStr
 
     def __init__(self, **data):

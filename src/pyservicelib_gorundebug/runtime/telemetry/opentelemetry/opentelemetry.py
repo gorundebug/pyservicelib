@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import threading
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import prometheus_client
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
@@ -310,7 +310,7 @@ class _MetricsScope(MetricsScope):
         g = _Int64Gauge(merged)
         obs = self._otel.meter.create_observable_gauge(
             full, description=help,
-            callbacks=[lambda _opts, _g=g: [Observation(_g._read(), _g._attrs)]],
+            callbacks=[lambda _opts, _g=g: [Observation(_g._read(), _g._attrs)]],  # type: ignore[misc]
         )
         return g
 
@@ -319,7 +319,7 @@ class _MetricsScope(MetricsScope):
         gv = _Int64GaugeVec(None, DEFAULT_MAX_CARDINALITY)
         obs = self._otel.meter.create_observable_gauge(
             full, description=help,
-            callbacks=[lambda _opts, _gv=gv: list(_gv._iter_observations())],
+            callbacks=[lambda _opts, _gv=gv: list(_gv._iter_observations())],  # type: ignore[misc]
         )
         gv._obs = obs
         return gv
@@ -327,7 +327,7 @@ class _MetricsScope(MetricsScope):
     def histogram(self, name: str, help: str, labels: Labels, *buckets: float) -> Float64Histogram:
         full = self._full_name(name)
         boundaries = list(buckets) if buckets else None
-        kwargs = {'description': help}
+        kwargs: dict[str, Any] = {'description': help}
         if boundaries:
             kwargs['explicit_bucket_boundaries_advisory'] = boundaries
         h = self._otel.meter.create_histogram(full, **kwargs)
@@ -335,7 +335,7 @@ class _MetricsScope(MetricsScope):
 
     def histogram_vec(self, name: str, help: str, *buckets: float) -> Float64HistogramVec:
         full = self._full_name(name)
-        kwargs = {'description': help}
+        kwargs: dict[str, Any] = {'description': help}
         if buckets:
             kwargs['explicit_bucket_boundaries_advisory'] = list(buckets)
         h = self._otel.meter.create_histogram(full, **kwargs)
@@ -346,7 +346,7 @@ class _MetricsScope(MetricsScope):
         base = self._base
         self._otel.meter.create_observable_gauge(
             full, description=help,
-            callbacks=[lambda _opts, _fn=fn, _base=base: [Observation(_fn(), _base)]],
+            callbacks=[lambda _opts, _fn=fn, _base=base: [Observation(_fn(), _base)]],  # type: ignore[misc]
         )
 
 

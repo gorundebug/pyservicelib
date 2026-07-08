@@ -28,44 +28,50 @@ _PENDING_ROTATION_INTERVAL = 30.0
 
 class AIOHttpDataSource(InputDataSource):
 
-    _app: web.Application
+    _app: Optional[web.Application]
     _runner: Optional[web.AppRunner]
     _site: Optional[web.TCPSite]
 
     def __init__(self, connector_id: int, env: ServiceExecutionEnvironment):
         super().__init__(connector_id=connector_id, env=env)
-
-        native = getattr(env.log, 'native_logger', None)
-        self._app = web.Application(
-            logger=cast(logging.Logger, native) if isinstance(native, logging.Logger)
-            else aiohttp.log.web_logger)
+        self._app = None
         self._runner = None
         self._site = None
+        if getattr(self.data_connector, 'use_dedicated_listener', False):
+            native = getattr(env.log, 'native_logger', None)
+            self._app = web.Application(
+                logger=cast(logging.Logger, native) if isinstance(native, logging.Logger)
+                else aiohttp.log.web_logger)
 
     async def start(self, ctx: Context) -> None:
-        if self.data_connector.host is None:
-            raise ValueError(f"Host required for http data source '{self.data_connector.name}'")
-        if self.data_connector.port is None:
-            raise ValueError(f"Port required for http data source '{self.data_connector.name}'")
-        runner = web.AppRunner(self._app)
-        await runner.setup()
-        self._runner = runner
-        site = web.TCPSite(runner=runner, host=self.data_connector.host, port=self.data_connector.port)
-        await site.start()
-        self._site = site
+        if self._app is not None:
+            dc = self.data_connector
+            if getattr(dc, 'host', None) is None:
+                raise ValueError(f"Host required for http data source '{dc.name}'")
+            if getattr(dc, 'port', None) is None:
+                raise ValueError(f"Port required for http data source '{dc.name}'")
+            runner = web.AppRunner(self._app)
+            await runner.setup()
+            self._runner = runner
+            site = web.TCPSite(runner=runner, host=dc.host, port=dc.port)
+            await site.start()
+            self._site = site
 
         for ep in self.endpoints:
-            await ep.start(ctx)  # type: ignore[union-attr]
+            await ep.start(ctx)  # type: ignore[attr-defined]
 
     async def stop(self, ctx: Context) -> None:
         for ep in self.endpoints:
-            await ep.stop(ctx)  # type: ignore[union-attr]
+            await ep.stop(ctx)  # type: ignore[attr-defined]
 
         if self._runner is not None:
             await self._runner.cleanup()
 
     def add_handler(self, method: str, path: str, handler: Any) -> None:
-        self._app.router.add_route(method=method, path=path, handler=handler)
+        if self._app is not None:
+            self._app.router.add_route(method=method, path=path, handler=handler)
+        else:
+            self.environment.register_http_handler(path, handler, method)
 
 
 class HandlerData:
