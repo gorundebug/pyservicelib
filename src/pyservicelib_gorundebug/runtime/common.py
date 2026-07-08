@@ -17,7 +17,7 @@ from .serde import Serializer, StreamSerializer, TypedStreamSerde, StreamKeyValu
 from .serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from .store import Storage
 from .pool import TaskPool, PriorityTaskPool
-from .environment.metrics import Metrics
+from .environment.metrics import Metrics, Int64Counter, NOOP_INT64_COUNTER
 from .environment.tracing import Tracer, start_span, span_error, string_attr, sampling_enabled
 from .context import Context
 from .datastruct import KeyValue
@@ -68,14 +68,18 @@ class Caller[T](Consumer[T], ABC):
     _source: "TypedStream[T]"
     _consumer: "StreamConsumer[T]"
     _tracer: Optional[Tracer]
+    _messages_counter: Int64Counter
 
-    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
+                 tracer: Optional[Tracer] = None,
+                 messages_counter: Optional[Int64Counter] = None):
         self._source = source
         if source.consumer is None:
             raise ValueError(f"The source stream named '{source.name}' does not have consumer in Caller constructor")
         self._consumer = source.consumer
         self._statistics = statistics
         self._tracer = tracer
+        self._messages_counter = messages_counter if messages_counter is not None else NOOP_INT64_COUNTER
 
     @property
     def is_async(self) -> bool:
@@ -84,17 +88,20 @@ class Caller[T](Consumer[T], ABC):
 
 class DirectCaller[T](Caller[T]):
 
-    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
-        super().__init__(source=source, statistics=statistics, tracer=tracer)
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
+                 tracer: Optional[Tracer] = None,
+                 messages_counter: Optional[Int64Counter] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
 
     async def consume(self, value: T):
+        self._statistics.inc()
+        self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
                              string_attr("from", self._source.name),
                              string_attr("to", self._consumer.stream.name))
         try:
             with span.scoped():
                 await self._consumer.consume(value)
-            self._statistics.inc()
         finally:
             span.end()
 
@@ -107,11 +114,14 @@ class TaskPoolCaller[T](Caller[T]):
     _task_pool: TaskPool
 
     def __init__(self, task_pool: TaskPool, source: "TypedStream[T]", statistics: CallerStatistics,
-                 tracer: Optional[Tracer] = None):
-        super().__init__(source=source, statistics=statistics, tracer=tracer)
+                 tracer: Optional[Tracer] = None,
+                 messages_counter: Optional[Int64Counter] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._task_pool = task_pool
 
     async def consume(self, value: T):
+        self._statistics.inc()
+        self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
                              string_attr("from", self._source.name),
                              string_attr("to", self._consumer.stream.name),
@@ -131,7 +141,6 @@ class TaskPoolCaller[T](Caller[T]):
 
         try:
             await self._task_pool.add_task(_task)
-            self._statistics.inc()
         except Exception as e:
             span_error(span, e)
             span.end()
@@ -150,13 +159,16 @@ class PriorityTaskPoolCaller[T](Caller[T]):
                  priority: int,
                  source: "TypedStream[T]",
                  statistics: CallerStatistics,
-                 tracer: Optional[Tracer] = None):
-        super().__init__(source=source, statistics=statistics, tracer=tracer)
+                 tracer: Optional[Tracer] = None,
+                 messages_counter: Optional[Int64Counter] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._priority_task_pool = priority_task_pool
         self._priority = priority
 
     async def consume(self, value: T):
         from .context import priority_from_context
+        self._statistics.inc()
+        self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
                              string_attr("from", self._source.name),
                              string_attr("to", self._consumer.stream.name),
@@ -179,7 +191,6 @@ class PriorityTaskPoolCaller[T](Caller[T]):
 
         try:
             await self._priority_task_pool.add_task(priority, _task)
-            self._statistics.inc()
         except Exception as e:
             span_error(span, e)
             span.end()
@@ -192,11 +203,15 @@ class PriorityTaskPoolCaller[T](Caller[T]):
 
 class ParallelCaller[T](Caller[T]):
 
-    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics, tracer: Optional[Tracer] = None):
-        super().__init__(source=source, statistics=statistics, tracer=tracer)
+    def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
+                 tracer: Optional[Tracer] = None,
+                 messages_counter: Optional[Int64Counter] = None):
+        super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
 
     async def consume(self, value: T):
         import asyncio
+        self._statistics.inc()
+        self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
                              string_attr("from", self._source.name),
                              string_attr("to", self._consumer.stream.name),
@@ -211,7 +226,6 @@ class ParallelCaller[T](Caller[T]):
                 span.end()
 
         asyncio.create_task(_task())
-        self._statistics.inc()
 
     @property
     def is_async(self) -> bool:
@@ -282,11 +296,18 @@ class RuntimeHelpers[T]:
         runtime.register_consume_statistics(LinkId(from_id=source.id, to_id=consumer.stream.id), statistics)
         runtime.register_link_info(RuntimeLinkInfo(from_id=source.id, to_id=consumer.stream.id, call_semantics=call_semantics))
 
+        messages_counter = env.metrics.scope("stream", {
+            "service": service_config.name,
+            "from": source.name,
+            "to": consumer.stream.name,
+        }).counter("messages_total", "Total number of messages processed by stream link", {})
+
         tracing = env.tracing
         tracer = tracing.tracer(service_config.name) if tracing is not None else None
 
         if call_semantics == CallSemantics.FunctionCall:
-            return DirectCaller[T](source=source, statistics=statistics, tracer=tracer)
+            return DirectCaller[T](source=source, statistics=statistics, tracer=tracer,
+                                   messages_counter=messages_counter)
 
         elif call_semantics == CallSemantics.TaskPool:
             if link is None:
@@ -298,7 +319,8 @@ class RuntimeHelpers[T]:
                                  f"pool name for link between streams from={source.id} to={consumer.stream.id}")
 
             return TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source,
-                                     statistics=statistics, tracer=tracer)
+                                     statistics=statistics, tracer=tracer,
+                                     messages_counter=messages_counter)
 
         elif call_semantics == CallSemantics.PriorityTaskPool:
             if link is None:
@@ -318,10 +340,12 @@ for link between streams from={source.id} to={consumer.stream.id}")
                                              priority=priority,
                                              source=source,
                                              statistics=statistics,
-                                             tracer=tracer)
+                                             tracer=tracer,
+                                             messages_counter=messages_counter)
 
         elif call_semantics == CallSemantics.ParallelCall:
-            return ParallelCaller[T](source=source, statistics=statistics, tracer=tracer)
+            return ParallelCaller[T](source=source, statistics=statistics, tracer=tracer,
+                                     messages_counter=messages_counter)
 
         raise ValueError(f"Invalid call semantics: {call_semantics}")
 

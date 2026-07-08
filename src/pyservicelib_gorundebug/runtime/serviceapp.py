@@ -18,7 +18,7 @@ import asyncio
 from ..api.models.call_semantics import CallSemantics
 from .environment import ServiceDependency, Lifecycle
 from .config import Config, ServiceConfig, ServiceAppConfig, LinkConfig, LinkId
-from .config import TypeConfig, ConfigSettings, replace_placeholders
+from .config import TypeConfig, ConfigSettings, replace_placeholders, apply_environment
 from .context import Context
 from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
 from .common import ServiceStream, Stream
@@ -440,8 +440,23 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
     _config_reload_success_counter: Int64Counter
     _config_reload_error_counter: Int64Counter
 
+    async def _reload_from_values(self, cfg_class: Any, values_file: str) -> None:
+        async with aiofiles.open(values_file, 'r') as file:
+            values_data = await file.read()
+            values_dict: dict[str, Any] = yaml.safe_load(values_data)
+
+        config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
+        result_config: dict[str, Any] = apply_environment(replace_placeholders(config_dict, values_dict))
+
+        cfg = cfg_class.from_dict(result_config)
+        if cfg is None:
+            raise ValueError("Failed to create updated config")
+        self._service.runtime.reload_config(cfg)
+        self._config_reload_success_counter.inc()
+
     async def _watch_config_changes(self, values_file: str):
         cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
+        real_values_file = os.path.realpath(values_file)
         self._watching_flag.set()
 
         try:
@@ -452,21 +467,22 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                 if self._watching_task.cancelling():
                     break
 
+                # K8s ConfigMap atomically replaces the symlink target.
+                # Detect this by checking whether the resolved real path changed.
+                current_real = os.path.realpath(values_file) if os.path.exists(values_file) else ""
+                if current_real and current_real != real_values_file:
+                    real_values_file = current_real
+                    try:
+                        await self._reload_from_values(cfg_class, values_file)
+                    except Exception as e:
+                        self._service.log.error(f"Failed to reload configuration: {e}")
+                        self._config_reload_error_counter.inc()
+                    continue
+
                 for change, file_path in changes:
-                    if file_path == values_file and change in {Change.modified, Change.added}:
+                    if file_path in {values_file, real_values_file} and change in {Change.modified, Change.added}:
                         try:
-                            async with aiofiles.open(values_file, 'r') as file:
-                                values_data = await file.read()
-                                values_dict: dict[str, Any] = yaml.safe_load(values_data)
-
-                            config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
-                            result_config: dict[str, Any] = replace_placeholders(config_dict, values_dict)
-
-                            cfg = cfg_class.from_dict(result_config)
-                            if cfg is None:
-                                raise ValueError("Failed to create updated config")
-                            self._service.runtime.reload_config(cfg)
-                            self._config_reload_success_counter.inc()
+                            await self._reload_from_values(cfg_class, values_file)
                         except Exception as e:
                             self._service.log.error(f"Failed to reload configuration: {e}")
                             self._config_reload_error_counter.inc()
@@ -532,6 +548,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                 overrides_dict: dict[str, Any] = yaml.safe_load(overrides_data)
             config_dict = _deep_merge(config_dict, overrides_dict)
 
+        config_dict = apply_environment(config_dict)
         cfg = cfg_class.from_dict(config_dict)
         if cfg is None:
             raise ValueError("Failed to create config")

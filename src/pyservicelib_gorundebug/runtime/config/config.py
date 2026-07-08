@@ -7,6 +7,7 @@ from typing import Any, Union, Self, cast, Optional, ClassVar
 from pydantic import Field, ConfigDict, StrictStr
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+import os
 import re
 
 def _to_camel_case(snake: str) -> str:
@@ -317,6 +318,30 @@ def _replace_placeholders(config: _ConfigType,
 
 def replace_placeholders(config: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     result = _replace_placeholders(config, values)
+    if not isinstance(result, dict):
+        raise ValueError("The result must be a dictionary.")
+    return result
+
+
+_ENV_VAR_RE = re.compile(r'\$\{([^}]+)\}')
+
+
+def _apply_env_to_value(v: _ConfigType) -> Optional[_ConfigType]:
+    if isinstance(v, str):
+        return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), v)
+    if isinstance(v, dict):
+        return {k: _apply_env_to_value(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_apply_env_to_value(item) for item in v]
+    return v
+
+
+def apply_environment(config: dict[str, Any]) -> dict[str, Any]:
+    """Replace ``${VAR_NAME}`` placeholders with values from os.environ.
+
+    Unknown variable references are left unchanged.
+    """
+    result = _apply_env_to_value(config)
     if not isinstance(result, dict):
         raise ValueError("The result must be a dictionary.")
     return result
