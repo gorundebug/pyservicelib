@@ -9,7 +9,7 @@ from typing import Optional, Iterable, cast, Any
 
 from .common import ServiceExecutionEnvironment, Consumer, TypedInputStream
 from .common import DataSource, InputEndpoint, DataConnector
-from .common import InputEndpointConsumer, StreamContext, CollectFunc, ErrorStream
+from .common import InputEndpointConsumer, StreamContext, CollectFunc
 from .config import DataConnectorConfig, EndpointConfig
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field

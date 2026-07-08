@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 from datetime import timedelta
-from typing import Hashable, Any, Protocol, Callable
+from typing import Hashable, Any, Protocol, Callable, Awaitable
 
 from ..runtime.common import Stream, Collect
 from ..runtime.datastruct import KeyValue
@@ -51,6 +51,62 @@ class When(Protocol):
 
 class BuildSwitchFunction[T](Protocol):
     def build_switch(self, stream: Stream, when_items: list[When]) -> Callable[[T], int]: ...
+
+
+class MapHandler[T, R]:
+    def __init__(self, fn: Callable[[Stream, T, Collect[R]], Awaitable[None]]):
+        self._fn = fn
+
+    async def map(self, context: Stream, value: T, out: Collect[R]) -> None:
+        await self._fn(context, value, out)
+
+
+class FilterHandler[T]:
+    def __init__(self, fn: Callable[[Stream, T], Awaitable[bool]]):
+        self._fn = fn
+
+    async def filter(self, context: Stream, value: T) -> bool:
+        return await self._fn(context, value)
+
+
+class FlatMapHandler[T, R]:
+    def __init__(self, fn: Callable[[Stream, T, Collect[R]], Awaitable[None]]):
+        self._fn = fn
+
+    async def flatmap(self, context: Stream, value: T, out: Collect[R]) -> None:
+        await self._fn(context, value, out)
+
+
+class JoinHandler[K: Hashable, T1, T2, R]:
+    def __init__(self, fn: Callable[[Stream, K, list[T1], list[T2], Collect[R]], Awaitable[bool]]):
+        self._fn = fn
+
+    async def join(self, context: Stream, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]) -> bool:
+        return await self._fn(context, key, left_values, right_values, out)
+
+
+class MultiJoinHandler[K: Hashable, T, R]:
+    def __init__(self, fn: Callable[[Stream, K, list[list[Any]], Collect[R]], Awaitable[bool]]):
+        self._fn = fn
+
+    async def multi_join(self, context: Stream, key: K, values: list[list[Any]], out: Collect[R]) -> bool:
+        return await self._fn(context, key, values, out)
+
+
+class KeyByHandler[T, K: Hashable, V]:
+    def __init__(self, fn: Callable[[Stream, T, Collect[KeyValue[K, V]]], Awaitable[None]]):
+        self._fn = fn
+
+    async def key_by(self, context: Stream, value: T, out: Collect[KeyValue[K, V]]) -> None:
+        await self._fn(context, value, out)
+
+
+class ProcessHandler[T, R, E]:
+    def __init__(self, fn: Callable[[Stream, T, Collect[R], Collect[E]], Awaitable[None]]):
+        self._fn = fn
+
+    async def process(self, context: Stream, value: T, out: Collect[R], err_out: Collect[E]) -> None:
+        await self._fn(context, value, out, err_out)
 
 
 class BuildSwitchHandler[T]:

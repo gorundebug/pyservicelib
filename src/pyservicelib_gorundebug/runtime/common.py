@@ -1115,25 +1115,6 @@ class ParallelsCollector[T](Collect[T]):
         self._env.runtime.create_task(self.consume, value)
 
 
-class ErrorStream[E](TypedConsumedStream[E], Collect[E]):
-    """Shared error stream used by operators that have a typed error output."""
-
-    def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[E]):
-        super().__init__(stream_id=stream_id, env=env, serde=serde)
-
-    @property
-    def name(self) -> str:
-        return f"error:{super().name}"
-
-    async def consume(self, value: E) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
-
-    async def out(self, value: E) -> None:
-        if self._caller is not None:
-            await self._caller.consume(value)
-
-
 class StreamContext[T, R, E]:
     """Bundles the typed input stream, result stream, and collectors for datasource handlers."""
 

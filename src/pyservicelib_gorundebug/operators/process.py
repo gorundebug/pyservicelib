@@ -8,8 +8,9 @@ from typing import Optional
 
 from ..runtime.common import (
     StreamFunction, Collect, Collector, TypedStream,
-    TypedTransformConsumedStream, TypedConsumedStream, RuntimeHelpers, ErrorStream,
+    TypedTransformConsumedStream, RuntimeHelpers,
 )
+from .error import ErrorStream
 from ..runtime.config.stream_types import ProcessStreamConfig
 from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
 from ..runtime.serde.serde import StreamSerde, StubSerde

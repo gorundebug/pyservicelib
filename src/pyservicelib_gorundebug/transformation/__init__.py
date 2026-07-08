@@ -19,14 +19,15 @@ from ..operators.delay import DelayStream as Delay
 from ..operators.sink import SinkStream as Sink, SinkStreamWithResult as SinkWithResult
 from ..operators.case import CaseStream as Case, WhenStream as When
 from ..operators.split import SplitStream as Split
+from ..operators.error import ErrorStream
 from ..operators.functions import (
-    MapFunction,
-    FilterFunction,
-    FlatMapFunction,
-    JoinFunction,
-    MultiJoinFunction,
-    KeyByFunction,
-    ProcessFunction,
+    MapFunction, MapHandler,
+    FilterFunction, FilterHandler,
+    FlatMapFunction, FlatMapHandler,
+    JoinFunction, JoinHandler,
+    MultiJoinFunction, MultiJoinHandler,
+    KeyByFunction, KeyByHandler,
+    ProcessFunction, ProcessHandler,
     DelayFunction,
     When as WhenInterface,
     BuildSwitchFunction,

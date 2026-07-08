@@ -8,8 +8,9 @@ from typing import Optional
 
 from ..runtime.common import (
     ServiceExecutionEnvironment, TypedInputStream, TypedConsumedStream, TypedStream,
-    Consumer, StreamConsumer, Stream, ErrorStream, RuntimeHelpers, RuntimeKeyValueHelpers,
+    Consumer, StreamConsumer, Stream, RuntimeHelpers, RuntimeKeyValueHelpers,
 )
+from .error import ErrorStream
 from ..runtime.config.stream_types import InputStreamConfig
 from ..runtime.datastruct import KeyValue
 from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
