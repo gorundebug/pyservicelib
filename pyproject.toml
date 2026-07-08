@@ -28,7 +28,7 @@ addopts = [
 ]
 [tool.hatch.build]
 exclude = [
-    "/.*", "*.sh", "*.json", "diagram"
+    "/.*", "/*.sh", "/*.json", "/diagram"
 ]
 [tool.hatch.metadata.hooks.requirements_txt]
 files = ["requirements.txt"]
