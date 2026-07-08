@@ -42,6 +42,8 @@ class Link(BaseModel):
         protected_namespaces=(),
     )
 
+    def __init__(self, *, var_from: int, **data: Any) -> None:
+        super().__init__(**{"from": var_from}, **data)  # type: ignore[arg-type]
 
     def to_str(self) -> str:
         """Returns the string representation of the model using alias"""

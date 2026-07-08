@@ -252,6 +252,9 @@ class ServiceConfig(Service):
 class LinkConfig(Link):
     properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
+    def __init__(self, *, var_from: int, **data: Any) -> None:
+        super().__init__(var_from=var_from, **data)
+
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
 
@@ -280,7 +283,8 @@ class LinkConfig(Link):
     def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
         if obj is None:
             return None
-        _obj = cls(**obj)
+        d = {("var_from" if k == "from" else k): v for k, v in obj.items()}
+        _obj = cls(**d)
         _obj.properties = obj
         return _obj
 

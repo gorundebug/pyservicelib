@@ -242,21 +242,18 @@ def make_config() -> MockConfig:
             priority_task_pool=PoolConfig(name=_priority_task_pool_name, executorsCount=8),
         ),
         links=MockConfig._Links(
-            input_request_to_sink=LinkConfig(  # type: ignore[call-arg]
-                var_from=_input_request_id,  # pyright: ignore[reportCallIssue]
-                to=_sink_id,
+            input_request_to_sink=LinkConfig(
+                var_from=_input_request_id, to=_sink_id,
                 callSemantics=CallSemantics.PriorityTaskPool,
                 poolName=_priority_task_pool_name, priority=0,
             ),
-            input_request3_to_sink4=LinkConfig(  # type: ignore[call-arg]
-                var_from=_input_request3_id,  # pyright: ignore[reportCallIssue]
-                to=_sink4_id,
+            input_request3_to_sink4=LinkConfig(
+                var_from=_input_request3_id, to=_sink4_id,
                 callSemantics=CallSemantics.TaskPool,
                 poolName=_task_pool_name,
             ),
-            input_request_sync_to_sink_sync=LinkConfig(  # type: ignore[call-arg]
-                var_from=_input_request_sync_id,  # pyright: ignore[reportCallIssue]
-                to=_sink_sync_id,
+            input_request_sync_to_sink_sync=LinkConfig(
+                var_from=_input_request_sync_id, to=_sink_sync_id,
                 callSemantics=CallSemantics.FunctionCall,
             ),
         ),
