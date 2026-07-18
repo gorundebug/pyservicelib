@@ -432,32 +432,56 @@ class ServiceAppConfig(StreamApp, Config):
         return cfg
 
     def init_runtime_config(self):
+        self.runtime_config = RuntimeConfig()
+
         for stream in self.streams:
+            if stream.name in self.runtime_config.streams_by_name:
+                raise ValueError(f"duplicate stream name: {stream.name}")
+            if stream.id in self.runtime_config.streams_by_id:
+                raise ValueError(f"duplicate stream id: {stream.id}")
             self.runtime_config.streams_by_name[stream.name] = cast(StreamConfig, stream)
             self.runtime_config.streams_by_id[stream.id] = cast(StreamConfig, stream)
 
         for service in self.services:
+            if service.name in self.runtime_config.services_by_name:
+                raise ValueError(f"duplicate service name: {service.name}")
+            if service.id in self.runtime_config.services_by_id:
+                raise ValueError(f"duplicate service id: {service.id}")
             self.runtime_config.services_by_name[service.name] = cast(ServiceConfig, service)
             self.runtime_config.services_by_id[service.id] = cast(ServiceConfig, service)
 
         for endpoint in self.endpoints:
+            if endpoint.name in self.runtime_config.endpoints_by_name:
+                raise ValueError(f"duplicate endpoint name: {endpoint.name}")
+            if endpoint.id in self.runtime_config.endpoints_by_id:
+                raise ValueError(f"duplicate endpoint id: {endpoint.id}")
             self.runtime_config.endpoints_by_name[endpoint.name] = cast(EndpointConfig, endpoint)
             self.runtime_config.endpoints_by_id[endpoint.id] = cast(EndpointConfig, endpoint)
 
         for data_connector in self.data_connectors:
+            if data_connector.name in self.runtime_config.data_connectors_by_name:
+                raise ValueError(f"duplicate data connector name: {data_connector.name}")
+            if data_connector.id in self.runtime_config.data_connectors_by_id:
+                raise ValueError(f"duplicate data connector id: {data_connector.id}")
             self.runtime_config.data_connectors_by_name[data_connector.name] = (
                 cast(DataConnectorConfig, data_connector))
             self.runtime_config.data_connectors_by_id[data_connector.id] = (
                 cast(DataConnectorConfig, data_connector))
 
         for pool in self.pools:
+            if pool.name in self.runtime_config.pool_by_name:
+                raise ValueError(f"duplicate pool name: {pool.name}")
             self.runtime_config.pool_by_name[pool.name] = cast(PoolConfig, pool)
 
         for tp in self.types:
+            if tp.name in self.runtime_config.types:
+                raise ValueError(f"duplicate type name: {tp.name}")
             self.runtime_config.types[tp.name] = cast(TypeConfig, tp)
 
         for link in self.links:
             link_id = LinkId(from_id=link.var_from, to_id=link.to)
+            if link_id in self.runtime_config.links_by_id:
+                raise ValueError(f"duplicate link from={link.var_from} to={link.to}")
             self.runtime_config.links_by_id[link_id] = cast(LinkConfig, link)
 
     def get_stream_config_by_name(self, name: str) -> Optional[StreamConfig]:

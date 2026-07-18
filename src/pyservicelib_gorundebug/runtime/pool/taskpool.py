@@ -31,6 +31,9 @@ class TaskPoolImpl(TaskPool):
     _wg: _AsyncWaitGroup
 
     _gauge_queue_length: Int64Gauge
+    _gauge_executors_target: Int64Gauge
+    _gauge_executors_allocated: Int64Gauge
+    _gauge_executors_busy: Int64Gauge
     _tasks_total: Int64Counter
     _execution_duration: Float64Histogram
     _stop_timeout_counter: Int64Counter
@@ -56,6 +59,9 @@ class TaskPoolImpl(TaskPool):
 
         scope = env.metrics.scope('task_pool', {'service': env.service_config.name, 'name': name})
         self._gauge_queue_length = scope.gauge('queue_length', 'Task pool wait queue length', {})
+        self._gauge_executors_target = scope.gauge('executors_target', 'Desired number of task pool executors', {})
+        self._gauge_executors_allocated = scope.gauge('executors_allocated', 'Number of live task pool executors', {})
+        self._gauge_executors_busy = scope.gauge('executors_busy', 'Number of task pool executors running callbacks', {})
         self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by task pool', {})
         self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', {})
         self._stop_timeout_counter = scope.counter('events_total', 'Total number of events in task pool', {'event': 'stop_timeout'})
@@ -67,9 +73,19 @@ class TaskPoolImpl(TaskPool):
         return self._name
 
     def _spawn_executor(self) -> asyncio.Task[Any]:
-        t = asyncio.create_task(self._executor())
+        self._gauge_executors_allocated.inc()
+        try:
+            t = asyncio.create_task(self._executor())
+        except BaseException:
+            self._gauge_executors_allocated.dec()
+            raise
         self._all_executors.add(t)
-        t.add_done_callback(self._all_executors.discard)
+
+        def _on_done(done: asyncio.Task[Any]) -> None:
+            self._all_executors.discard(done)
+            self._gauge_executors_allocated.dec()
+
+        t.add_done_callback(_on_done)
         return t
 
     async def _run_task(self, task: _PoolTask) -> None:
@@ -124,7 +140,11 @@ class TaskPoolImpl(TaskPool):
                     task.state = 'running'
                     run = True
             if run:
-                await self._run_task(task)
+                self._gauge_executors_busy.inc()
+                try:
+                    await self._run_task(task)
+                finally:
+                    self._gauge_executors_busy.dec()
             # else: _after_func already claimed the task and called _run_task; wg.done() is its responsibility
             self._task_queue.task_done()
 
@@ -142,6 +162,8 @@ class TaskPoolImpl(TaskPool):
                 new_count = cfg.executors_count or 1
                 if new_count == executors_count:
                     continue
+
+                self._gauge_executors_target.set(new_count)
 
                 old_executors = self._executors[:]
                 old_count = len(old_executors)
@@ -197,6 +219,7 @@ class TaskPoolImpl(TaskPool):
         if cfg is None:
             raise ValueError(f"Task pool configuration named '{self._name}' not found")
         executors_count = cfg.executors_count or 1
+        self._gauge_executors_target.set(executors_count)
         self._executors = [self._spawn_executor() for _ in range(executors_count)]
         self._executor_manager_task = asyncio.create_task(self._executor_manager(executors_count))
 

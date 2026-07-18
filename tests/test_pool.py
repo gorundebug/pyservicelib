@@ -20,6 +20,7 @@ from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 from pyservicelib_gorundebug.runtime.context import default_context
 from pyservicelib_gorundebug.runtime.context.request import request_deadline
 from pyservicelib_gorundebug.runtime.config import  ConfigSettings
+from pyservicelib_gorundebug.runtime.testmetrics import TestMetrics as MetricsRecorder
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
 
@@ -31,6 +32,14 @@ def _make_env(executors_count: int = 1, delay_executors: int = 1) -> MagicMock:
     env.config.get_pool_by_name.return_value = pool_cfg
     env.service_config.delay_executors = delay_executors
     return env
+
+
+def _make_metrics_env(executors_count: int = 1) -> tuple[MagicMock, MetricsRecorder]:
+    env = _make_env(executors_count)
+    metrics = MetricsRecorder()
+    env.metrics = metrics
+    env.service_config.name = 'test-svc'
+    return env, metrics
 
 
 @pytest.mark.asyncio
@@ -233,6 +242,33 @@ async def test_task_pool_tasks_execute():
 
 
 @pytest.mark.asyncio
+async def test_task_pool_executor_metrics():
+    env, metrics = _make_metrics_env()
+    pool = TaskPoolImpl("p", env)
+    ctx = default_context()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def job():
+        started.set()
+        await release.wait()
+
+    await pool.start(ctx)
+    await pool.add_task(job)
+    await started.wait()
+
+    labels = {'service': 'test-svc', 'name': 'p'}
+    assert metrics.gauge('task_pool_executors_target', labels).value() == 1
+    assert metrics.gauge('task_pool_executors_allocated', labels).value() == 1
+    assert metrics.gauge('task_pool_executors_busy', labels).value() == 1
+
+    release.set()
+    await pool.stop(ctx)
+    assert metrics.gauge('task_pool_executors_allocated', labels).value() == 0
+    assert metrics.gauge('task_pool_executors_busy', labels).value() == 0
+
+
+@pytest.mark.asyncio
 async def test_task_pool_exception_does_not_crash():
     env = _make_env()
     pool = TaskPoolImpl("p", env)
@@ -255,6 +291,33 @@ async def test_task_pool_exception_does_not_crash():
 
 
 # ========== PriorityTaskPoolImpl: lifecycle + tie-breaking ==========
+
+
+@pytest.mark.asyncio
+async def test_priority_pool_executor_metrics():
+    env, metrics = _make_metrics_env()
+    pool = PriorityTaskPoolImpl("p", env)
+    ctx = default_context()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def job():
+        started.set()
+        await release.wait()
+
+    await pool.start(ctx)
+    await pool.add_task(0, job)
+    await started.wait()
+
+    labels = {'service': 'test-svc', 'name': 'p'}
+    assert metrics.gauge('priority_task_pool_executors_target', labels).value() == 1
+    assert metrics.gauge('priority_task_pool_executors_allocated', labels).value() == 1
+    assert metrics.gauge('priority_task_pool_executors_busy', labels).value() == 1
+
+    release.set()
+    await pool.stop(ctx)
+    assert metrics.gauge('priority_task_pool_executors_allocated', labels).value() == 0
+    assert metrics.gauge('priority_task_pool_executors_busy', labels).value() == 0
 
 @pytest.mark.asyncio
 async def test_priority_pool_start_once():
