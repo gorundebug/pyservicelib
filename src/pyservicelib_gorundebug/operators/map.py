@@ -15,13 +15,13 @@ from .functions import MapFunction
 class MapFunctionContext[T, R](StreamFunction[R]):
     _fn: MapFunction[T, R]
 
-    def __init__(self, context: TypedStream[R], fn: MapFunction[T, R]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[R], fn: MapFunction[T, R]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T, out: Collect[R]):
         self.before_call()
-        await self._fn.map(self._context, value, out)
+        await self._fn.map(self._stream, value, out)
         self.after_call()
 
 

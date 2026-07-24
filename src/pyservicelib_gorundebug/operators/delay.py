@@ -16,13 +16,13 @@ from .functions import DelayFunction
 class DelayFunctionContext[T](StreamFunction[T]):
     _fn: DelayFunction[T]
 
-    def __init__(self, context: TypedStream[T], fn: DelayFunction[T]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[T], fn: DelayFunction[T]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T) -> timedelta:
         self.before_call()
-        result = await self._fn.duration(self._context, value)
+        result = await self._fn.duration(self._stream, value)
         self.after_call()
         return result
 

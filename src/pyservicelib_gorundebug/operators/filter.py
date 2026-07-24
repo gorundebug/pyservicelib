@@ -15,13 +15,13 @@ from .functions import FilterFunction
 class FilterFunctionContext[T](StreamFunction[T]):
     _fn: FilterFunction[T]
 
-    def __init__(self, context: TypedStream[T], fn: FilterFunction[T]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[T], fn: FilterFunction[T]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T) -> bool:
         self.before_call()
-        result = await self._fn.filter(self._context, value)
+        result = await self._fn.filter(self._stream, value)
         self.after_call()
         return result
 

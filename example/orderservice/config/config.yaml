@@ -1,0 +1,88 @@
+settings:
+  name: Example
+  moduleVersion: v0.1.0
+  repoPath: pyservicelib/example
+
+services:
+  orderService:
+    id: 1
+    name: Order Service
+    programmingLanguage: 3
+    modulePath: orderservice
+    defaultCallSemantics: 2
+    httpHost: 0.0.0.0
+    httpPort: 9091
+    statusHandler: status
+    metricsHandler: metrics
+    grpcHost: 0.0.0.0
+    grpcPort: 9201
+    defaultGrpcTimeout: 5000
+    color: "#D2E5FF"
+    shutdownTimeout: 30000
+    environment: local
+
+streams:
+  mapOrderItemResultToOrderState:
+    {id: 1, name: Map Order Item Result To Order State, idSource: 5, type: 2, valueType: OrderState, idService: 1, xPos: 0, yPos: 0, pipeline: order}
+  mapToOrderState:
+    {id: 2, name: Map To Order State, idSource: 7, type: 2, valueType: OrderState, idService: 1, xPos: -459, yPos: 76, pipeline: order}
+  mergeResults:
+    {id: 3, name: Merge Results, idSource: 0, idSources: [2, 1], type: 10, idService: 1, xPos: -178, yPos: 24, pipeline: order}
+  processOrder:
+    {id: 4, name: Process Order, idSource: 3, type: 1, valueType: Order, idService: 1, idEndpoint: 1, xPos: -343, yPos: -229, pipeline: order}
+  processOrderItem:
+    {id: 5, name: Process Order Item, idSource: 6, type: 13, valueType: OrderItemResult, idService: 1, idEndpoint: 2, xPos: -75, yPos: -311, pipeline: order}
+  processOrderItems:
+    {id: 6, name: Process Order Items, idSource: 8, type: 7, valueType: OrderItem, idService: 1, xPos: -197, yPos: -473, pipeline: order}
+  softDeadline:
+    {id: 7, name: Soft Deadline, idSource: 8, type: 16, idService: 1, duration: 100, xPos: -706, yPos: -33, pipeline: order}
+  splitPipeline:
+    {id: 8, name: Split Pipeline, idSource: 4, type: 11, idService: 1, xPos: -416, yPos: -472, pipeline: order}
+
+links:
+  inputToSplit: {from: 4, to: 8, callSemantics: 2}
+  splitToItems: {from: 8, to: 6, callSemantics: 2}
+  itemsToSink: {from: 6, to: 5, callSemantics: 2}
+  sinkToItemState: {from: 5, to: 1, callSemantics: 2}
+  splitToDeadline: {from: 8, to: 7, callSemantics: 2}
+  deadlineToState: {from: 7, to: 2, callSemantics: 2}
+  timeoutToMerge: {from: 2, to: 3, callSemantics: 2}
+  itemStateToMerge: {from: 1, to: 3, callSemantics: 2}
+  mergeToInput: {from: 3, to: 4, callSemantics: 2}
+
+dataConnectors:
+  inventoryServiceApi:
+    id: 1
+    name: Inventory Service API
+    type: 2
+    implementation: google/grpc
+    address: ${INVENTORY_SERVICE_API_ADDRESS}
+  orderServiceApi:
+    id: 2
+    name: Order Service API
+    type: 1
+    implementation: aiohttp
+    useDedicatedListener: false
+
+endpoints:
+  processOrder:
+    id: 1
+    name: Process Order
+    idDataConnector: 2
+    httpMethodType: POST
+    path: /v1/processorder
+    timeout: 5000
+  processOrderItem:
+    id: 2
+    name: Process Order Item
+    idDataConnector: 1
+    grpcMethodType: 1
+    methodName: ProcessOrderItem
+
+types:
+  order: {name: Order, type: struct, definitionFormat: 1, transferByValue: false}
+  orderItem: {name: OrderItem, type: struct, definitionFormat: 1, transferByValue: false}
+  orderItemResult: {name: OrderItemResult, type: struct, definitionFormat: 1, transferByValue: false}
+  orderState: {name: OrderState, type: struct, definitionFormat: 1, transferByValue: false}
+
+pools: {}

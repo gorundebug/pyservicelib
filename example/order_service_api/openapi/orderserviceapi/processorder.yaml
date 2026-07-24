@@ -1,0 +1,66 @@
+openapi: 3.0.3
+info:
+  title: ProcessOrder
+  version: 0.1.0
+paths:
+  /v1/processorder:
+    post:
+      operationId: processOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessOrderRequest'
+      responses:
+        '200':
+          description: Order processing result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessOrderResponse'
+components:
+  schemas:
+    ProcessOrderItem:
+      type: object
+      additionalProperties: false
+      required: [itemId, sku, quantity]
+      properties:
+        itemId: {type: string}
+        sku: {type: string}
+        quantity: {type: integer, minimum: 1}
+    ConfirmedOrderItem:
+      type: object
+      additionalProperties: false
+      required: [orderId, itemId, sku, requestedQty, availableQty, reserved, status, unitPrice]
+      properties:
+        orderId: {type: string}
+        itemId: {type: string}
+        sku: {type: string}
+        requestedQty: {type: integer}
+        availableQty: {type: integer}
+        reserved: {type: boolean}
+        status: {type: string}
+        unitPrice: {type: number, format: double}
+    ProcessOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        customerId: {type: string}
+        items:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ProcessOrderItem'}
+    ProcessOrderResponse:
+      type: object
+      additionalProperties: false
+      required: [orderId, status, confirmedItems, totalAmount, processedAt]
+      properties:
+        orderId: {type: string}
+        status: {type: string}
+        confirmedItems:
+          type: array
+          items: {$ref: '#/components/schemas/ConfirmedOrderItem'}
+        totalAmount: {type: number, format: double}
+        processedAt: {type: string, format: date-time}

@@ -44,13 +44,13 @@ class _MultiJoinStorageConfig(JoinStorageConfig):
 class MultiJoinFunctionContext[K: Hashable, T, R](StreamFunction[R]):
     _fn: MultiJoinFunction[K, T, R]
 
-    def __init__(self, context: TypedStream[R], fn: MultiJoinFunction[K, T, R]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[R], fn: MultiJoinFunction[K, T, R]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, key: K, values: list[list[Any]], out: Collect[R]) -> bool:
         self.before_call()
-        result = await self._fn.multi_join(self._context, key, values, out)
+        result = await self._fn.multi_join(self._stream, key, values, out)
         self.after_call()
         return result
 

@@ -1101,10 +1101,10 @@ class ServiceExecutionRuntime(ABC):
 
 
 class StreamFunction[T]:
-    _context: TypedStream[T]
+    _stream: TypedStream[T]
 
-    def __init__(self, context: TypedStream[T]):
-        self._context = context
+    def __init__(self, stream: TypedStream[T]):
+        self._stream = stream
 
     def before_call(self):
         pass

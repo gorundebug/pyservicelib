@@ -71,6 +71,16 @@ async def make_request(url: str, payload: dict) -> int:
             return response.status
 
 
+async def get_metrics(url: str) -> tuple[int, str, str]:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return (
+                response.status,
+                response.headers["Content-Type"],
+                await response.text(),
+            )
+
+
 @pytest.mark.asyncio
 async def test_aiohttp_datasource():
     env = await setup()
@@ -81,5 +91,12 @@ async def test_aiohttp_datasource():
         await asyncio.wait_for(event_waiter, timeout=5.0)
         assert env.service.request_data is not None
         assert env.service.request_data.text == "hello"
+
+        metrics_status, content_type, metrics = await get_metrics(
+            "http://127.0.0.1:9091/metrics"
+        )
+        assert metrics_status == 200
+        assert content_type == "text/plain; version=0.0.4; charset=utf-8"
+        assert "# HELP" in metrics
     finally:
         await teardown(env)

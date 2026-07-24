@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package inventoryserviceapi.processorderitem;
+
+service InventoryServiceApi {
+  rpc ProcessOrderItem(ProcessOrderItemRequest) returns (ProcessOrderItemResponse);
+}
+
+message ProcessOrderItemRequest {
+  string order_id = 1;
+  string item_id = 2;
+  string sku = 3;
+  int32 quantity = 4;
+}
+
+message ProcessOrderItemResponse {
+  string order_id = 1;
+  string item_id = 2;
+  string sku = 3;
+  int32 requested_qty = 4;
+  int32 available_qty = 5;
+  bool reserved = 6;
+  string status = 7;
+  double unit_price = 8;
+}

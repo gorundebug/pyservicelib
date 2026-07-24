@@ -16,13 +16,13 @@ from .functions import KeyByFunction
 class KeyByFunctionContext[T, K: Hashable, V](StreamFunction[KeyValue[K, V]]):
     _fn: KeyByFunction[T, K, V]
 
-    def __init__(self, context: TypedStream[KeyValue[K, V]], fn: KeyByFunction[T, K, V]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[KeyValue[K, V]], fn: KeyByFunction[T, K, V]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T, out: Collect[KeyValue[K, V]]):
         self.before_call()
-        await self._fn.key_by(self._context, value, out)
+        await self._fn.key_by(self._stream, value, out)
         self.after_call()
 
 

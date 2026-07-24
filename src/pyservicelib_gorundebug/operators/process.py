@@ -20,13 +20,13 @@ from .functions import ProcessFunction
 class ProcessFunctionContext[T, R, E](StreamFunction[R]):
     _fn: ProcessFunction[T, R, E]
 
-    def __init__(self, context: TypedStream[R], fn: ProcessFunction[T, R, E]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[R], fn: ProcessFunction[T, R, E]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T, out: Collect[R], err_out: Collect[E]):
         self.before_call()
-        await self._fn.process(self._context, value, out, err_out)
+        await self._fn.process(self._stream, value, out, err_out)
         self.after_call()
 
 

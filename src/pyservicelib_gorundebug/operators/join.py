@@ -42,13 +42,13 @@ class _JoinStorageConfig(JoinStorageConfig):
 class JoinFunctionContext[K: Hashable, T1, T2, R](StreamFunction[R]):
     _fn: JoinFunction[K, T1, T2, R]
 
-    def __init__(self, context: TypedStream[R], fn: JoinFunction[K, T1, T2, R]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[R], fn: JoinFunction[K, T1, T2, R]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, key: K, left_values: list[T1], right_values: list[T2], out: Collect[R]) -> bool:
         self.before_call()
-        result = await self._fn.join(self._context, key, left_values, right_values, out)
+        result = await self._fn.join(self._stream, key, left_values, right_values, out)
         self.after_call()
         return result
 

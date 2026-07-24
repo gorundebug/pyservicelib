@@ -8,7 +8,7 @@ import os
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import cast, Optional, Any, Callable, Set
+from typing import cast, Optional, Any, Callable, Coroutine, Set
 import aiofiles
 import yaml
 from aiohttp import web
@@ -31,11 +31,75 @@ from .serde import ListSerde, DictSerde
 from .serde import Serializer, StreamSerializer, StubSerde, make_default_serde
 from .store import Storage
 from .environment.metrics.metrics import Metrics, Int64Counter
-from .environment.log import LogsEngine, Logger
+from .environment.log import LogsEngine, Logger, err_field, str_field
 from .environment.tracing import Tracing, TracingEngine
 from .logging import create_asynclog_engine
 from .store import JoinStorageConfig
 from .telemetry import create_prometheus_metrics_engine
+
+
+type ShutdownOperation = tuple[str, Coroutine[Any, Any, None]]
+
+
+def _consume_task_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def run_shutdown_operations(
+    logger: Logger,
+    ctx: Context,
+    operations: list[ShutdownOperation],
+) -> None:
+    """Run named shutdown operations within one shared deadline."""
+    tasks: dict[asyncio.Task[None], str] = {
+        asyncio.create_task(operation, name=f"servicelib-shutdown:{name}"): name
+        for name, operation in operations
+    }
+    if not tasks:
+        return
+
+    try:
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=ctx.time_left,
+        )
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    for task in done:
+        if task.cancelled():
+            logger.warn(
+                "shutdown operation cancelled",
+                str_field("resource", tasks[task]),
+            )
+            continue
+        error = task.exception()
+        if error is not None:
+            logger.warn(
+                "shutdown operation failed",
+                str_field("resource", tasks[task]),
+                err_field(error),
+            )
+
+    for task in pending:
+        logger.warn(
+            "shutdown operation timed out",
+            str_field("resource", tasks[task]),
+        )
+        task.cancel()
+
+    if pending:
+        cancelled, still_running = await asyncio.wait(pending, timeout=0.1)
+        for task in cancelled:
+            _consume_task_result(task)
+        for task in still_running:
+            task.add_done_callback(_consume_task_result)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -76,7 +140,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _aiohttp_app: Optional[web.Application]
     _aiohttp_runner: Optional[web.AppRunner]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._dataSources = {}
         self._dataSinks = {}
         self._streams = {}
@@ -348,7 +412,12 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
             async def _metrics_http_handler(request: web.Request, _h=mh) -> web.Response:
                 data = _h()
-                return web.Response(body=data, content_type='text/plain; version=0.0.4; charset=utf-8')
+                return web.Response(
+                    body=data,
+                    headers={
+                        "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
+                    },
+                )
 
             self.register_http_handler(metrics_path, _metrics_http_handler)
 
@@ -359,31 +428,47 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await site.start()
 
     async def stop(self, ctx: Context) -> None:
+        ctx = ctx.bounded(
+            timedelta(milliseconds=self.service_config.shutdown_timeout)
+        )
+
         # Phase 1: concurrent — loader, pools, components, sources, HTTP server
-        phase1: list[asyncio.Task[Any]] = []
-        phase1.append(asyncio.create_task(self._loader.stop()))
-        phase1.append(asyncio.create_task(self._delay_pool.stop(ctx)))
-        for pool in self._task_pools.values():
-            phase1.append(asyncio.create_task(pool.stop(ctx)))
-        for pool in self._priority_task_pools.values():  # type: ignore[assignment]
-            phase1.append(asyncio.create_task(pool.stop(ctx)))
+        phase1: list[ShutdownOperation] = [
+            ("config_loader", self._loader.stop()),
+            ("delay_pool", self._delay_pool.stop(ctx)),
+        ]
+        for name, pool in self._task_pools.items():
+            phase1.append((f"task_pool:{name}", pool.stop(ctx)))
+        for name, pool in self._priority_task_pools.items():  # type: ignore[assignment]
+            phase1.append((f"priority_task_pool:{name}", pool.stop(ctx)))
         for component in self._components:
-            phase1.append(asyncio.create_task(component.stop(ctx)))
+            phase1.append(
+                (f"component:{type(component).__name__}", component.stop(ctx))
+            )
         for ds in self._dataSources.values():
-            phase1.append(asyncio.create_task(ds.stop(ctx)))
+            phase1.append((f"datasource:{ds.name}", ds.stop(ctx)))
         if self._aiohttp_runner is not None:
-            phase1.append(asyncio.create_task(self._aiohttp_runner.cleanup()))
-        await asyncio.gather(*phase1, return_exceptions=True)
+            phase1.append(("http_server", self._aiohttp_runner.cleanup()))
+        await run_shutdown_operations(self._log, ctx, phase1)
 
         # Phase 2: concurrent — sinks
-        phase2 = [asyncio.create_task(ds.stop(ctx)) for ds in self._dataSinks.values()]
-        if phase2:
-            await asyncio.gather(*phase2, return_exceptions=True)
+        phase2: list[ShutdownOperation] = [
+            (f"datasink:{ds.name}", ds.stop(ctx))
+            for ds in self._dataSinks.values()
+        ]
+        await run_shutdown_operations(self._log, ctx, phase2)
 
-        await self._metrics_engine.shutdown()
+        telemetry: list[ShutdownOperation] = [
+            ("metrics", self._metrics_engine.shutdown()),
+        ]
         if self._tracing_engine is not None:
-            await self._tracing_engine.shutdown()
-        await self._logs_engine.shutdown()
+            telemetry.append(("tracing", self._tracing_engine.shutdown()))
+        await run_shutdown_operations(self._log, ctx, telemetry)
+        await run_shutdown_operations(
+            self._log,
+            ctx,
+            [("logs", self._logs_engine.shutdown())],
+        )
 
     def add_datasource(self, datasource: DataSource) -> None:
         self._dataSources[datasource.id] = datasource
@@ -591,4 +676,3 @@ class JoinStreamStorageConfig(JoinStorageConfig):
     def name(self) -> str:
         cfg = self._stream.config
         return cfg.name
-

@@ -15,13 +15,13 @@ from .functions import FlatMapFunction
 class FlatMapFunctionContext[T, R](StreamFunction[R]):
     _fn: FlatMapFunction[T, R]
 
-    def __init__(self, context: TypedStream[R], fn: FlatMapFunction[T, R]):
-        super().__init__(context)
+    def __init__(self, stream: TypedStream[R], fn: FlatMapFunction[T, R]):
+        super().__init__(stream)
         self._fn = fn
 
     async def call(self, value: T, out: Collect[R]):
         self.before_call()
-        await self._fn.flatmap(self._context, value, out)
+        await self._fn.flatmap(self._stream, value, out)
         self.after_call()
 
 
