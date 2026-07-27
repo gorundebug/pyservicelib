@@ -27,15 +27,18 @@ class DataConnectorImplementation(str, Enum):
     allowed enum values
     """
     Undefined = ''
-    aiohttp = 'aiohttp'
     NetHTTP = 'net/http'
     Function = 'function'
     IBMsarama = 'IBM/Sarama'
     GoogleGRPC = 'google/grpc'
+    UserverHTTP = 'userver/http'
+    UserverGRPC = 'userver/grpc'
+    UserverKafka = 'userver/kafka'
+    AioHTTP = 'aiohttp'
+    AioKafka = 'aiokafka'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
         """Create an instance of DataConnectorImplementation from a JSON string"""
         return cls(json.loads(json_str))
-
 

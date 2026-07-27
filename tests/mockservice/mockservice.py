@@ -203,7 +203,7 @@ def make_config() -> MockConfig:
         data_connectors=MockConfig._DataConnectors(
             http_server=HttpDataConnectorConfig(
                 id=_http_server_conn_id, name="HttpServer",
-                implementation=DataConnectorImplementation.aiohttp,
+                implementation=DataConnectorImplementation.AioHTTP,
                 host="localhost", port=8080,
             ),
             custom_sink_connector=CustomDataConnectorConfig(
