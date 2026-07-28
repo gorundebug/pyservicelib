@@ -9,12 +9,14 @@ import os
 import sys
 from pathlib import Path
 from typing import get_origin, Any, Optional
+from types import SimpleNamespace
 from collections.abc import Iterable
 import pytest
 
 from pyservicelib_gorundebug.runtime.config import ConfigSettings
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 from pyservicelib_gorundebug import transformation
+from pyservicelib_gorundebug.operators.split import SplitLink
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
 
@@ -125,6 +127,15 @@ async def test_input_stream():
     stream = transformation.Input[int, Any, Any](cfg, service)
     assert stream.type_name == "int"
 
+
+def test_split_link_type_name_does_not_depend_on_orig_class():
+    link = object.__new__(SplitLink)
+    link._split_stream = SimpleNamespace(type_name="int")
+
+    assert not hasattr(link, "__orig_class__")
+    assert link.type_name == "int"
+
+
 @pytest.mark.benchmark(group="slots")
 def test_benchmark_with_slots(benchmark):
     class WithSlots:
@@ -149,6 +160,4 @@ def test_benchmark_without_slots(benchmark):
         objs = [WithoutSlots(i, i + 1) for i in range(100000)]
 
     benchmark(test)
-
-
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyservicelib_gorundebug"
-version = "0.0.6"
+version = "0.0.7"
 dynamic = ["dependencies"]
 authors = [
     { name="Sergey Alexeev", email="sergeyalexeev@yahoo.com" },

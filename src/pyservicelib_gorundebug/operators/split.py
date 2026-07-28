@@ -25,6 +25,10 @@ class SplitLink[T](TypedConsumedStream[T]):
         return f"{self._split_stream.name}SplitLink{self._index}"
 
     @property
+    def type_name(self) -> str:
+        return self._split_stream.type_name
+
+    @property
     def consumers(self) -> list[Stream]:
         return self._split_stream.consumers
 
