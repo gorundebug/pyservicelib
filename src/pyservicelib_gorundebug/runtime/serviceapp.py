@@ -4,39 +4,67 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 import argparse
+import asyncio
 import os
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import cast, Optional, Any, Callable, Coroutine, Set
+from typing import Any, Callable, Coroutine, Optional, Set, cast
+
 import aiofiles
 import yaml
 from aiohttp import web
-from watchfiles import awatch, Change
-import asyncio
+from watchfiles import Change, awatch
 
 from ..api.models.call_semantics import CallSemantics
-from .environment import ServiceDependency, Lifecycle
-from .config import Config, ServiceConfig, ServiceAppConfig, LinkConfig, LinkId
-from .config import TypeConfig, ConfigSettings, replace_placeholders, apply_environment
+from .common import (
+    ConsumeStatistics,
+    DataSink,
+    DataSource,
+    RuntimeEndpointConsumer,
+    RuntimeLinkInfo,
+    ServiceExecutionEnvironment,
+    ServiceExecutionRuntime,
+    ServiceLoader,
+    ServiceStream,
+    Stream,
+)
+from .config import (
+    Config,
+    ConfigSettings,
+    LinkConfig,
+    LinkId,
+    ServiceAppConfig,
+    ServiceConfig,
+    TypeConfig,
+    apply_environment,
+    replace_placeholders,
+)
 from .context import Context
-from .common import DataSink, DataSource, ConsumeStatistics, ServiceLoader
-from .common import ServiceStream, Stream
-from .common import ServiceExecutionRuntime, ServiceExecutionEnvironment
-from .common import RuntimeLinkInfo, RuntimeEndpointConsumer
+from .environment import Lifecycle, ServiceDependency
+from .environment.log import Logger, LogsEngine, err_field, str_field
 from .environment.metrics import MetricsEngine
-from .pool import PriorityTaskPool, TaskPool, DelayPool, make_delay_pool, make_task_pool, \
-    make_priority_task_pool
-from .serde import ListSerde, DictSerde
-from .serde import Serializer, StreamSerializer, StubSerde, make_default_serde
-from .store import Storage
-from .environment.metrics.metrics import Metrics, Int64Counter
-from .environment.log import LogsEngine, Logger, err_field, str_field
+from .environment.metrics.metrics import Int64Counter, Metrics
 from .environment.tracing import Tracing, TracingEngine
 from .logging import create_asynclog_engine
-from .store import JoinStorageConfig
+from .pool import (
+    DelayPool,
+    PriorityTaskPool,
+    TaskPool,
+    make_delay_pool,
+    make_priority_task_pool,
+    make_task_pool,
+)
+from .serde import (
+    DictSerde,
+    ListSerde,
+    Serializer,
+    StreamSerializer,
+    StubSerde,
+    make_default_serde,
+)
+from .store import JoinStorageConfig, Storage
 from .telemetry import create_prometheus_metrics_engine
-
 
 type ShutdownOperation = tuple[str, Coroutine[Any, Any, None]]
 
@@ -170,7 +198,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def has_custom_http_server(self) -> bool:
         return False
 
-    def register_http_handler(self, path: str, handler: Callable[..., Any], method: str = '*') -> None:
+    def register_http_handler(
+        self, path: str, handler: Callable[..., Any], method: str = "*"
+    ) -> None:
         if self._aiohttp_app is None:
             raise RuntimeError("HTTP server was not initialized for application")
         self._aiohttp_app.router.add_route(method, path, handler)
@@ -178,7 +208,13 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def service_context(self) -> Any:
         return self
 
-    async def service_init(self, name: str, dep: Optional[ServiceDependency], loader: ServiceLoader, cfg: Config) -> None:
+    async def service_init(
+        self,
+        name: str,
+        dep: Optional[ServiceDependency],
+        loader: ServiceLoader,
+        cfg: Config,
+    ) -> None:
         self._dep = dep
         self._loader = loader
         service_config = cfg.config.get_service_config_by_name(name)
@@ -215,45 +251,80 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         for link in cast(list[LinkConfig], self._config.links):
             stream_from = self._config.get_stream_config_by_id(link.var_from)
             stream_to = self._config.get_stream_config_by_id(link.to)
-            if stream_from.id_service == service_config.id or stream_to.id_service == service_config.id:
+            if (
+                stream_from.id_service == service_config.id
+                or stream_to.id_service == service_config.id
+            ):
                 if stream_from.id_service == service_config.id:
                     call_semantics = link.call_semantics
                 else:
                     if link.income_call_semantics is None:
-                        raise ValueError(f"Income call semantics does not defined for link from={link.var_from} to={link.to}")
+                        raise ValueError(
+                            f"Income call semantics does not defined for link from={link.var_from} to={link.to}"
+                        )
                     call_semantics = link.income_call_semantics
-                if call_semantics not in [CallSemantics.FunctionCall,
-                                          CallSemantics.TaskPool,
-                                          CallSemantics.PriorityTaskPool,
-                                          CallSemantics.ParallelCall]:
-                    raise ValueError(f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}")
-                if call_semantics in [CallSemantics.TaskPool, CallSemantics.PriorityTaskPool]:
+                if call_semantics not in [
+                    CallSemantics.FunctionCall,
+                    CallSemantics.TaskPool,
+                    CallSemantics.PriorityTaskPool,
+                    CallSemantics.ParallelCall,
+                ]:
+                    raise ValueError(
+                        f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}"
+                    )
+                if call_semantics in [
+                    CallSemantics.TaskPool,
+                    CallSemantics.PriorityTaskPool,
+                ]:
                     if stream_from.id_service == service_config.id:
                         if link.pool_name is None:
-                            raise ValueError(f"Pool name does not defined for link from={link.var_from} to={link.to}")
-                        if call_semantics == CallSemantics.PriorityTaskPool and link.priority is None:
-                            raise ValueError(f"Priority for link from={link.var_from} to={link.to} does not defines")
+                            raise ValueError(
+                                f"Pool name does not defined for link from={link.var_from} to={link.to}"
+                            )
+                        if (
+                            call_semantics == CallSemantics.PriorityTaskPool
+                            and link.priority is None
+                        ):
+                            raise ValueError(
+                                f"Priority for link from={link.var_from} to={link.to} does not defines"
+                            )
                         pool_name = link.pool_name
                     else:
                         if link.income_pool_name is None:
-                            raise ValueError(f"Income pool name does not defined for link from={link.var_from} to={link.to}")
-                        if call_semantics == CallSemantics.PriorityTaskPool and link.income_priority is None:
-                            raise ValueError(f"Income priority for link from={link.var_from} to={link.to} does not defines")
+                            raise ValueError(
+                                f"Income pool name does not defined for link from={link.var_from} to={link.to}"
+                            )
+                        if (
+                            call_semantics == CallSemantics.PriorityTaskPool
+                            and link.income_priority is None
+                        ):
+                            raise ValueError(
+                                f"Income priority for link from={link.var_from} to={link.to} does not defines"
+                            )
                         pool_name = link.income_pool_name
                     pool_cfg = self._config.get_pool_by_name(pool_name)
                     if pool_cfg is None:
-                        raise ValueError(f"Task pool '{pool_name}' not found for link from={link.var_from} to={link.to}")
+                        raise ValueError(
+                            f"Task pool '{pool_name}' not found for link from={link.var_from} to={link.to}"
+                        )
                     if call_semantics == CallSemantics.TaskPool:
                         if pool_name not in self._task_pools:
-                            self._task_pools[pool_name] = make_task_pool(pool_name, self)
+                            self._task_pools[pool_name] = make_task_pool(
+                                pool_name, self
+                            )
                     elif call_semantics == CallSemantics.PriorityTaskPool:
                         if pool_name not in self._priority_task_pools:
-                            self._priority_task_pools[pool_name] = make_priority_task_pool(pool_name, self)
+                            self._priority_task_pools[pool_name] = (
+                                make_priority_task_pool(pool_name, self)
+                            )
 
-        info_gauge = self._metrics_engine.metrics.scope("service", {
-            "service": service_config.name,
-            "environment": str(service_config.environment),
-        }).gauge("info", "Service information (value is always 1)", {})
+        info_gauge = self._metrics_engine.metrics.scope(
+            "service",
+            {
+                "service": service_config.name,
+                "environment": str(service_config.environment),
+            },
+        ).gauge("info", "Service information (value is always 1)", {})
         info_gauge.set(1)
 
         if not self.has_custom_http_server():
@@ -280,7 +351,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             if tp is None:
                 raise ValueError(f"Type with name '{type_name}' not found")
             serde_type = tp.serde_type
-        return f'[]{serde_type}' if is_array else serde_type
+        return f"[]{serde_type}" if is_array else serde_type
 
     def _make_default_serde(self, type_name: str) -> Optional[Serializer]:
         ser = self.get_serde(type_name)
@@ -312,7 +383,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     raise ValueError(f"Invalid value type for array type '{type_name}'")
 
                 if self._is_primitive_type(tp.value_type):
-                    ser = self._make_default_serde(self._get_serde_type(tp.value_type, True))
+                    ser = self._make_default_serde(
+                        self._get_serde_type(tp.value_type, True)
+                    )
                 else:
                     ser = ListSerde(type_name, self.get_type_serde(tp.value_type))
             elif tp.is_dict:
@@ -322,14 +395,20 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     raise ValueError(f"Invalid value type for dict type '{type_name}'")
 
                 if self._is_primitive_type(tp.key_type):
-                    keys_ser = self._make_default_serde(self._get_serde_type(tp.key_type, True))
+                    keys_ser = self._make_default_serde(
+                        self._get_serde_type(tp.key_type, True)
+                    )
                 else:
                     keys_ser = ListSerde(tp.key_type, self.get_type_serde(tp.key_type))
 
                 if self._is_primitive_type(tp.value_type):
-                    values_ser = self._make_default_serde(self._get_serde_type(tp.value_type, True))
+                    values_ser = self._make_default_serde(
+                        self._get_serde_type(tp.value_type, True)
+                    )
                 else:
-                    values_ser = ListSerde(tp.value_type, self.get_type_serde(tp.value_type))
+                    values_ser = ListSerde(
+                        tp.value_type, self.get_type_serde(tp.value_type)
+                    )
 
                 if values_ser is not None and keys_ser is not None:
                     ser = DictSerde(type_name, keys_ser, values_ser)
@@ -348,7 +427,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def get_registered_serde(self, type_name: str) -> Optional[StreamSerializer]:
         return self._serdes.get(type_name)
 
-    def register_consume_statistics(self, link_id: LinkId, statistics: ConsumeStatistics) -> None:
+    def register_consume_statistics(
+        self, link_id: LinkId, statistics: ConsumeStatistics
+    ) -> None:
         self._consume_statistics[link_id] = statistics
 
     def register_link_info(self, link_info: RuntimeLinkInfo) -> None:
@@ -379,8 +460,11 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         pass
 
     async def start(self, ctx: Context) -> None:
-        from .statusweb import status_handler as _status_handler, data_handler as _data_handler, \
-            graph_handler as _graph_handler
+        from .statusweb import data_handler as _data_handler
+        from .statusweb import graph_handler as _graph_handler
+        from .statusweb import status_handler as _status_handler
+        from .statusweb import vis_css_handler as _vis_css_handler
+        from .statusweb import vis_js_handler as _vis_js_handler
 
         for stream in self._streams.values():
             stream.build()
@@ -401,16 +485,28 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
         service_config = self.service_config
         if service_config.status_handler:
-            status_path = '/' + service_config.status_handler.lstrip('/')
+            status_path = "/" + service_config.status_handler.lstrip("/")
             self.register_http_handler(status_path, partial(_status_handler, self))
-            self.register_http_handler(status_path + '/data', partial(_data_handler, self))
-            self.register_http_handler(status_path + '/graph', partial(_graph_handler, self))
+            self.register_http_handler(
+                status_path + "/data", partial(_data_handler, self)
+            )
+            self.register_http_handler(
+                status_path + "/graph", partial(_graph_handler, self)
+            )
+            self.register_http_handler(
+                status_path + "/vis.min.js", partial(_vis_js_handler, self)
+            )
+            self.register_http_handler(
+                status_path + "/vis.min.css", partial(_vis_css_handler, self)
+            )
 
         if service_config.metrics_handler:
-            metrics_path = '/' + service_config.metrics_handler.lstrip('/')
+            metrics_path = "/" + service_config.metrics_handler.lstrip("/")
             mh = self._metrics_engine.metrics_handler
 
-            async def _metrics_http_handler(request: web.Request, _h=mh) -> web.Response:
+            async def _metrics_http_handler(
+                request: web.Request, _h=mh
+            ) -> web.Response:
                 data = _h()
                 return web.Response(
                     body=data,
@@ -424,13 +520,13 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         if self._aiohttp_app is not None:
             self._aiohttp_runner = web.AppRunner(self._aiohttp_app)
             await self._aiohttp_runner.setup()
-            site = web.TCPSite(self._aiohttp_runner, service_config.http_host, service_config.http_port)
+            site = web.TCPSite(
+                self._aiohttp_runner, service_config.http_host, service_config.http_port
+            )
             await site.start()
 
     async def stop(self, ctx: Context) -> None:
-        ctx = ctx.bounded(
-            timedelta(milliseconds=self.service_config.shutdown_timeout)
-        )
+        ctx = ctx.bounded(timedelta(milliseconds=self.service_config.shutdown_timeout))
 
         # Phase 1: concurrent — loader, pools, components, sources, HTTP server
         phase1: list[ShutdownOperation] = [
@@ -453,8 +549,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
         # Phase 2: concurrent — sinks
         phase2: list[ShutdownOperation] = [
-            (f"datasink:{ds.name}", ds.stop(ctx))
-            for ds in self._dataSinks.values()
+            (f"datasink:{ds.name}", ds.stop(ctx)) for ds in self._dataSinks.values()
         ]
         await run_shutdown_operations(self._log, ctx, phase2)
 
@@ -507,7 +602,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def runtime(self) -> "ServiceExecutionRuntime":
         return self
 
-    async def delay(self, duration: timedelta, task: Callable[..., Any], *args, **kwargs):
+    async def delay(
+        self, duration: timedelta, task: Callable[..., Any], *args, **kwargs
+    ):
         await self._delay_pool.add_task(duration, task, *args, **kwargs)
 
     def create_task(self, fn: Callable[..., Any], *args, **kwargs):
@@ -516,7 +613,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         task.add_done_callback(self._tasks.discard)
 
 
-class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](ServiceLoader):
+class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](
+    ServiceLoader
+):
     _watching_task: asyncio.Task[Any]
     _ready_flag: asyncio.Event
     _watching_flag: asyncio.Event
@@ -526,12 +625,14 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
     _config_reload_error_counter: Int64Counter
 
     async def _reload_from_values(self, cfg_class: Any, values_file: str) -> None:
-        async with aiofiles.open(values_file, 'r') as file:
+        async with aiofiles.open(values_file, "r") as file:
             values_data = await file.read()
             values_dict: dict[str, Any] = yaml.safe_load(values_data)
 
         config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
-        result_config: dict[str, Any] = apply_environment(replace_placeholders(config_dict, values_dict))
+        result_config: dict[str, Any] = apply_environment(
+            replace_placeholders(config_dict, values_dict)
+        )
 
         cfg = cfg_class.from_dict(result_config)
         if cfg is None:
@@ -540,7 +641,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         self._config_reload_success_counter.inc()
 
     async def _watch_config_changes(self, values_file: str):
-        cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
+        cfg_class = self.__orig_class__.__args__[1]  # type: ignore[attr-defined]
         real_values_file = os.path.realpath(values_file)
         self._watching_flag.set()
 
@@ -554,7 +655,9 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
 
                 # K8s ConfigMap atomically replaces the symlink target.
                 # Detect this by checking whether the resolved real path changed.
-                current_real = os.path.realpath(values_file) if os.path.exists(values_file) else ""
+                current_real = (
+                    os.path.realpath(values_file) if os.path.exists(values_file) else ""
+                )
                 if current_real and current_real != real_values_file:
                     real_values_file = current_real
                     try:
@@ -565,11 +668,16 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
                     continue
 
                 for change, file_path in changes:
-                    if file_path in {values_file, real_values_file} and change in {Change.modified, Change.added}:
+                    if file_path in {values_file, real_values_file} and change in {
+                        Change.modified,
+                        Change.added,
+                    }:
                         try:
                             await self._reload_from_values(cfg_class, values_file)
                         except Exception as e:
-                            self._service.log.error(f"Failed to reload configuration: {e}")
+                            self._service.log.error(
+                                f"Failed to reload configuration: {e}"
+                            )
                             self._config_reload_error_counter.inc()
         finally:
             try:
@@ -588,18 +696,30 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             file_path = arg_path
         return str(Path(file_path).resolve())
 
-    async def load(self, name: str, dep: ServiceDependency, config_settings: ConfigSettings) -> ServiceType:
-        self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  #type: ignore[attr-defined]
-        if not isinstance(self._service , ServiceApp):
-            raise ValueError("Invalid service type. Service must be inherit from ServiceApp class")
-        cfg_class = self.__orig_class__.__args__[1]  #type: ignore[attr-defined]
-        if not issubclass(cfg_class , ServiceAppConfig):
-            raise ValueError("Invalid config type. Config must be inherit from ServiceAppConfig class")
+    async def load(
+        self, name: str, dep: ServiceDependency, config_settings: ConfigSettings
+    ) -> ServiceType:
+        self._service = cast(ServiceType, self.__orig_class__.__args__[0]())  # type: ignore[attr-defined]
+        if not isinstance(self._service, ServiceApp):
+            raise ValueError(
+                "Invalid service type. Service must be inherit from ServiceApp class"
+            )
+        cfg_class = self.__orig_class__.__args__[1]  # type: ignore[attr-defined]
+        if not issubclass(cfg_class, ServiceAppConfig):
+            raise ValueError(
+                "Invalid config type. Config must be inherit from ServiceAppConfig class"
+            )
 
         parser = argparse.ArgumentParser(description="Service configuration paths")
-        parser.add_argument("--config", default="./config.yaml", help="Service config path")
-        parser.add_argument("--values", default="./values.yaml", help="Service config values path")
-        parser.add_argument("--overrides", default=None, help="Service config overrides path")
+        parser.add_argument(
+            "--config", default="./config.yaml", help="Service config path"
+        )
+        parser.add_argument(
+            "--values", default="./values.yaml", help="Service config values path"
+        )
+        parser.add_argument(
+            "--overrides", default=None, help="Service config overrides path"
+        )
         args, _ = parser.parse_known_args()
         config_file = self._get_path(args.config)
         values_file = self._get_path(args.values)
@@ -608,16 +728,18 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
         self._ready_flag = asyncio.Event()
         self._watching_flag = asyncio.Event()
 
-        async with aiofiles.open(config_file, 'r') as file:
+        async with aiofiles.open(config_file, "r") as file:
             self._config_data = await file.read()
             config_dict: dict[str, Any] = yaml.safe_load(self._config_data)
 
         if os.path.exists(values_file):
-            self._watching_task = asyncio.create_task(self._watch_config_changes(values_file))
+            self._watching_task = asyncio.create_task(
+                self._watch_config_changes(values_file)
+            )
             if not self._watching_flag.is_set():
                 await self._watching_flag.wait()
 
-            async with aiofiles.open(values_file, 'r') as file:
+            async with aiofiles.open(values_file, "r") as file:
                 values_data = await file.read()
                 values_dict: dict[str, Any] = yaml.safe_load(values_data)
 
@@ -628,7 +750,7 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             self._watching_task.cancel()
 
         if overrides_file is not None:
-            async with aiofiles.open(overrides_file, 'r') as file:
+            async with aiofiles.open(overrides_file, "r") as file:
                 overrides_data = await file.read()
                 overrides_dict: dict[str, Any] = yaml.safe_load(overrides_data)
             config_dict = _deep_merge(config_dict, overrides_dict)
@@ -639,11 +761,19 @@ class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](Se
             raise ValueError("Failed to create config")
 
         await self._service.runtime.service_init(name, dep, self, cfg)
-        scope = self._service.metrics.scope('service', {'service': self._service.service_config.name})
+        scope = self._service.metrics.scope(
+            "service", {"service": self._service.service_config.name}
+        )
         self._config_reload_success_counter = scope.counter(
-            'config_reloads_total', 'Total number of config reload attempts', {'event': 'success'})
+            "config_reloads_total",
+            "Total number of config reload attempts",
+            {"event": "success"},
+        )
         self._config_reload_error_counter = scope.counter(
-            'config_reloads_total', 'Total number of config reload attempts', {'event': 'error'})
+            "config_reloads_total",
+            "Total number of config reload attempts",
+            {"event": "error"},
+        )
         self._ready_flag.set()
 
         return self._service
@@ -665,7 +795,11 @@ class JoinStreamStorageConfig(JoinStorageConfig):
     @property
     def ttl(self) -> timedelta:
         cfg = self._stream.config
-        return timedelta(milliseconds=0) if cfg.ttl is None else timedelta(milliseconds=cfg.ttl)
+        return (
+            timedelta(milliseconds=0)
+            if cfg.ttl is None
+            else timedelta(milliseconds=cfg.ttl)
+        )
 
     @property
     def renew_ttl(self) -> bool:

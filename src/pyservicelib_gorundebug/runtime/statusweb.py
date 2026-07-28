@@ -5,14 +5,17 @@
 #   file for details.
 
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
+from functools import lru_cache
+from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from ..api.models.data_connector_type import DataConnectorType
 from ..api.models.transformation_type import TransformationType
-from .graph import runtime_to_stream_app
 from .config.app_to_yaml import app_to_yaml
+from .graph import runtime_to_stream_app
 
 if TYPE_CHECKING:
     from .serviceapp import ServiceApp
@@ -32,6 +35,8 @@ _MDI_SYNC = "M12,18A6,6 0 0,1 6,12C6,11 6.25,10.03 6.7,9.2L5.24,7.74C4.46,8.97 4
 _MDI_ALERT_CIRCLE = "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"
 _MDI_TIMER = "M19.03 7.39L20.45 5.97C20 5.46 19.55 5 19.04 4.56L17.62 6C16.07 4.74 14.12 4 12 4C7.03 4 3 8.03 3 13S7.03 22 12 22C17 22 21 17.97 21 13C21 10.88 20.26 8.93 19.03 7.39M13 14H11V7H13V14M15 1H9V3H15V1Z"
 _MDI_SOURCE_BRANCH = "M13,14C9.64,14 8.54,15.35 8.18,16.24C9.25,16.7 10,17.76 10,19A3,3 0 0,1 7,22A3,3 0 0,1 4,19C4,17.69 4.83,16.58 6,16.17V7.83C4.83,7.42 4,6.31 4,5A3,3 0 0,1 7,2A3,3 0 0,1 10,5C10,6.31 9.17,7.42 8,7.83V13.12C8.88,12.47 10.16,12 12,12C14.67,12 15.56,10.66 15.85,9.77C14.77,9.32 14,8.25 14,7A3,3 0 0,1 17,4A3,3 0 0,1 20,7C20,8.34 19.12,9.5 17.91,9.86C17.65,11.29 16.68,14 13,14M7,18A1,1 0 0,0 6,19A1,1 0 0,0 7,20A1,1 0 0,0 8,19A1,1 0 0,0 7,18M7,4A1,1 0 0,0 6,5A1,1 0 0,0 7,6A1,1 0 0,0 8,5A1,1 0 0,0 7,4M17,6A1,1 0 0,0 16,7A1,1 0 0,0 17,8A1,1 0 0,0 18,7A1,1 0 0,0 17,6Z"
+_MDI_API = "M7 7H5A2 2 0 0 0 3 9V17H5V13H7V17H9V9A2 2 0 0 0 7 7M7 11H5V9H7M14 7H10V17H12V13H14A2 2 0 0 0 16 11V9A2 2 0 0 0 14 7M14 11H12V9H14M20 9V15H21V17H17V15H18V9H17V7H21V9Z"
+_MDI_CALL_MADE = "M9,5V7H15.59L4,18.59L5.41,20L17,8.41V15H19V5"
 
 _STREAM_ICON_MAP: dict[TransformationType, str] = {
     TransformationType.Input: _MDI_DATABASE_ARROW_RIGHT,
@@ -58,15 +63,17 @@ _EDGE_COLOR = "#0050FF"
 _EDGE_ERROR_COLOR = "#FF3030"
 _EDGE_LENGTH = 200
 
-_SVG_REPLACER = str.maketrans({
-    " ": "%20",
-    "<": "%3C",
-    ">": "%3E",
-    "#": "%23",
-    '"': "%22",
-    "{": "%7B",
-    "}": "%7D",
-})
+_SVG_REPLACER = str.maketrans(
+    {
+        " ": "%20",
+        "<": "%3C",
+        ">": "%3E",
+        "#": "%23",
+        '"': "%22",
+        "{": "%7B",
+        "}": "%7D",
+    }
+)
 
 
 def _svg_data_uri(svg: str) -> str:
@@ -74,19 +81,23 @@ def _svg_data_uri(svg: str) -> str:
 
 
 def _make_node_image_uri(icon_path: str, bg_color: str) -> str:
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60">'
-           f'<rect width="60" height="60" rx="10" fill="{bg_color}"/>'
-           f'<svg x="10" y="10" width="40" height="40" viewBox="0 0 24 24">'
-           f'<path d="{icon_path}" fill="white"/></svg></svg>')
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60">'
+        f'<rect width="60" height="60" rx="10" fill="{bg_color}"/>'
+        f'<svg x="10" y="10" width="40" height="40" viewBox="0 0 24 24">'
+        f'<path d="{icon_path}" fill="white"/></svg></svg>'
+    )
     return _svg_data_uri(svg)
 
 
 def _make_node_image_selected_uri(icon_path: str, bg_color: str) -> str:
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60">'
-           f'<rect width="60" height="60" rx="10" fill="{bg_color}"/>'
-           f'<svg x="10" y="10" width="40" height="40" viewBox="0 0 24 24">'
-           f'<path d="{icon_path}" fill="white"/></svg>'
-           f'<rect x="2" y="2" width="56" height="56" rx="9" fill="none" stroke="#00FF80" stroke-width="4"/></svg>')
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60">'
+        f'<rect width="60" height="60" rx="10" fill="{bg_color}"/>'
+        f'<svg x="10" y="10" width="40" height="40" viewBox="0 0 24 24">'
+        f'<path d="{icon_path}" fill="white"/></svg>'
+        f'<rect x="2" y="2" width="56" height="56" rx="9" fill="none" stroke="#00FF80" stroke-width="4"/></svg>'
+    )
     return _svg_data_uri(svg)
 
 
@@ -151,7 +162,7 @@ def _make_node(app: "ServiceApp", stream_id: int) -> dict[str, Any]:
 
     label = f"{service_stream.name}({service_stream.transformation_name.upper()})\n[{service_name}]"
 
-    icon_path = _STREAM_ICON_MAP.get(stream_cfg.type, _MDI_FUNCTION)
+    icon_path = _stream_icon_path(app, stream_cfg)
 
     return {
         "id": stream_id,
@@ -172,12 +183,34 @@ def _make_node(app: "ServiceApp", stream_id: int) -> dict[str, Any]:
     }
 
 
-def _make_edge(app: "ServiceApp", from_id: int, type_name: str, to_id: int, color: str) -> dict[str, Any]:
+def _stream_icon_path(app: "ServiceApp", stream_cfg: Any) -> str:
+    icon_path = _STREAM_ICON_MAP.get(stream_cfg.type, _MDI_FUNCTION)
+    endpoint_id = getattr(stream_cfg, "id_endpoint", 0)
+    if not endpoint_id:
+        return icon_path
+
+    try:
+        endpoint = app.config.get_endpoint_config_by_id(endpoint_id)
+        connector = app.config.get_data_connector_by_id(endpoint.id_data_connector)
+    except (KeyError, ValueError):
+        return icon_path
+
+    if connector.type not in (DataConnectorType.HTTP, DataConnectorType.gRPC):
+        return icon_path
+    if stream_cfg.type == TransformationType.Sink:
+        return _MDI_CALL_MADE
+    return _MDI_API
+
+
+def _make_edge(
+    app: "ServiceApp", from_id: int, type_name: str, to_id: int, color: str
+) -> dict[str, Any]:
     label = type_name.lstrip("*")
     if label.startswith("types."):
-        label = label[len("types."):]
+        label = label[len("types.") :]
     link_id_key = None
     from .config.config import LinkId
+
     link_id_key = LinkId(from_id=from_id, to_id=to_id)
     stat = app._consume_statistics.get(link_id_key)
     if stat is not None:
@@ -186,6 +219,7 @@ def _make_edge(app: "ServiceApp", from_id: int, type_name: str, to_id: int, colo
     if stream is not None:
         cfg = stream.config
         from ..api.models.transformation_type import TransformationType
+
         if cfg.type in (TransformationType.Join, TransformationType.MultiJoin):
             if cfg.id_source == from_id:
                 label += " (L)"
@@ -243,16 +277,40 @@ async def graph_handler(app: "ServiceApp", request: web.Request) -> web.Response
     return web.Response(content_type="text/yaml; charset=utf-8", body=data)
 
 
+async def vis_js_handler(app: "ServiceApp", request: web.Request) -> web.Response:
+    del app
+    if request.method != "GET":
+        return web.Response(status=405)
+    return web.Response(
+        body=_read_web_asset("vis.min.js"),
+        headers={
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "public, max-age=31536000, immutable",
+        },
+    )
+
+
+async def vis_css_handler(app: "ServiceApp", request: web.Request) -> web.Response:
+    del app
+    if request.method != "GET":
+        return web.Response(status=405)
+    return web.Response(
+        body=_read_web_asset("vis.min.css"),
+        headers={
+            "Content-Type": "text/css; charset=utf-8",
+            "Cache-Control": "public, max-age=31536000, immutable",
+        },
+    )
+
+
+@lru_cache(maxsize=3)
+def _read_web_asset(name: str) -> bytes:
+    return (
+        resources.files("pyservicelib_gorundebug.runtime")
+        .joinpath("web", name)
+        .read_bytes()
+    )
+
+
 def _get_status_html() -> bytes:
-    return b"""<!DOCTYPE html>
-<html>
-<head><title>Service Status</title></head>
-<body>
-<div id="graph"></div>
-<script>
-fetch('/data').then(r => r.json()).then(data => {
-    document.getElementById('graph').textContent = JSON.stringify(data, null, 2);
-});
-</script>
-</body>
-</html>"""
+    return _read_web_asset("status.html")
