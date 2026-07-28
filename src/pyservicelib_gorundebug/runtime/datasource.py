@@ -13,6 +13,7 @@ from .common import InputEndpointConsumer, StreamContext, CollectFunc
 from .config import DataConnectorConfig, EndpointConfig
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field
+from .transportmetrics import TransportRequest, TransportRequestMetrics
 
 
 class InputDataSource(DataSource, ABC):
@@ -68,14 +69,18 @@ class DataSourceEndpoint(InputEndpoint):
     _active_requests: Int64Gauge
     _pending_requests: Int64Gauge
     _pending_start_times: dict[str, float]
+    _transport_metrics: Optional[TransportRequestMetrics]
+    _transport_requests: dict[float, TransportRequest]
 
     def __init__(self, datasource: DataSource, id_endpoint: int):
         self._id = id_endpoint
         self._datasource = datasource
         self._endpoint_consumers = []
         self._pending_start_times = {}
+        self._transport_requests = {}
 
-        endpoint_name = datasource.environment.config.get_endpoint_config_by_id(id_endpoint).name
+        endpoint_config = datasource.environment.config.get_endpoint_config_by_id(id_endpoint)
+        endpoint_name = endpoint_config.name
         connector_name = datasource.name
 
         scope = datasource.environment.metrics.scope("datasource_endpoint", {
@@ -138,6 +143,25 @@ class DataSourceEndpoint(InputEndpoint):
             "Age in seconds of the oldest pending request awaiting a pipeline result",
             _oldest_pending_age,
         )
+
+        path = getattr(endpoint_config, "path", None)
+        method_name = getattr(endpoint_config, "method_name", None)
+        if path:
+            service = datasource.environment.service_config
+            self._transport_metrics = TransportRequestMetrics.http_server(
+                datasource.environment.metrics,
+                method=getattr(endpoint_config, "method", None) or "UNKNOWN",
+                route=path,
+                host=service.http_host,
+                port=service.http_port,
+            )
+        elif method_name:
+            self._transport_metrics = TransportRequestMetrics.grpc_server(
+                datasource.environment.metrics,
+                method=f"{connector_name}/{method_name}",
+            )
+        else:
+            self._transport_metrics = None
 
     @property
     def config(self) -> EndpointConfig:
@@ -213,11 +237,30 @@ class DataSourceEndpoint(InputEndpoint):
 
     def on_request_start(self) -> float:
         self._active_requests.inc()
-        return time.monotonic()
+        started_at = time.monotonic()
+        if self._transport_metrics is not None:
+            self._transport_requests[started_at] = self._transport_metrics.start()
+        return started_at
 
-    def on_request_end(self, start_time: float, err: Optional[Exception]) -> None:
+    def on_request_end(
+        self,
+        start_time: float,
+        err: Optional[Exception],
+        status: Optional[str] = None,
+        request_body_size: Optional[int] = None,
+        response_body_size: Optional[int] = None,
+    ) -> None:
         self._active_requests.dec()
         self._request_duration.observe(time.monotonic() - start_time)
+        transport_request = self._transport_requests.pop(start_time, None)
+        if self._transport_metrics is not None and transport_request is not None:
+            self._transport_metrics.finish(
+                transport_request,
+                err,
+                status,
+                request_body_size,
+                response_body_size,
+            )
         if err is None:
             self._messages_total.inc()
         else:

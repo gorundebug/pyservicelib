@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+import json
 from typing import Optional, Protocol, Any, cast
 
 import aiohttp
@@ -60,6 +61,28 @@ class Requester:
         if self._method is None or self._url is None:
             raise ValueError("Requester.new_request() must be called before execute()")
         return await self._session.request(self._method, self._url, **self._kwargs)
+
+    @property
+    def body_size(self) -> Optional[int]:
+        content_length = self._kwargs.get("headers", {}).get("Content-Length")
+        if content_length is not None:
+            try:
+                return int(content_length)
+            except (TypeError, ValueError):
+                pass
+        body = self._kwargs.get("data")
+        if isinstance(body, bytes):
+            return len(body)
+        if isinstance(body, str):
+            return len(body.encode())
+        if "json" in self._kwargs:
+            return len(
+                json.dumps(
+                    self._kwargs["json"],
+                    separators=(",", ":"),
+                ).encode()
+            )
+        return None
 
 
 class Response:
@@ -231,6 +254,8 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
+        response_status: Optional[str] = None
+        response_body_size: Optional[int] = None
         try:
             with span.scoped():
                 try:
@@ -260,6 +285,8 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
 
                 try:
                     resp_raw = await req.execute()
+                    response_status = str(resp_raw.status)
+                    response_body_size = resp_raw.content_length
                 except Exception as e:
                     span_error(span, e)
                     span_event(span, "http_call.error", string_attr("error", str(e)))
@@ -282,7 +309,13 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                 span_event(span, "handle_response")
                 await self._handler.end_request(self._sc, None, handler_state)
         finally:
-            ep.on_request_end(start_time, end_err)
+            ep.on_request_end(
+                start_time,
+                end_err,
+                response_status,
+                req.body_size if "req" in locals() else None,
+                response_body_size,
+            )
             span.end()
 
 

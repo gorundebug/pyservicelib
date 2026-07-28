@@ -13,6 +13,7 @@ from .common import SinkEndpoint, OutputEndpointConsumer, TypedSinkStream
 from .config import DataConnectorConfig, EndpointConfig
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field
+from .transportmetrics import TransportRequest, TransportRequestMetrics
 
 
 class OutputDataSink(DataSink, ABC):
@@ -62,13 +63,17 @@ class DataSinkEndpoint(SinkEndpoint):
     _request_duration: Float64Histogram
     _active_requests: Int64Gauge
     _late_result_counter: Int64Counter
+    _transport_metrics: Optional[TransportRequestMetrics]
+    _transport_requests: dict[float, TransportRequest]
 
     def __init__(self, data_sink: DataSink, id_endpoint: int):
         self._id = id_endpoint
         self._data_sink = data_sink
         self._endpoint_consumers = []
+        self._transport_requests = {}
 
-        endpoint_name = data_sink.environment.config.get_endpoint_config_by_id(id_endpoint).name
+        endpoint_config = data_sink.environment.config.get_endpoint_config_by_id(id_endpoint)
+        endpoint_name = endpoint_config.name
         connector_name = data_sink.name
 
         scope = data_sink.environment.metrics.scope("datasink_endpoint", {
@@ -100,6 +105,23 @@ class DataSinkEndpoint(SinkEndpoint):
         self._active_requests = scope.gauge(
             "active_requests", "Number of active requests in data sink endpoint", {},
         )
+
+        path = getattr(endpoint_config, "path", None)
+        method_name = getattr(endpoint_config, "method_name", None)
+        if path:
+            self._transport_metrics = TransportRequestMetrics.http_client(
+                data_sink.environment.metrics,
+                method=getattr(endpoint_config, "method", None) or "UNKNOWN",
+                route=path,
+                server_address=connector_name,
+            )
+        elif method_name:
+            self._transport_metrics = TransportRequestMetrics.grpc_client(
+                data_sink.environment.metrics,
+                method=f"{connector_name}/{method_name}",
+            )
+        else:
+            self._transport_metrics = None
 
     @property
     def config(self) -> EndpointConfig:
@@ -150,11 +172,30 @@ class DataSinkEndpoint(SinkEndpoint):
 
     def on_request_start(self) -> float:
         self._active_requests.inc()
-        return time.monotonic()
+        started_at = time.monotonic()
+        if self._transport_metrics is not None:
+            self._transport_requests[started_at] = self._transport_metrics.start()
+        return started_at
 
-    def on_request_end(self, start_time: float, err: Optional[Exception]) -> None:
+    def on_request_end(
+        self,
+        start_time: float,
+        err: Optional[Exception],
+        status: Optional[str] = None,
+        request_body_size: Optional[int] = None,
+        response_body_size: Optional[int] = None,
+    ) -> None:
         self._active_requests.dec()
         self._request_duration.observe(time.monotonic() - start_time)
+        transport_request = self._transport_requests.pop(start_time, None)
+        if self._transport_metrics is not None and transport_request is not None:
+            self._transport_metrics.finish(
+                transport_request,
+                err,
+                status,
+                request_body_size,
+                response_body_size,
+            )
         if err is None:
             self._messages_total.inc()
         else:
@@ -177,4 +218,3 @@ class DataSinkEndpointConsumer[T, E](OutputEndpointConsumer):
     @property
     def endpoint(self) -> SinkEndpoint:
         return self._endpoint
-

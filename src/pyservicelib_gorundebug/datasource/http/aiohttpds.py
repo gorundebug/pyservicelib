@@ -341,7 +341,33 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                     data.set_response(web.Response())
                 return await data.get_response()
         finally:
-            ep.on_request_end(start_time, end_err)
+            response = (
+                data._response.result()
+                if data._response.done()
+                and not data._response.cancelled()
+                and data._response.exception() is None
+                else None
+            )
+            response_status = (
+                str(response.status)
+                if response is not None
+                else None
+            )
+            response_body_size = (
+                len(response.body)
+                if response is not None
+                and isinstance(response.body, (bytes, bytearray))
+                else response.content_length
+                if response is not None
+                else None
+            )
+            ep.on_request_end(
+                start_time,
+                end_err,
+                response_status,
+                request.content_length,
+                response_body_size,
+            )
             span.end()
 
     async def _consume_result(self, value: R) -> None:
