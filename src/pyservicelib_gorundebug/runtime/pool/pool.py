@@ -5,6 +5,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from contextvars import Context as ContextVarsContext
 from typing import Callable, Any, Optional
 from datetime import timedelta, datetime
 import asyncio
@@ -61,10 +62,12 @@ class _PoolTask:
     args: tuple
     kwargs: dict
     deadline: Optional[datetime]            # wall-clock, for restoring request_deadline ContextVar
-    deadline_ts: Optional[float]            # monotonic (loop.time()), for _after_func sleep
+    deadline_ts: Optional[float]            # monotonic (loop.time()), for context watcher
     cancelled_event: Optional[asyncio.Event] = field(default=None, compare=False)  # for restoring request_cancelled ContextVar
+    context: Optional[ContextVarsContext] = field(default=None, compare=False)
     state: str = "delayed"                  # "delayed" | "running"
     after_task: Optional[asyncio.Task] = field(default=None, compare=False)
+    expedited: bool = field(default=False, compare=False)
 
 
 class Pool(ABC):

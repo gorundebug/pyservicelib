@@ -6,7 +6,7 @@
 import asyncio
 import uuid
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 # Per-request deadline, analogous to ctx.Deadline() in Go.
@@ -19,6 +19,23 @@ request_deadline: ContextVar[Optional[datetime]] = ContextVar('request_deadline'
 # (e.g. on HTTP client disconnect). Pool operations check this before accepting
 # or executing tasks — mirrors ctx.Err() check in Go's Delay().
 request_cancelled: ContextVar[Optional[asyncio.Event]] = ContextVar('request_cancelled', default=None)
+
+
+def request_context_error() -> Optional[str]:
+    """Return the Python equivalent of Go's ctx.Err() for the current request."""
+    cancelled = request_cancelled.get()
+    if cancelled is not None and cancelled.is_set():
+        return "request cancelled"
+
+    deadline = request_deadline.get()
+    if deadline is None:
+        return None
+    now = datetime.now(
+        timezone.utc if deadline.tzinfo is not None else None
+    )
+    if deadline <= now:
+        return "deadline exceeded"
+    return None
 
 # Per-request stream ID, analogous to runtime.WithStreamId/StreamIdFromContext in Go.
 # Used to correlate async pipeline results back to the originating request.

@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import time
+from contextvars import copy_context
 from typing import Callable, Awaitable, Any, Optional
 import asyncio
 from datetime import datetime, timezone
@@ -11,23 +12,28 @@ from datetime import datetime, timezone
 from ..common import ServiceEnvironment
 from .pool import TaskPool, PoolAlreadyStartedError, PoolNotStartedError, PoolStoppedError, PoolCancelledError, _PoolTask, _AsyncWaitGroup
 from ..context import Context
-from ..context.request import request_deadline, request_cancelled
+from ..context.request import (
+    request_cancelled,
+    request_context_error,
+    request_deadline,
+)
 from ..environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from ..environment.log import str_field, int_field, err_field
 
 
 class TaskPoolImpl(TaskPool):
     _environment: ServiceEnvironment
-    _task_queue: asyncio.Queue[_PoolTask | None]
+    _task_queue: asyncio.PriorityQueue[tuple[int, int, _PoolTask | None]]
     _executors: list[asyncio.Task[Any]]
     _all_executors: set[asyncio.Task[Any]]
     _executor_manager_task: Optional[asyncio.Task[Any]]
     _name: str
     _started: bool
     _stopped: bool
+    _counter: int
     _lock: asyncio.Lock
     _after_tasks: set[asyncio.Task]
-    _running_tasks: set[asyncio.Task]   # detached create_task instances (immediate deadline + _after_func)
+    _running_tasks: set[asyncio.Task]
     _wg: _AsyncWaitGroup
 
     _gauge_queue_length: Int64Gauge
@@ -45,13 +51,14 @@ class TaskPoolImpl(TaskPool):
         if cfg is None:
             raise ValueError(f"Task pool configuration named '{name}' not found")
         self._environment = env
-        self._task_queue = asyncio.Queue()
+        self._task_queue = asyncio.PriorityQueue()
         self._executors = []
         self._all_executors = set()
         self._executor_manager_task = None
         self._name = name
         self._started = False
         self._stopped = False
+        self._counter = 0
         self._lock = asyncio.Lock()
         self._after_tasks = set()
         self._running_tasks = set()
@@ -93,8 +100,6 @@ class TaskPoolImpl(TaskPool):
         cancelled_token = request_cancelled.set(task.cancelled_event) if task.cancelled_event is not None else None
         try:
             # Always dispatch — cancelled/expired tasks still reach user code for cleanup/release.
-            if task.cancelled_event is not None and task.cancelled_event.is_set():
-                self._task_cancelled_counter.inc()
             start = time.monotonic()
             await task.fn(*task.args, **task.kwargs)
             self._tasks_total.inc()
@@ -109,29 +114,57 @@ class TaskPoolImpl(TaskPool):
                 request_cancelled.reset(cancelled_token)
             self._wg.done()
 
-    async def _after_func(self, task: _PoolTask) -> None:
-        assert task.deadline_ts is not None
+    async def _watch_context(self, task: _PoolTask) -> None:
+        waiters: list[asyncio.Task[Any]] = []
+        if task.deadline_ts is not None:
+            waiters.append(asyncio.create_task(asyncio.sleep(
+                max(
+                    0.0,
+                    task.deadline_ts - asyncio.get_running_loop().time(),
+                )
+            )))
+        if task.cancelled_event is not None:
+            waiters.append(asyncio.create_task(task.cancelled_event.wait()))
+        if not waiters:
+            return
         try:
-            await asyncio.sleep(max(0.0, task.deadline_ts - asyncio.get_running_loop().time()))
+            _, pending = await asyncio.wait(
+                waiters,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for waiter in pending:
+                waiter.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
         except asyncio.CancelledError:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
             return
         async with self._lock:
             if task.state != 'delayed':
                 return
-            task.state = 'running'
-        # create_task so stop() cancelling _after_tasks does not interrupt the running fn
-        t = asyncio.create_task(self._run_task(task))
-        self._running_tasks.add(t)
-        t.add_done_callback(self._running_tasks.discard)
+            seq = self._counter
+            self._counter += 1
+            # Go moves a cancelled item to the linked-list head. A negative
+            # sequence preserves that "most recently promoted first" behavior.
+            self._task_queue.put_nowait((0, -seq, task))
+        self._task_cancelled_counter.inc()
+
+    async def _run_in_request_context(self, task: _PoolTask) -> None:
+        runner = asyncio.create_task(
+            self._run_task(task),
+            context=task.context.copy() if task.context is not None else None,
+        )
+        self._running_tasks.add(runner)
+        runner.add_done_callback(self._running_tasks.discard)
+        await runner
 
     async def _executor(self):
         while True:
-            task = await self._task_queue.get()
+            _queue_priority, _seq, task = await self._task_queue.get()
             if task is None:
                 self._task_queue.task_done()
                 break
-            # Decrement here — task has left the queue regardless of whether we run it
-            self._gauge_queue_length.dec()
             if task.after_task is not None:
                 task.after_task.cancel()
             run = False
@@ -140,12 +173,12 @@ class TaskPoolImpl(TaskPool):
                     task.state = 'running'
                     run = True
             if run:
+                self._gauge_queue_length.dec()
                 self._gauge_executors_busy.inc()
                 try:
-                    await self._run_task(task)
+                    await self._run_in_request_context(task)
                 finally:
                     self._gauge_executors_busy.dec()
-            # else: _after_func already claimed the task and called _run_task; wg.done() is its responsibility
             self._task_queue.task_done()
 
     async def _executor_manager(self, initial_count: int) -> None:
@@ -189,7 +222,12 @@ class TaskPoolImpl(TaskPool):
                         t.add_done_callback(_on_done)
 
                     for _ in old_executors:
-                        await self._task_queue.put(None)
+                        seq = self._counter
+                        self._counter += 1
+                        # Restart sentinels outrank every real task: Go
+                        # executors observe pRestart before dequeuing again,
+                        # then the replacement set continues the same queue.
+                        await self._task_queue.put((-1, seq, None))
 
                     # Wait for all old executors to stop before spawning new ones.
                     # If manager is cancelled here, old executors keep draining on their
@@ -247,7 +285,9 @@ class TaskPoolImpl(TaskPool):
             return
 
         for _ in all_executors:
-            await self._task_queue.put(None)
+            seq = self._counter
+            self._counter += 1
+            await self._task_queue.put((2, seq, None))
 
         async def _wait_all():
             await self._wg.wait()
@@ -267,21 +307,12 @@ class TaskPoolImpl(TaskPool):
         await wait_task
 
     async def add_task(self, fn: Callable[..., Awaitable[Any]], *args, **kwargs):
-        async with self._lock:
-            if self._stopped:
-                self._task_rejected_counter.inc()
-                raise PoolStoppedError()
-            if not self._started:
-                self._task_rejected_counter.inc()
-                raise PoolNotStartedError()
-
-        deadline = request_deadline.get()
-        cancelled_event = request_cancelled.get()
-
-        if cancelled_event is not None and cancelled_event.is_set():
+        if request_context_error() is not None:
             self._task_rejected_counter.inc()
             raise PoolCancelledError()
 
+        deadline = request_deadline.get()
+        cancelled_event = request_cancelled.get()
         loop = asyncio.get_running_loop()
         deadline_ts: Optional[float] = None
         if deadline is not None:
@@ -292,36 +323,37 @@ class TaskPoolImpl(TaskPool):
                 now = datetime.now(timezone.utc)
                 remaining = (deadline.astimezone(timezone.utc) - now).total_seconds()
             deadline_ts = loop.time() + max(0.0, remaining)
-        task = _PoolTask(fn=fn, args=args, kwargs=kwargs, deadline=deadline, deadline_ts=deadline_ts,
-                         cancelled_event=cancelled_event)
+        task = _PoolTask(
+            fn=fn,
+            args=args,
+            kwargs=kwargs,
+            deadline=deadline,
+            deadline_ts=deadline_ts,
+            cancelled_event=cancelled_event,
+            context=copy_context(),
+        )
 
-        self._wg.add()
+        async with self._lock:
+            if self._stopped:
+                self._task_rejected_counter.inc()
+                raise PoolStoppedError()
+            if not self._started:
+                self._task_rejected_counter.inc()
+                raise PoolNotStartedError()
 
-        if deadline_ts is not None and deadline_ts <= loop.time():
-            # Already expired — run directly, never touches the queue
-            t = asyncio.create_task(self._run_task(task))
-            self._running_tasks.add(t)
-            t.add_done_callback(self._running_tasks.discard)
-            return
-
-        # Only tasks that enter the queue contribute to queue_length
-        self._gauge_queue_length.inc()
-
-        if deadline_ts is not None:
-            after_task = asyncio.create_task(self._after_func(task))
-            task.after_task = after_task
-            self._after_tasks.add(after_task)
-            after_task.add_done_callback(self._after_tasks.discard)
-
-        try:
-            await self._task_queue.put(task)
-        except BaseException:
-            if task.after_task is not None:
-                task.after_task.cancel()
-                self._after_tasks.discard(task.after_task)
-            self._wg.done()
-            self._gauge_queue_length.dec()
-            raise
+            # Admission, wait-group accounting and queue publication form one
+            # critical section, matching Go's AddTask lock boundary. stop()
+            # cannot publish its executor sentinels between these operations.
+            self._wg.add()
+            self._gauge_queue_length.inc()
+            seq = self._counter
+            self._counter += 1
+            self._task_queue.put_nowait((1, seq, task))
+            if deadline_ts is not None or cancelled_event is not None:
+                after_task = asyncio.create_task(self._watch_context(task))
+                task.after_task = after_task
+                self._after_tasks.add(after_task)
+                after_task.add_done_callback(self._after_tasks.discard)
 
 
 def make_task_pool(name: str, env: ServiceEnvironment) -> TaskPool:

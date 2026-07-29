@@ -11,14 +11,24 @@ from pathlib import Path
 from datetime import timedelta, datetime
 from unittest.mock import MagicMock
 
-from pyservicelib_gorundebug.runtime.pool import make_delay_pool, PoolAlreadyStartedError, PoolStoppedError, PoolNotStartedError
+from pyservicelib_gorundebug.runtime.pool import (
+    PoolAlreadyStartedError,
+    PoolCancelledError,
+    PoolNotStartedError,
+    PoolStoppedError,
+    make_delay_pool,
+)
 from pyservicelib_gorundebug.runtime.pool.taskpool import TaskPoolImpl
 from pyservicelib_gorundebug.runtime.pool.prioritytaskpool import PriorityTaskPoolImpl
 from pyservicelib_gorundebug.runtime.pool.delaypool import DelayPoolImpl
 from pyservicelib_gorundebug.runtime.pool.threadpool import AsyncThreadPoolExecutor, AsyncFuture
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 from pyservicelib_gorundebug.runtime.context import default_context
-from pyservicelib_gorundebug.runtime.context.request import request_deadline
+from pyservicelib_gorundebug.runtime.context.request import (
+    request_cancelled,
+    request_deadline,
+    request_stream_id,
+)
 from pyservicelib_gorundebug.runtime.config import  ConfigSettings
 from pyservicelib_gorundebug.runtime.testmetrics import TestMetrics as MetricsRecorder
 
@@ -555,67 +565,159 @@ async def test_delay_pool_no_deadline_uses_full_delay():
     assert elapsed >= 0.05, f"task ran too early: {elapsed:.3f}s"
 
 
+@pytest.mark.asyncio
+async def test_delay_pool_context_cancel_runs_immediately():
+    env = _make_env()
+    pool = DelayPoolImpl(env)
+    ctx = default_context()
+    await pool.start(ctx)
+
+    executed = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def job():
+        executed.set()
+
+    token = request_cancelled.set(cancelled)
+    try:
+        await pool.add_task(timedelta(seconds=10), job)
+    finally:
+        request_cancelled.reset(token)
+
+    cancelled.set()
+    await asyncio.wait_for(executed.wait(), timeout=0.5)
+    await pool.stop(ctx)
+
+    assert executed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_delay_pool_preserves_complete_request_context():
+    env = _make_env()
+    pool = DelayPoolImpl(env)
+    ctx = default_context()
+    await pool.start(ctx)
+
+    captured_stream_id = None
+
+    async def job():
+        nonlocal captured_stream_id
+        captured_stream_id = request_stream_id.get()
+
+    token = request_stream_id.set("request-42")
+    try:
+        await pool.add_task(timedelta(milliseconds=10), job)
+    finally:
+        request_stream_id.reset(token)
+
+    await pool.stop(ctx)
+
+    assert captured_stream_id == "request-42"
+
+
 # ========== AfterFunc / request_deadline context propagation ==========
 
 @pytest.mark.asyncio
-async def test_task_pool_expired_deadline_runs_immediately():
+async def test_task_pool_rejects_expired_deadline():
     env = _make_env()
     pool = TaskPoolImpl("p", env)
     ctx = default_context()
     await pool.start(ctx)
 
-    executed = asyncio.Event()
-
-    async def job():
-        executed.set()
-
     past = datetime.now() - timedelta(milliseconds=10)
     token = request_deadline.set(past)
     try:
-        await pool.add_task(job)
+        with pytest.raises(PoolCancelledError):
+            await pool.add_task(asyncio.sleep, 0)
     finally:
         request_deadline.reset(token)
 
-    # Must run immediately via create_task, not via the queue
-    await asyncio.wait_for(executed.wait(), timeout=1.0)
     await pool.stop(ctx)
 
 
 @pytest.mark.asyncio
-async def test_task_pool_after_func_fires_at_deadline():
-    # Single executor blocked — job must run via after_func, bypassing the queue
+async def test_task_pool_cancel_moves_to_front_without_bypassing_executor():
+    """Mirror Go TestTaskPool_CancelMovesToFront."""
     env = _make_env(executors_count=1)
     pool = TaskPoolImpl("p", env)
     ctx = default_context()
     await pool.start(ctx)
 
-    results = []
+    results: list[str] = []
     executed = asyncio.Event()
     blocker_release = asyncio.Event()
 
     async def blocker():
         await blocker_release.wait()
 
-    async def job():
-        results.append("ran")
+    async def append(name: str):
+        results.append(name)
+        if len(results) == 3:
+            executed.set()
+
+    await pool.add_task(blocker)
+    await asyncio.sleep(0)
+    await pool.add_task(append, "first")
+    await pool.add_task(append, "second")
+
+    cancelled = asyncio.Event()
+    token = request_cancelled.set(cancelled)
+    try:
+        await pool.add_task(append, "cancelled")
+    finally:
+        request_cancelled.reset(token)
+
+    cancelled.set()
+    await asyncio.sleep(0.03)
+
+    # Cancellation changes queue order, but must not create a hidden executor.
+    assert not executed.is_set()
+    assert results == []
+
+    blocker_release.set()
+    await asyncio.wait_for(executed.wait(), timeout=1.0)
+    await pool.stop(ctx)
+
+    assert results == ["cancelled", "first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_task_pool_deadline_moves_to_front_without_bypassing_executor():
+    env = _make_env(executors_count=1)
+    pool = TaskPoolImpl("p", env)
+    ctx = default_context()
+    await pool.start(ctx)
+
+    results: list[str] = []
+    executed = asyncio.Event()
+    blocker_release = asyncio.Event()
+
+    async def blocker():
+        await blocker_release.wait()
+
+    async def append(name: str):
+        results.append(name)
         executed.set()
 
     await pool.add_task(blocker)
+    await asyncio.sleep(0)
+    await pool.add_task(append, "normal")
 
     deadline = datetime.now() + timedelta(milliseconds=60)
     token = request_deadline.set(deadline)
     try:
-        await pool.add_task(job)
+        await pool.add_task(append, "deadline")
     finally:
         request_deadline.reset(token)
 
-    # after_func fires at deadline, job runs immediately
-    await asyncio.wait_for(executed.wait(), timeout=1.0)
+    await asyncio.sleep(0.1)
+    assert not executed.is_set()
 
     blocker_release.set()
+    await asyncio.wait_for(executed.wait(), timeout=1.0)
     await pool.stop(ctx)
 
-    assert results == ["ran"]  # exactly once — queue entry was skipped
+    assert results == ["deadline", "normal"]
 
 
 @pytest.mark.asyncio
@@ -693,38 +795,85 @@ async def test_priority_pool_restores_deadline_in_executor():
 
 
 @pytest.mark.asyncio
-async def test_priority_pool_after_func_fires_at_deadline():
+async def test_priority_pool_cancel_promotes_without_bypassing_executor():
+    """Mirror Go TestPriorityTaskPool_CancelPromotion."""
     env = _make_env(executors_count=1)
     pool = PriorityTaskPoolImpl("p", env)
     ctx = default_context()
     await pool.start(ctx)
 
-    results = []
+    results: list[str] = []
     executed = asyncio.Event()
     blocker_release = asyncio.Event()
 
     async def blocker():
         await blocker_release.wait()
 
-    async def job():
-        results.append("ran")
+    async def append(name: str):
+        results.append(name)
+        if len(results) == 2:
+            executed.set()
+
+    await pool.add_task(0, blocker)
+    await asyncio.sleep(0)
+
+    cancelled = asyncio.Event()
+    token = request_cancelled.set(cancelled)
+    try:
+        await pool.add_task(100, append, "low")
+    finally:
+        request_cancelled.reset(token)
+    await pool.add_task(1, append, "high")
+
+    cancelled.set()
+    await asyncio.sleep(0.03)
+    assert not executed.is_set()
+    assert results == []
+
+    blocker_release.set()
+    await asyncio.wait_for(executed.wait(), timeout=1.0)
+    await pool.stop(ctx)
+
+    assert results == ["low", "high"]
+
+
+@pytest.mark.asyncio
+async def test_priority_pool_deadline_promotes_without_bypassing_executor():
+    env = _make_env(executors_count=1)
+    pool = PriorityTaskPoolImpl("p", env)
+    ctx = default_context()
+    await pool.start(ctx)
+
+    results: list[str] = []
+    executed = asyncio.Event()
+    blocker_release = asyncio.Event()
+
+    async def blocker():
+        await blocker_release.wait()
+
+    async def append(name: str):
+        results.append(name)
         executed.set()
 
     await pool.add_task(0, blocker)
+    await asyncio.sleep(0)
+    await pool.add_task(1, append, "high")
 
     deadline = datetime.now() + timedelta(milliseconds=60)
     token = request_deadline.set(deadline)
     try:
-        await pool.add_task(99, job)  # lowest priority — never dequeued before blocker
+        await pool.add_task(99, append, "deadline")
     finally:
         request_deadline.reset(token)
 
-    await asyncio.wait_for(executed.wait(), timeout=1.0)
+    await asyncio.sleep(0.1)
+    assert not executed.is_set()
 
     blocker_release.set()
+    await asyncio.wait_for(executed.wait(), timeout=1.0)
     await pool.stop(ctx)
 
-    assert results == ["ran"]
+    assert results == ["deadline", "high"]
 
 
 @pytest.mark.asyncio
@@ -824,8 +973,7 @@ async def test_priority_pool_add_before_start_raises():
 
 
 @pytest.mark.asyncio
-async def test_task_pool_shutdown_waits_for_after_func_execution():
-    """stop() must wait for tasks spawned by _after_func (bypass executor path)."""
+async def test_task_pool_stop_drains_context_watched_task():
     env = _make_env(executors_count=1)
     pool = TaskPoolImpl("p", env)
     ctx = default_context()
@@ -850,40 +998,31 @@ async def test_task_pool_shutdown_waits_for_after_func_execution():
     finally:
         request_deadline.reset(token)
 
-    # _after_func fires at deadline and spawns _run_task directly
-    await asyncio.wait_for(executed.wait(), timeout=1.0)
     blocker_release.set()
     await pool.stop(ctx)
-    assert executed.is_set(), "stop() returned before _after_func execution task finished"
+    assert executed.is_set(), "stop() returned before queued task finished"
 
 
 @pytest.mark.asyncio
-async def test_task_pool_shutdown_waits_for_expired_deadline_task():
-    """Immediately-dispatched tasks (expired deadline) must also be awaited by stop()."""
+async def test_task_pool_rejects_expired_deadline_without_leaking_work():
     env = _make_env()
     pool = TaskPoolImpl("p", env)
     ctx = default_context()
     await pool.start(ctx)
 
-    executed = asyncio.Event()
-
-    async def job():
-        await asyncio.sleep(0.02)
-        executed.set()
-
     past = datetime.now() - timedelta(milliseconds=10)
     token = request_deadline.set(past)
     try:
-        await pool.add_task(job)
+        with pytest.raises(PoolCancelledError):
+            await pool.add_task(asyncio.sleep, 0)
     finally:
         request_deadline.reset(token)
 
     await pool.stop(ctx)
-    assert executed.is_set(), "stop() returned before expired-deadline task finished"
 
 
 @pytest.mark.asyncio
-async def test_priority_pool_shutdown_waits_for_after_func_execution():
+async def test_priority_pool_stop_drains_context_watched_task():
     env = _make_env(executors_count=1)
     pool = PriorityTaskPoolImpl("p", env)
     ctx = default_context()
@@ -908,34 +1047,27 @@ async def test_priority_pool_shutdown_waits_for_after_func_execution():
     finally:
         request_deadline.reset(token)
 
-    await asyncio.wait_for(executed.wait(), timeout=1.0)
     blocker_release.set()
     await pool.stop(ctx)
     assert executed.is_set()
 
 
 @pytest.mark.asyncio
-async def test_priority_pool_shutdown_waits_for_expired_deadline_task():
+async def test_priority_pool_rejects_expired_deadline_without_leaking_work():
     env = _make_env()
     pool = PriorityTaskPoolImpl("p", env)
     ctx = default_context()
     await pool.start(ctx)
 
-    executed = asyncio.Event()
-
-    async def job():
-        await asyncio.sleep(0.02)
-        executed.set()
-
     past = datetime.now() - timedelta(milliseconds=10)
     token = request_deadline.set(past)
     try:
-        await pool.add_task(0, job)
+        with pytest.raises(PoolCancelledError):
+            await pool.add_task(0, asyncio.sleep, 0)
     finally:
         request_deadline.reset(token)
 
     await pool.stop(ctx)
-    assert executed.is_set(), "stop() returned before expired-deadline task finished"
 
 
 @pytest.mark.asyncio
@@ -947,8 +1079,7 @@ async def test_delay_pool_add_before_start_raises():
 
 
 @pytest.mark.asyncio
-async def test_delay_pool_shutdown_waits_for_after_func_execution():
-    """stop() must await tasks spawned by _after_func, not just cancel sleepers."""
+async def test_delay_pool_stop_waits_for_context_expedited_execution():
     env = _make_env()
     pool = DelayPoolImpl(env)
     ctx = default_context()
@@ -960,7 +1091,7 @@ async def test_delay_pool_shutdown_waits_for_after_func_execution():
         await asyncio.sleep(0.02)
         executed.set()
 
-    # Deadline in 30ms, delay 500ms → after_func fires at 30ms and spawns _run_task
+    # Deadline in 30ms expedites execution from the 500ms delay.
     req_deadline = datetime.now() + timedelta(milliseconds=30)
     token = request_deadline.set(req_deadline)
     try:
@@ -968,32 +1099,23 @@ async def test_delay_pool_shutdown_waits_for_after_func_execution():
     finally:
         request_deadline.reset(token)
 
-    # stop() should wait for the job spawned by _after_func
     await pool.stop(ctx)
-    assert executed.is_set(), "stop() returned before _after_func execution task finished"
+    assert executed.is_set(), "stop() returned before expedited task finished"
 
 
 @pytest.mark.asyncio
-async def test_delay_pool_shutdown_waits_for_expired_deadline_task():
-    """Immediately-dispatched tasks (expired deadline) must also be awaited by stop()."""
+async def test_delay_pool_rejects_expired_deadline_without_leaking_work():
     env = _make_env()
     pool = DelayPoolImpl(env)
     ctx = default_context()
     await pool.start(ctx)
 
-    executed = asyncio.Event()
-
-    async def job():
-        await asyncio.sleep(0.02)
-        executed.set()
-
-    # Deadline already expired → task dispatched via create_task immediately
     past = datetime.now() - timedelta(milliseconds=10)
     token = request_deadline.set(past)
     try:
-        await pool.add_task(timedelta(milliseconds=500), job)
+        with pytest.raises(PoolCancelledError):
+            await pool.add_task(timedelta(milliseconds=500), asyncio.sleep, 0)
     finally:
         request_deadline.reset(token)
 
     await pool.stop(ctx)
-    assert executed.is_set(), "stop() returned before expired-deadline task finished"

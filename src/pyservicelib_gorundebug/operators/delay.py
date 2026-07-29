@@ -7,9 +7,22 @@
 from datetime import timedelta
 from typing import Optional
 
-from ..runtime.common import StreamFunction, TypedStream, TypedConsumedStream
+from ..runtime.common import (
+    Collect,
+    Collector,
+    StreamFunction,
+    TypedConsumedStream,
+    TypedStream,
+)
 from ..runtime.config.stream_types import DelayStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr
+from ..runtime.context.request import request_context_error
+from ..runtime.environment.tracing import (
+    Tracer,
+    span_error,
+    span_event,
+    start_span,
+    string_attr,
+)
 from .functions import DelayFunction
 
 
@@ -22,9 +35,27 @@ class DelayFunctionContext[T](StreamFunction[T]):
 
     async def call(self, value: T) -> timedelta:
         self.before_call()
-        result = await self._fn.duration(self._stream, value)
-        self.after_call()
-        return result
+        try:
+            return await self._fn.duration(self._stream, value)
+        finally:
+            self.after_call()
+
+    async def call_error(
+        self,
+        value: T,
+        error: Exception,
+        out: "Collect[T]",
+    ) -> None:
+        self.before_call()
+        try:
+            await self._fn.delay_error(
+                self._stream,
+                value,
+                error,
+                out,
+            )
+        finally:
+            self.after_call()
 
 
 class DelayStream[T](TypedConsumedStream[T]):
@@ -51,11 +82,30 @@ class DelayStream[T](TypedConsumedStream[T]):
                 async def _delayed(v: T) -> None:
                     try:
                         with span.scoped():
+                            reason = request_context_error()
+                            if reason is not None:
+                                span_event(
+                                    span,
+                                    "delay.skipped",
+                                    string_attr("reason", reason),
+                                )
+                                return
                             await caller.consume(v)
                     finally:
                         span.end()
 
-                await self.environment.delay(duration, _delayed, value)
+                try:
+                    await self.environment.delay(duration, _delayed, value)
+                except Exception as error:
+                    try:
+                        span_error(span, error)
+                        await self._f.call_error(
+                            value,
+                            error,
+                            Collector(self._caller),
+                        )
+                    finally:
+                        span.end()
             else:
                 span.end()
         else:
