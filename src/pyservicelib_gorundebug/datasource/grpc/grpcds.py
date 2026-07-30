@@ -26,8 +26,8 @@ import grpc
 import grpc.aio
 
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_span, span_event, span_error, span_attrs,
-    string_attr, bool_attr, sampling_enabled,
+    Tracer, Tracing, Span, start_span, span_event, span_error, span_attrs,
+    string_attr, bool_attr, sampling_enabled, sampling_scope,
 )
 from ...runtime.common import (
     TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
@@ -42,14 +42,16 @@ _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
 
 def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> Optional[str]:
-    metadata = context.invocation_metadata()
-    if not metadata:
-        return None
-    for k, v in metadata:  # type: ignore[union-attr]
-        key = k.decode('utf-8') if isinstance(k, bytes) else k
-        if key == 'x-stream-id':
-            return v.decode('utf-8') if isinstance(v, bytes) else v  # type: ignore[return-value]
-    return None
+    return _grpc_metadata(context).get('x-stream-id')
+
+
+def _grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in context.invocation_metadata() or ():  # type: ignore[union-attr]
+        decoded_key = key.decode('utf-8') if isinstance(key, bytes) else key
+        decoded_value = value.decode('utf-8') if isinstance(value, bytes) else value
+        result[decoded_key.lower()] = decoded_value
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +313,7 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
     _sc: StreamContext[T, R, E]
     _has_result: bool
     _pending: Optional[RotatingMap[str, _GrpcResult[HandlerState, T, ResR, R, E]]]
+    _tracing: Optional[Tracing]
     _tracer: Optional[Tracer]
 
     def __init__(
@@ -318,12 +321,14 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         endpoint: _GrpcEndpoint,
         stream: TypedInputStream[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing] = None,
         tracer: Optional[Tracer] = None,
     ):
         super().__init__(endpoint=endpoint, input_stream=stream)
         self._handler = handler
         self._has_result = stream.get_result_stream() is not None
         self._pending = None
+        self._tracing = tracing
         self._tracer = tracer
 
         self._sc = StreamContext[T, R, E](
@@ -379,6 +384,27 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
 
     async def _handle_common(
         self,
+        grpc_context: grpc.aio.ServicerContext[Any, Any],
+        sid: str,
+        req: ReqT,
+        sender: "Sender[ResR]",
+        eof_after_first: bool,
+        request_iter: Optional[AsyncIterator[ReqT]] = None,
+    ) -> Optional[Exception]:
+        carrier = _grpc_metadata(grpc_context)
+        if self._tracing is None:
+            with sampling_scope(bool(carrier.get('x-trace'))):
+                return await self._handle_common_inner(
+                    sid, req, sender, eof_after_first, request_iter
+                )
+        with self._tracing.extract(carrier) as remote_sampled:
+            with sampling_scope(bool(carrier.get('x-trace')) or remote_sampled):
+                return await self._handle_common_inner(
+                    sid, req, sender, eof_after_first, request_iter
+                )
+
+    async def _handle_common_inner(
+        self,
         sid: str,
         req: ReqT,
         sender: "Sender[ResR]",
@@ -394,6 +420,8 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             string_attr("stream", self._sc.stream.name),
             string_attr("endpoint", self._endpoint.name),
         )
+        span_scope = span.scoped()
+        span_scope.__enter__()
 
         try:
             try:
@@ -508,8 +536,8 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             return None
 
         finally:
-            if span is not None:
-                span.end()
+            span_scope.__exit__(None, None, None)
+            span.end()
 
 
 # ---------------------------------------------------------------------------
@@ -554,12 +582,14 @@ def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
-    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
+        ep, stream, handler, stream.environment.tracing, tracer
+    )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> ResR:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _UnarySender[ResR]()
-        err = await ec._handle_common(sid, request, sender, eof_after_first=True)
+        err = await ec._handle_common(context, sid, request, sender, eof_after_first=True)
         if err is not None:
             await context.abort(grpc.StatusCode.INTERNAL, str(err))
         return await sender._future
@@ -575,12 +605,14 @@ def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
-    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
+        ep, stream, handler, stream.environment.tracing, tracer
+    )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> None:
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _StreamSender[ResR](context.write)
-        err = await ec._handle_common(sid, request, sender, eof_after_first=True)
+        err = await ec._handle_common(context, sid, request, sender, eof_after_first=True)
         sender.close()
         if err is not None:
             await context.abort(grpc.StatusCode.INTERNAL, str(err))
@@ -596,7 +628,9 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
-    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
+        ep, stream, handler, stream.environment.tracing, tracer
+    )
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
@@ -605,7 +639,7 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _UnarySender[ResR]()
         err = await ec._handle_common(
-            sid, cast(ReqT, None), sender, eof_after_first=False,
+            context, sid, cast(ReqT, None), sender, eof_after_first=False,
             request_iter=request_iterator,
         )
         if err is not None:
@@ -623,7 +657,9 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
-    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](ep, stream, handler, tracer)
+    ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
+        ep, stream, handler, stream.environment.tracing, tracer
+    )
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
@@ -632,7 +668,7 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
         sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
         sender = _StreamSender[ResR](context.write)
         err = await ec._handle_common(
-            sid, cast(ReqT, None), sender, eof_after_first=False,
+            context, sid, cast(ReqT, None), sender, eof_after_first=False,
             request_iter=request_iterator,
         )
         sender.close()

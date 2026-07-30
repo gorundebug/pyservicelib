@@ -20,7 +20,8 @@ from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
+    Tracer, Tracing, Span, start_span, span_event, span_error, string_attr,
+    sampling_enabled, sampling_scope,
 )
 
 _PENDING_ROTATION_INTERVAL = 30.0
@@ -229,19 +230,25 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
     _has_result: bool
     _pending: Optional[RotatingMap[str, _HttpResult[HandlerState, T, R, E]]]
     _tracer: Optional[Tracer]
+    _tracing: Optional[Tracing]
 
     def __init__(
         self,
         endpoint: _NetHTTPEndpoint,
         stream: TypedInputStream[T, R, E],
         handler: EndpointHandler[HandlerState, T, R, E],
-        tracer: Optional[Tracer],
+        tracing: Optional[Tracing],
     ):
         super().__init__(endpoint=endpoint, input_stream=stream)
         self._handler = handler
         self._has_result = stream.get_result_stream() is not None
         self._pending = None
-        self._tracer = tracer
+        self._tracing = tracing
+        self._tracer = (
+            tracing.tracer(stream.environment.service_config.name)
+            if tracing is not None
+            else None
+        )
 
         self._sc = StreamContext[T, R, E](
             stream=stream,
@@ -266,6 +273,16 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             await self._pending.stop(ctx)
 
     async def serve_http(self, request: web.Request) -> web.Response:
+        if self._tracing is None:
+            return await self._serve_http(request)
+        carrier = {key.lower(): value for key, value in request.headers.items()}
+        with self._tracing.extract(carrier) as remote_sampled:
+            with sampling_scope(
+                bool(request.headers.get('x-trace')) or remote_sampled
+            ):
+                return await self._serve_http(request)
+
+    async def _serve_http(self, request: web.Request) -> web.Response:
         data = HandlerData(request)
         sid = request.headers.get('x-stream-id') or new_stream_id()
         with_stream_id(sid)
@@ -397,13 +414,6 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 result._callbacks[message_id] = cb
 
 
-def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
-    tracing = env.tracing
-    if tracing is None:
-        return None
-    return tracing.tracer(env.service_config.name)
-
-
 def make_net_http_endpoint_consumer[HandlerState, T, R, E](
     stream: TypedInputStream[T, R, E],
     handler: "EndpointHandler[HandlerState, T, R, E]",
@@ -429,5 +439,5 @@ def make_net_http_endpoint_consumer[HandlerState, T, R, E](
         endpoint=cast(_NetHTTPEndpoint, endpoint),
         stream=stream,
         handler=handler,
-        tracer=_make_tracer(stream, env),
+        tracing=env.tracing,
     )

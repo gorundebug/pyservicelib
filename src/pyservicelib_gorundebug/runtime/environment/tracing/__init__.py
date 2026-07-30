@@ -6,7 +6,7 @@
 from .tracing import (
     Attribute, SpanContext, StatusCode, Span, Tracer, Tracing, TracingEngine,
     NOOP_SPAN,
-    enable_sampling, sampling_enabled,
+    enable_sampling, sampling_enabled, sampling_scope,
     start_span, span_event, span_error, span_attrs,
     string_attr, int64_attr, float64_attr, bool_attr,
 )

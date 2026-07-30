@@ -4,9 +4,10 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from contextlib import contextmanager
-from typing import Tuple, Any
+from typing import Any, Iterator, Mapping, MutableMapping, Tuple
 
 from opentelemetry import context as otel_context
+from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -108,6 +109,19 @@ class _Tracing(Tracing):
     def tracer(self, name: str) -> Tracer:
         return _Tracer(self._provider.get_tracer(name))
 
+    @contextmanager
+    def extract(self, carrier: Mapping[str, str]) -> Iterator[bool]:
+        context = propagate.extract(dict(carrier))
+        token = otel_context.attach(context)
+        try:
+            span_context = otel_trace.get_current_span().get_span_context()
+            yield bool(span_context.trace_flags & otel_trace.TraceFlags.SAMPLED)
+        finally:
+            otel_context.detach(token)
+
+    def inject(self, carrier: MutableMapping[str, str]) -> None:
+        propagate.inject(carrier)
+
 
 # ── ContextSampler ────────────────────────────────────────────────────────────
 
@@ -151,20 +165,20 @@ def _build_provider(exporter, service_name: str, context_sampler: bool, sync: bo
     return provider
 
 
-def create_stdout_tracing_engine(service_name: str, context_sampler: bool = False) -> TracingEngine:
+def create_stdout_tracing_engine(service_name: str, context_sampler: bool = True) -> TracingEngine:
     """Create a TracingEngine that prints spans to stdout as JSON."""
     exporter = ConsoleSpanExporter()
     return OtelTracingEngine(_build_provider(exporter, service_name, context_sampler, sync=True))
 
 
 def create_otlp_tracing_engine(service_name: str, endpoint: str = 'localhost:4317',
-                                insecure: bool = True, context_sampler: bool = False) -> TracingEngine:
+                                insecure: bool = True, context_sampler: bool = True) -> TracingEngine:
     """Create a TracingEngine that exports spans via OTLP gRPC."""
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
     return OtelTracingEngine(_build_provider(exporter, service_name, context_sampler, sync=False))
 
 
-def create_pretty_tracing_engine(service_name: str, context_sampler: bool = False) -> TracingEngine:
+def create_pretty_tracing_engine(service_name: str, context_sampler: bool = True) -> TracingEngine:
     """Create a TracingEngine that prints spans in human-readable single-line format."""
     from .prettytracing import PrettySpanExporter
     exporter = PrettySpanExporter()

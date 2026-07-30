@@ -20,7 +20,7 @@ from typing_extensions import Self
 
 class DataConnectorImplementation(str, Enum):
     """
-    The specific library used to implement a data connector. - `net/http`: Go standard library HTTP - `function`: in-process custom connector (no network) - `IBM/Sarama`: Sarama Kafka client - `google/grpc`: official gRPC-Go library 
+    The specific library used to implement a data connector. - `net/http`: Go standard library HTTP - `function`: in-process custom connector (no network) - `IBM/Sarama`: Sarama Kafka client - `google/grpc`: official gRPC-Go library - `userver/http`: userver HTTP - `userver/grpc`: userver gRPC - `userver/kafka`: userver Kafka - `aiohttp`: Python aiohttp - `aiokafka`: Python aiokafka - `rust/axum`: Rust axum HTTP - `rust/tonic`: Rust tonic gRPC - `rust/rdkafka`: Rust rdkafka Kafka client 
     """
 
     """
@@ -36,9 +36,13 @@ class DataConnectorImplementation(str, Enum):
     UserverKafka = 'userver/kafka'
     AioHTTP = 'aiohttp'
     AioKafka = 'aiokafka'
+    RustAxum = 'rust/axum'
+    RustTonic = 'rust/tonic'
+    RustRdkafka = 'rust/rdkafka'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
         """Create an instance of DataConnectorImplementation from a JSON string"""
         return cls(json.loads(json_str))
+
 

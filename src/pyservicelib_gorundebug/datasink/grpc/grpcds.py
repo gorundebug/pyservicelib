@@ -26,7 +26,8 @@ from ...runtime.context import Context
 from ...runtime.context.request import stream_id_from_context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, start_span, span_event, span_error, string_attr,
+    sampling_enabled,
 )
 
 
@@ -254,6 +255,7 @@ class _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](Consumer[T], 
     _stream: TypedSinkStreamWithResult[T, R, E]
     _handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E]
     _sc: SinkStreamContext[T, R, E]
+    _tracing: Optional[Tracing]
     _tracer: Optional[Tracer]
 
     def __init__(
@@ -261,11 +263,13 @@ class _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](Consumer[T], 
         endpoint: _GrpcSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
     ):
         self._endpoint = endpoint
         self._stream = stream
         self._handler = handler
+        self._tracing = tracing
         self._tracer = tracer
 
         self._sc = SinkStreamContext[T, R, E](
@@ -294,6 +298,17 @@ class _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](Consumer[T], 
     async def _end(self, err: Optional[Exception], handler_state: HandlerState) -> None:
         await self._handler.end_request(self._sc, err, handler_state)
 
+    def _metadata(self) -> list[tuple[str, str]]:
+        carrier: dict[str, str] = {}
+        if self._tracing is not None:
+            self._tracing.inject(carrier)
+        if sampling_enabled():
+            carrier['x-trace'] = '1'
+        sid = stream_id_from_context()
+        if sid:
+            carrier['x-stream-id'] = sid
+        return list(carrier.items())
+
 
 # ---------------------------------------------------------------------------
 # Concrete consumers — one per gRPC streaming mode
@@ -308,10 +323,11 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         endpoint: _GrpcSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
         client_fn: NoStreamingClientFn[ReqT, ResR],
     ):
-        super().__init__(endpoint, stream, handler, tracer)
+        super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
@@ -355,8 +371,7 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     await self._end(e, handler_state)
                     return
 
-                sid = stream_id_from_context()
-                metadata = [('x-stream-id', sid)] if sid else []
+                metadata = self._metadata()
 
                 try:
                     resp = await self._client_fn(sender.req, metadata=metadata)
@@ -393,10 +408,11 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         endpoint: _GrpcSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
         client_fn: ServerStreamingClientFn[ReqT, ResR],
     ):
-        super().__init__(endpoint, stream, handler, tracer)
+        super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
@@ -440,8 +456,7 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     await self._end(e, handler_state)
                     return
 
-                sid = stream_id_from_context()
-                metadata = [('x-stream-id', sid)] if sid else []
+                metadata = self._metadata()
 
                 try:
                     grpc_stream = self._client_fn(sender.req, metadata=metadata)
@@ -479,10 +494,11 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         endpoint: _GrpcSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
         client_fn: ClientStreamingClientFn[ReqT, ResR],
     ):
-        super().__init__(endpoint, stream, handler, tracer)
+        super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
@@ -506,8 +522,7 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     return
                 span_event(span, "begin_request")
 
-                sid = stream_id_from_context()
-                metadata = [('x-stream-id', sid)] if sid else []
+                metadata = self._metadata()
 
                 try:
                     grpc_stream = await self._client_fn(metadata=metadata)
@@ -573,10 +588,11 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         endpoint: _GrpcSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, ReqT, ResR, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
         client_fn: BidiStreamingClientFn[ReqT, ResR],
     ):
-        super().__init__(endpoint, stream, handler, tracer)
+        super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
@@ -600,8 +616,7 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     return
                 span_event(span, "begin_request")
 
-                sid = stream_id_from_context()
-                metadata = [('x-stream-id', sid)] if sid else []
+                metadata = self._metadata()
 
                 try:
                     grpc_stream = await self._client_fn(metadata=metadata)
@@ -718,7 +733,7 @@ def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     ds = _get_or_create_datasink(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     return _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, _make_tracer(stream), client_fn
+        ep, stream, handler, stream.environment.tracing, _make_tracer(stream), client_fn
     )
 
 
@@ -731,7 +746,7 @@ def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasink(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     return _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, _make_tracer(stream), client_fn
+        ep, stream, handler, stream.environment.tracing, _make_tracer(stream), client_fn
     )
 
 
@@ -744,7 +759,7 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasink(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     return _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, _make_tracer(stream), client_fn
+        ep, stream, handler, stream.environment.tracing, _make_tracer(stream), client_fn
     )
 
 
@@ -757,5 +772,5 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
     ds = _get_or_create_datasink(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     return _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, _make_tracer(stream), client_fn
+        ep, stream, handler, stream.environment.tracing, _make_tracer(stream), client_fn
     )

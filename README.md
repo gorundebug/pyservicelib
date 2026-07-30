@@ -9,3 +9,8 @@ Python transports.
 
 The shared framework concept, execution model, operators and architecture are
 described in the [Go servicelib README](https://github.com/gorundebug/servicelib#readme).
+
+Request tracing follows the Go contract: it is enabled only by a non-empty
+`X-Trace`/`x-trace` marker or an already sampled W3C remote parent. Without
+either signal ServiceLib creates no request, operator, pool, source, or sink
+spans.

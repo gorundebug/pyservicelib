@@ -48,7 +48,8 @@ def test_start_span_no_tracer_returns_noop():
 
 
 def test_start_span_sampling_off_returns_noop():
-    eng = create_stdout_tracing_engine('test-service', context_sampler=True)
+    # Opt-in sampling is the production default, not merely an optional mode.
+    eng = create_stdout_tracing_engine('test-service')
     tracer = eng.tracing.tracer('test')
 
     result = {}

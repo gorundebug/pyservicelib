@@ -77,7 +77,7 @@ class MergeStream[T](TypedConsumedStream[T]):
                              string_attr("stream", self.name))
         try:
             with span.scoped():
-                if self._consumer is not None:
-                    await self._consumer.consume(value)
+                if self._caller is not None:
+                    await self._caller.consume(value)
         finally:
             span.end()

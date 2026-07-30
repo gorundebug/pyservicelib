@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Optional, Tuple
+from typing import Any, Iterator, Mapping, MutableMapping, Optional, Tuple
 
 
 # ── Attribute ─────────────────────────────────────────────────────────────────
@@ -106,6 +106,16 @@ class Tracing(ABC):
     @abstractmethod
     def tracer(self, name: str) -> Tracer: ...
 
+    @contextmanager
+    def extract(self, carrier: Mapping[str, str]) -> Iterator[bool]:
+        """Activate a remote transport context and yield whether it is sampled."""
+        del carrier
+        yield False
+
+    def inject(self, carrier: MutableMapping[str, str]) -> None:
+        """Inject the current span context into a transport carrier."""
+        del carrier
+
 
 # ── TracingEngine ─────────────────────────────────────────────────────────────
 
@@ -126,6 +136,15 @@ _sampling_var: ContextVar[bool] = ContextVar('_tracing_sampling', default=False)
 def enable_sampling() -> None:
     """Mark the current coroutine context for tracing."""
     _sampling_var.set(True)
+
+
+@contextmanager
+def sampling_scope(enabled: bool) -> Iterator[None]:
+    token = _sampling_var.set(enabled)
+    try:
+        yield
+    finally:
+        _sampling_var.reset(token)
 
 
 def sampling_enabled() -> bool:

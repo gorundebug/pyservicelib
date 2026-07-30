@@ -30,6 +30,7 @@ class ProgrammingLanguage(int, Enum):
     GoLang = 1
     Cpp = 2
     Python = 3
+    Rust = 4
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

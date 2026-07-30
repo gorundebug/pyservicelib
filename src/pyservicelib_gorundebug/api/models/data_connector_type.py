@@ -20,7 +20,7 @@ from typing_extensions import Self
 
 class DataConnectorType(int, Enum):
     """
-    Type of external system the data connector connects to. - `HTTP` (1): net/http server or client - `gRPC` (2): gRPC server or client - `Kafka` (3): Kafka cluster (Sarama) - `Custom` (4): in-process local connector for testing or internal pipelines 
+    Type of external system the data connector connects to. - `HTTP` (1): HTTP server or client - `gRPC` (2): gRPC server or client - `Kafka` (3): Kafka cluster - `Custom` (4): in-process local connector for testing or internal pipelines 
     """
 
     """

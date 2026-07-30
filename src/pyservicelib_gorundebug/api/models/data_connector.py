@@ -33,7 +33,11 @@ class DataConnector(BaseModel):
     id: StrictInt = Field(description="Unique identifier for this data connector within the topology.", json_schema_extra={"examples": [1]})
     name: StrictStr = Field(description="Human-readable connector name used in the visual designer and in generated server/client struct names.", json_schema_extra={"examples": ["KafkaCluster"]})
     type: DataConnectorType
-    implementation: DataConnectorImplementation
+    implementation: Optional[DataConnectorImplementation] = None
+    go_implementation: Optional[DataConnectorImplementation] = Field(default=None, alias="goImplementation")
+    cpp_implementation: Optional[DataConnectorImplementation] = Field(default=None, alias="cppImplementation")
+    python_implementation: Optional[DataConnectorImplementation] = Field(default=None, alias="pythonImplementation")
+    rust_implementation: Optional[DataConnectorImplementation] = Field(default=None, alias="rustImplementation")
     host: Optional[StrictStr] = Field(default=None, description="Hostname or IP address. Applies to HTTP and gRPC connectors.")
     port: Optional[Annotated[int, Field(le=65535, strict=True, ge=80)]] = Field(default=None, description="Port number. Applies to HTTP and gRPC connectors.")
     address: Optional[StrictStr] = Field(default=None, description="gRPC connection address.")
@@ -42,9 +46,9 @@ class DataConnector(BaseModel):
     dial_timeout: Optional[Union[Annotated[float, Field(le=3600000, strict=True, ge=0)], Annotated[int, Field(le=3600000, strict=True, ge=0)]]] = Field(default=None, description="Connection dial timeout in milliseconds. Applies to Kafka connectors.", alias="dialTimeout")
     use_partitioner: Optional[StrictBool] = Field(default=None, description="When true, a custom Kafka partitioner is used for produced messages. The partitioner function is included in the generated stub. Applies to Kafka sink connectors. ", alias="usePartitioner")
     var_async: Optional[StrictBool] = Field(default=None, description="When true, the Kafka producer operates in async mode — messages are batched and acknowledged asynchronously. Applies to Kafka sink connectors. ", alias="async")
-    use_dedicated_listener: Optional[StrictBool] = Field(default=None, description="When true, this HTTP connector starts its own dedicated `net/http` listener. When false, it shares the service's default HTTP mux. Applies to HTTP source connectors. ", alias="useDedicatedListener")
-    module: Optional[StrictStr] = Field(default=None, description="Go module name containing the generated gRPC protobuf types for this connector. Used to resolve the correct import path for generated gRPC method stubs. Applies to gRPC connectors. ")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "host", "port", "address", "brokers", "version", "dialTimeout", "usePartitioner", "async", "useDedicatedListener", "module"]
+    use_dedicated_listener: Optional[StrictBool] = Field(default=None, description="When true, this HTTP connector starts its own dedicated listener. When false, it shares the service's default HTTP server. Applies to HTTP source connectors. ", alias="useDedicatedListener")
+    module: Optional[StrictStr] = Field(default=None, description="Contract module containing generated gRPC protobuf types for this connector. Used to resolve the correct generated bindings for each target language. Applies to gRPC connectors. ")
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppImplementation", "pythonImplementation", "rustImplementation", "host", "port", "address", "brokers", "version", "dialTimeout", "usePartitioner", "async", "useDedicatedListener", "module"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -101,6 +105,10 @@ class DataConnector(BaseModel):
             "name": obj.get("name"),
             "type": obj.get("type"),
             "implementation": obj.get("implementation"),
+            "goImplementation": obj.get("goImplementation"),
+            "cppImplementation": obj.get("cppImplementation"),
+            "pythonImplementation": obj.get("pythonImplementation"),
+            "rustImplementation": obj.get("rustImplementation"),
             "host": obj.get("host"),
             "port": obj.get("port"),
             "address": obj.get("address"),

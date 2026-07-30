@@ -322,7 +322,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             "service",
             {
                 "service": service_config.name,
-                "environment": str(service_config.environment),
+                "environment": service_config.environment.value,
             },
         ).gauge("info", "Service information (value is always 1)", {})
         info_gauge.set(1)
