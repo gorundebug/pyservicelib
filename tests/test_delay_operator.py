@@ -72,7 +72,7 @@ def _make_stream(
     environment: _Environment,
     duration: timedelta,
 ) -> tuple[DelayStream[int], _Caller, _DelayFunctionContext]:
-    stream = object.__new__(DelayStream[int])
+    stream = object.__new__(DelayStream)
     stream_state: Any = stream
     caller = _Caller()
     function = _DelayFunctionContext(duration)

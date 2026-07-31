@@ -10,6 +10,12 @@ from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 
 
+def data_connector_protocol(connector_type: DataConnectorType) -> Optional[str]:
+    if connector_type == DataConnectorType.gRPC:
+        return "grpc"
+    return None
+
+
 class DataConnectorConfig(ABC):
 
     @property

@@ -10,7 +10,7 @@ from typing import Optional, Iterable, cast, Any
 from .common import ServiceExecutionEnvironment, Consumer, TypedInputStream
 from .common import DataSource, InputEndpoint, DataConnector
 from .common import InputEndpointConsumer, StreamContext, CollectFunc
-from .config import DataConnectorConfig, EndpointConfig
+from .config import DataConnectorConfig, EndpointConfig, data_connector_protocol
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field
 from .transportmetrics import TransportRequest, TransportRequestMetrics
@@ -83,10 +83,14 @@ class DataSourceEndpoint(InputEndpoint):
         endpoint_name = endpoint_config.name
         connector_name = datasource.name
 
-        scope = datasource.environment.metrics.scope("datasource_endpoint", {
+        labels = {
             "connector": connector_name,
             "endpoint": endpoint_name,
-        })
+        }
+        protocol = data_connector_protocol(datasource.data_connector.type)
+        if protocol is not None:
+            labels["protocol"] = protocol
+        scope = datasource.environment.metrics.scope("datasource_endpoint", labels)
         self._missing_stream_id_counter = scope.counter(
             "events_total", "Total number of events in data source endpoint",
             {"event": "missing_stream_id"},

@@ -35,6 +35,7 @@ from .dataconnector_types import (
     GrpcDataConnectorConfig,
     KafkaDataConnectorConfig,
     CustomDataConnectorConfig,
+    data_connector_protocol,
 )
 from .endpoint_types import (
     EndpointConfig as TypedEndpointConfig,

@@ -10,7 +10,7 @@ from typing import Optional, Iterable, cast, Any
 from .common import ServiceExecutionEnvironment, Consumer
 from .common import DataConnector, DataSink
 from .common import SinkEndpoint, OutputEndpointConsumer, TypedSinkStream
-from .config import DataConnectorConfig, EndpointConfig
+from .config import DataConnectorConfig, EndpointConfig, data_connector_protocol
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field
 from .transportmetrics import TransportRequest, TransportRequestMetrics
@@ -76,10 +76,14 @@ class DataSinkEndpoint(SinkEndpoint):
         endpoint_name = endpoint_config.name
         connector_name = data_sink.name
 
-        scope = data_sink.environment.metrics.scope("datasink_endpoint", {
+        labels = {
             "connector": connector_name,
             "endpoint": endpoint_name,
-        })
+        }
+        protocol = data_connector_protocol(data_sink.data_connector.type)
+        if protocol is not None:
+            labels["protocol"] = protocol
+        scope = data_sink.environment.metrics.scope("datasink_endpoint", labels)
         self._begin_request_failed_counter = scope.counter(
             "events_total", "Total number of events in data sink endpoint",
             {"event": "begin_request_failed"},
