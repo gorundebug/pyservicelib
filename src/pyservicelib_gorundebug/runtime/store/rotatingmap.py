@@ -80,6 +80,24 @@ class RotatingMap[K, V]:
             raise ValueError(f"duplicate key {key!r}")
         self._current[key] = value
 
+    def get_or_create(self, key: K, factory) -> tuple[V, bool]:
+        """Return (value, True) if key is present (current then prev), or
+        atomically create-and-insert via factory and return (value, False).
+
+        factory must be synchronous and must not await: this method contains
+        no await point itself, so — on Python's single-threaded, cooperative
+        event loop — no other coroutine can interleave between the lookup
+        and the insert. This gives get_or_create the same atomicity Go/Rust/
+        C++ need an explicit lock for, at no extra cost.
+        """
+        if key in self._current:
+            return self._current[key], True
+        if key in self._prev:
+            return self._prev[key], True
+        value = factory()
+        self._current[key] = value
+        return value, False
+
     def get(self, key: K) -> tuple[V | None, bool]:
         """Return (value, True) if found, (None, False) otherwise. Mirrors Go's (V, bool)."""
         if key in self._current:

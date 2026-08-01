@@ -23,12 +23,15 @@ from ...runtime.common import (
     ServiceExecutionEnvironment, SinkEndpoint, OutputEndpointConsumer,
 )
 from ...runtime.context import Context
-from ...runtime.context.request import stream_id_from_context
+from ...runtime.context.request import (
+    stream_id_from_context, new_stream_id, with_stream_id,
+)
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
     Tracer, Tracing, Span, start_span, span_event, span_error, string_attr,
     sampling_enabled,
 )
+from ...runtime.store.rotatingmap import RotatingMap
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +209,78 @@ class _GrpcStreamSender[ReqT](Sender[ReqT]):
 
     def close(self) -> None:
         self._active = False
+
+
+# ---------------------------------------------------------------------------
+# Per-stream_id session tracking for client-streaming / bidi-streaming sinks.
+#
+# Port of Go's clientStreamingResult/bidiStreamingResult + pending
+# RotatingMap: a single gRPC stream is opened the first time Consume is
+# called for a given stream_id, and reused by every subsequent Consume call
+# that shares the same stream_id, until the handler signals done().
+# ---------------------------------------------------------------------------
+
+class _PendingCell[V]:
+    """Reserves a pending-map slot for a stream_id before the corresponding
+    session can be built (building it requires begin_request and the actual
+    gRPC call to be established, both of which await). value stays None
+    until ready is set, so it is never observable in a partially-constructed
+    state: a concurrent consume() for the same still-being-created stream_id
+    awaits ready and only ever sees a fully built session (or the recorded
+    error).
+
+    Unlike Go/Rust/C++, no lock is needed anywhere here:
+    RotatingMap.get_or_create is synchronous (no await), so Python's
+    single-threaded, cooperative event loop already makes the reservation
+    atomic at no extra cost.
+    """
+    __slots__ = ("ready", "value", "error")
+
+    def __init__(self):
+        self.ready = asyncio.Event()
+        self.value: Optional[V] = None
+        self.error: Optional[Exception] = None
+
+
+def _drop_reservation(pending: "RotatingMap[str, _PendingCell]", stream_id: str, cell: _PendingCell) -> None:
+    """Remove a failed reservation so a later Consume for the same stream_id
+    can retry from scratch. No-op if the entry was already replaced/removed."""
+    current, found = pending.get(stream_id)
+    if found and current is cell:
+        pending.pop(stream_id)
+
+
+class _ClientStreamingSession[HandlerState, ReqT]:
+    """Tracks one open client-streaming gRPC call shared by every Consume
+    for the same stream_id. Port of Go's clientStreamingResult."""
+    __slots__ = ("handler_state", "grpc_stream", "span", "sender", "done_ctx",
+                 "consume_lock", "finished")
+
+    def __init__(self, handler_state, grpc_stream, span, sender, done_ctx):
+        self.handler_state = handler_state
+        self.grpc_stream = grpc_stream
+        self.span = span
+        self.sender = sender
+        self.done_ctx = done_ctx
+        self.consume_lock = asyncio.Lock()
+        self.finished = False
+
+
+class _BidiStreamingSession[HandlerState, ReqT]:
+    """Tracks one open bidi-streaming gRPC call shared by every Consume for
+    the same stream_id. Port of Go's bidiStreamingResult."""
+    __slots__ = ("handler_state", "grpc_stream", "span", "sender", "done_ctx",
+                 "consume_lock", "finished", "recv_task")
+
+    def __init__(self, handler_state, grpc_stream, span, sender, done_ctx):
+        self.handler_state = handler_state
+        self.grpc_stream = grpc_stream
+        self.span = span
+        self.sender = sender
+        self.done_ctx = done_ctx
+        self.consume_lock = asyncio.Lock()
+        self.finished = False
+        self.recv_task: Optional[asyncio.Task] = None
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +563,7 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
 class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E]):
     _client_fn: ClientStreamingClientFn[ReqT, ResR]
+    _pending: "RotatingMap[str, _PendingCell[_ClientStreamingSession]]"
 
     def __init__(
         self,
@@ -500,17 +576,31 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
     ):
         super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
+        self._pending = RotatingMap(interval=30.0)
+
+    async def start(self, ctx: Context) -> None:
+        await self._pending.start(ctx)
+
+    async def stop(self, ctx: Context) -> None:
+        await self._pending.stop(ctx)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(
-            self._tracer, "grpc.output",
-            string_attr("stream", self._stream.name),
-            string_attr("endpoint", self._endpoint.name),
+        stream_id = stream_id_from_context()
+        if stream_id is None:
+            stream_id = with_stream_id(new_stream_id())
+
+        cell, loaded = self._pending.get_or_create(
+            stream_id, lambda: _PendingCell[_ClientStreamingSession]()
         )
         ep = self._endpoint
-        start_time = ep.on_request_start()
-        end_err: Optional[Exception] = None
-        try:
+        session: _ClientStreamingSession
+
+        if not loaded:
+            _, span = start_span(
+                self._tracer, "grpc.output",
+                string_attr("stream", self._stream.name),
+                string_attr("endpoint", self._endpoint.name),
+            )
             with span.scoped():
                 try:
                     handler_state = await self._begin()
@@ -518,62 +608,113 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     ep.on_begin_request_failed(err)
                     span_error(span, err)
                     span_event(span, "begin_request.error", string_attr("error", str(err)))
-                    end_err = err
+                    span.end()
+                    cell.error = err
+                    cell.ready.set()
+                    _drop_reservation(self._pending, stream_id, cell)
                     return
                 span_event(span, "begin_request")
+                start_time = ep.on_request_start()
 
                 metadata = self._metadata()
-
                 try:
                     grpc_stream = await self._client_fn(metadata=metadata)
                 except Exception as e:
                     span_error(span, e)
                     span_event(span, "grpc_call.error", string_attr("error", str(e)))
-                    end_err = e
                     await self._end(e, handler_state)
+                    ep.on_request_end(start_time, e)
+                    span.end()
+                    cell.error = e
+                    cell.ready.set()
+                    _drop_reservation(self._pending, stream_id, cell)
                     return
                 span_event(span, "grpc_call")
 
                 done_ctx = _DoneResultContext()
                 sender = _GrpcStreamSender[ReqT](grpc_stream.write, span)
+                session = _ClientStreamingSession(
+                    handler_state, grpc_stream, span, sender, done_ctx
+                )
+                cell.value = session
+                cell.ready.set()
+                asyncio.create_task(
+                    self._complete(stream_id, cell, session, start_time)
+                )
+        else:
+            await cell.ready.wait()
+            if cell.error is not None:
+                # Creation failed on another task; it has already reported
+                # and cleaned up, so this message is simply dropped.
+                return
+            assert cell.value is not None
+            session = cell.value
 
+        async with session.consume_lock:
+            if session.finished:
+                return
+            current, still_pending = self._pending.get(stream_id)
+            if not still_pending or current is not cell:
+                ep.on_late_result(stream_id)
+                return
+            with session.span.scoped():
                 try:
                     await self._handler.consume_message(
-                        self._sc, handler_state, value, sender, done_ctx
+                        self._sc, session.handler_state, value, session.sender,
+                        session.done_ctx,
                     )
+                    span_event(session.span, "consume_message")
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
-                    end_err = err
-                    sender.close()
-                    await self._end(err, handler_state)
-                    return
-                span_event(span, "consume_message")
+                    span_error(session.span, err)
+                    span_event(
+                        session.span, "consume_message.error",
+                        string_attr("error", str(err)),
+                    )
+                    session.done_ctx.done()
 
-                await done_ctx.wait()
-                sender.close()
-                await grpc_stream.done_writing()
+    async def _complete(
+        self,
+        stream_id: str,
+        cell: "_PendingCell[_ClientStreamingSession]",
+        session: "_ClientStreamingSession",
+        start_time: float,
+    ) -> None:
+        ep = self._endpoint
+        span = session.span
+        end_err: Optional[Exception] = None
+        try:
+            with span.scoped():
+                await session.done_ctx.wait()
+                async with session.consume_lock:
+                    session.finished = True
+                session.sender.close()
+                current, found = self._pending.get(stream_id)
+                if found and current is cell:
+                    self._pending.pop(stream_id)
+                await session.grpc_stream.done_writing()
 
                 try:
-                    resp = await grpc_stream  # type: ignore[misc]
+                    resp = await session.grpc_stream  # type: ignore[misc]
                 except Exception as e:
                     span_error(span, e)
                     span_event(span, "close_and_recv.error", string_attr("error", str(e)))
                     end_err = e
-                    await self._end(e, handler_state)
+                    await self._end(e, session.handler_state)
                     return
 
                 try:
-                    await self._handler.handle_response(self._sc, handler_state, resp)
+                    await self._handler.handle_response(
+                        self._sc, session.handler_state, resp
+                    )
                 except Exception as err:
                     span_error(span, err)
                     span_event(span, "handle_response.error", string_attr("error", str(err)))
                     end_err = err
-                    await self._end(err, handler_state)
+                    await self._end(err, session.handler_state)
                     return
 
                 span_event(span, "handle_response")
-                await self._end(None, handler_state)
+                await self._end(None, session.handler_state)
         finally:
             ep.on_request_end(start_time, end_err)
             span.end()
@@ -582,6 +723,7 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
 class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E]):
     _client_fn: BidiStreamingClientFn[ReqT, ResR]
+    _pending: "RotatingMap[str, _PendingCell[_BidiStreamingSession]]"
 
     def __init__(
         self,
@@ -594,17 +736,31 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
     ):
         super().__init__(endpoint, stream, handler, tracing, tracer)
         self._client_fn = client_fn
+        self._pending = RotatingMap(interval=30.0)
+
+    async def start(self, ctx: Context) -> None:
+        await self._pending.start(ctx)
+
+    async def stop(self, ctx: Context) -> None:
+        await self._pending.stop(ctx)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(
-            self._tracer, "grpc.output",
-            string_attr("stream", self._stream.name),
-            string_attr("endpoint", self._endpoint.name),
+        stream_id = stream_id_from_context()
+        if stream_id is None:
+            stream_id = with_stream_id(new_stream_id())
+
+        cell, loaded = self._pending.get_or_create(
+            stream_id, lambda: _PendingCell[_BidiStreamingSession]()
         )
         ep = self._endpoint
-        start_time = ep.on_request_start()
-        end_err: Optional[Exception] = None
-        try:
+        session: _BidiStreamingSession
+
+        if not loaded:
+            _, span = start_span(
+                self._tracer, "grpc.output",
+                string_attr("stream", self._stream.name),
+                string_attr("endpoint", self._endpoint.name),
+            )
             with span.scoped():
                 try:
                     handler_state = await self._begin()
@@ -612,74 +768,120 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     ep.on_begin_request_failed(err)
                     span_error(span, err)
                     span_event(span, "begin_request.error", string_attr("error", str(err)))
-                    end_err = err
+                    span.end()
+                    cell.error = err
+                    cell.ready.set()
+                    _drop_reservation(self._pending, stream_id, cell)
                     return
                 span_event(span, "begin_request")
+                start_time = ep.on_request_start()
 
                 metadata = self._metadata()
-
                 try:
                     grpc_stream = await self._client_fn(metadata=metadata)
                 except Exception as e:
                     span_error(span, e)
                     span_event(span, "grpc_call.error", string_attr("error", str(e)))
-                    end_err = e
                     await self._end(e, handler_state)
+                    ep.on_request_end(start_time, e)
+                    span.end()
+                    cell.error = e
+                    cell.ready.set()
+                    _drop_reservation(self._pending, stream_id, cell)
                     return
                 span_event(span, "grpc_call")
 
                 done_ctx = _DoneResultContext()
                 sender = _GrpcStreamSender[ReqT](grpc_stream.write, span)
+                session = _BidiStreamingSession(
+                    handler_state, grpc_stream, span, sender, done_ctx
+                )
+                session.recv_task = asyncio.create_task(
+                    self._recv_loop(session)
+                )
+                cell.value = session
+                cell.ready.set()
+                asyncio.create_task(
+                    self._complete(stream_id, cell, session, start_time)
+                )
+        else:
+            await cell.ready.wait()
+            if cell.error is not None:
+                # Creation failed on another task; it has already reported
+                # and cleaned up, so this message is simply dropped.
+                return
+            assert cell.value is not None
+            session = cell.value
 
-                recv_err: Optional[Exception] = None
-
-                async def _recv_loop() -> None:
-                    nonlocal recv_err
-                    try:
-                        async for resp in grpc_stream:
-                            try:
-                                await self._handler.handle_response(self._sc, handler_state, resp)
-                            except Exception as e:
-                                span_error(span, e)
-                                span_event(span, "handle_response.error", string_attr("error", str(e)))
-                                recv_err = e
-                                return
-                    except Exception as e:
-                        span_error(span, e)
-                        span_event(span, "recv.error", string_attr("error", str(e)))
-                        recv_err = e
-
-                recv_task = asyncio.create_task(_recv_loop())
-
+        async with session.consume_lock:
+            if session.finished:
+                return
+            current, still_pending = self._pending.get(stream_id)
+            if not still_pending or current is not cell:
+                ep.on_late_result(stream_id)
+                return
+            with session.span.scoped():
                 try:
                     await self._handler.consume_message(
-                        self._sc, handler_state, value, sender, done_ctx
+                        self._sc, session.handler_state, value, session.sender,
+                        session.done_ctx,
                     )
+                    span_event(session.span, "consume_message")
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
-                    end_err = err
-                    sender.close()
-                    recv_task.cancel()
-                    try:
-                        await recv_task
-                    except asyncio.CancelledError:
-                        pass
-                    await self._end(err, handler_state)
-                    return
-                span_event(span, "consume_message")
+                    span_error(session.span, err)
+                    span_event(
+                        session.span, "consume_message.error",
+                        string_attr("error", str(err)),
+                    )
+                    session.done_ctx.done()
 
-                await done_ctx.wait()
-                sender.close()
-                await grpc_stream.done_writing()
-                await recv_task
+    async def _recv_loop(self, session: "_BidiStreamingSession") -> Optional[Exception]:
+        span = session.span
+        try:
+            async for resp in session.grpc_stream:
+                try:
+                    await self._handler.handle_response(
+                        self._sc, session.handler_state, resp
+                    )
+                except Exception as e:
+                    span_error(span, e)
+                    span_event(span, "handle_response.error", string_attr("error", str(e)))
+                    return e
+        except Exception as e:
+            span_error(span, e)
+            span_event(span, "recv.error", string_attr("error", str(e)))
+            return e
+        return None
+
+    async def _complete(
+        self,
+        stream_id: str,
+        cell: "_PendingCell[_BidiStreamingSession]",
+        session: "_BidiStreamingSession",
+        start_time: float,
+    ) -> None:
+        ep = self._endpoint
+        span = session.span
+        recv_err: Optional[Exception] = None
+        try:
+            with span.scoped():
+                await session.done_ctx.wait()
+                async with session.consume_lock:
+                    session.finished = True
+                session.sender.close()
+                await session.grpc_stream.done_writing()
+                assert session.recv_task is not None
+                recv_err = await session.recv_task
+
+                current, found = self._pending.get(stream_id)
+                if found and current is cell:
+                    self._pending.pop(stream_id)
 
                 if recv_err is not None:
                     span_error(span, recv_err)
-                    end_err = recv_err
-                await self._end(recv_err, handler_state)
+                await self._end(recv_err, session.handler_state)
         finally:
-            ep.on_request_end(start_time, end_err)
+            ep.on_request_end(start_time, recv_err)
             span.end()
 
 

@@ -89,6 +89,43 @@ def test_set_duplicate_in_prev_raises():
         m.set("k", 2)
 
 
+# ---------- get_or_create ----------
+
+def test_get_or_create_creates_when_missing():
+    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    v, loaded = m.get_or_create("k", lambda: 42)
+    assert not loaded
+    assert v == 42
+    assert m._current["k"] == 42
+
+
+def test_get_or_create_returns_existing_from_current():
+    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m.set("k", 1)
+    calls = 0
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return 2
+
+    v, loaded = m.get_or_create("k", factory)
+    assert loaded
+    assert v == 1
+    assert calls == 0  # factory must not run when key already exists
+
+
+def test_get_or_create_returns_existing_from_prev():
+    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m.set("k", 1)
+    m._rotate()  # k moves to prev
+
+    v, loaded = m.get_or_create("k", lambda: 2)
+    assert loaded
+    assert v == 1
+    assert "k" not in m._current
+
+
 # ---------- pop ----------
 
 def test_pop_existing_key():
