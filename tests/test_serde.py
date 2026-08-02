@@ -15,7 +15,7 @@ from pyservicelib_gorundebug.runtime.context import default_context
 from pyservicelib_gorundebug.runtime.config import  ConfigSettings
 from pyservicelib_gorundebug.runtime.serde import (
     IntListSerde, IntSerde, StringSerde, BoolListSerde, StringListSerde,
-    FloatSerde, RuneSerde, StubSerde,
+    FloatSerde, RuneSerde, StubSerde, DataclassJsonSerde,
 )
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
@@ -221,3 +221,53 @@ def test_benchmark_serde_ints(benchmark, serializer):
         assert values == values_copy
 
     benchmark(ser_deser)
+
+
+# --- DataclassJsonSerde: generic JSON round-trip for @dataclass types ---
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+@dataclass(slots=True)
+class _Item:
+    name: str = ""
+    quantity: int = 0
+
+
+@dataclass(slots=True)
+class _Widget:
+    id: str
+    items: list[_Item] = field(default_factory=list)
+    amount: float = 0.0
+    created_at: datetime | None = None
+
+
+def test_dataclass_json_serde_roundtrip():
+    ser = DataclassJsonSerde("Widget", _Widget)
+    widget = _Widget(
+        id="w-1",
+        items=[_Item("a", 1), _Item("b", 2)],
+        amount=9.5,
+        created_at=datetime.now(timezone.utc),
+    )
+    data = ser.serialize(widget, bytearray())
+    assert ser.deserialize(data) == widget
+
+
+def test_dataclass_json_serde_preserves_prefix_buffer():
+    ser = DataclassJsonSerde("Widget", _Widget)
+    widget = _Widget(id="w-2")
+    buf = bytearray(b"\xab")
+    out = ser.serialize(widget, buf)
+    assert out[0] == 0xab
+    assert ser.deserialize(bytes(out[1:])) == widget
+
+
+def test_dataclass_json_serde_optional_none():
+    ser = DataclassJsonSerde("Widget", _Widget)
+    widget = _Widget(id="w-3", created_at=None)
+    data = ser.serialize(widget, bytearray())
+    back = ser.deserialize(data)
+    assert back == widget
+    assert back.created_at is None

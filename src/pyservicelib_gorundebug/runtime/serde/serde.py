@@ -4,9 +4,13 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
+import json
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, cast, Hashable, Optional, Union
+from dataclasses import asdict, fields as dc_fields, is_dataclass
+from datetime import datetime
+from types import UnionType
+from typing import Any, List, cast, Hashable, Optional, Union, get_args, get_origin, get_type_hints
 
 from ..datastruct import KeyValue
 
@@ -952,6 +956,71 @@ class DictSerde(Serde[dict[Any, Any]]):
     @property
     def is_stub(self) -> bool:
         return self._values_serde.is_stub or self._keys_serde.is_stub
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"DataclassJsonSerde: cannot JSON-encode {type(value).__name__}")
+
+
+def _from_json_value(field_type: Any, value: Any) -> Any:
+    if value is None:
+        return None
+    origin = get_origin(field_type)
+    if origin is Union or origin is UnionType:
+        args = [a for a in get_args(field_type) if a is not type(None)]
+        return _from_json_value(args[0], value) if args else value
+    if origin in (list, List):
+        (elem_type,) = get_args(field_type) or (Any,)
+        return [_from_json_value(elem_type, item) for item in value]
+    if is_dataclass(field_type):
+        hints = get_type_hints(field_type)
+        kwargs = {}
+        for f in dc_fields(field_type):
+            if f.name in value:
+                kwargs[f.name] = _from_json_value(hints[f.name], value[f.name])
+        return field_type(**kwargs)
+    if field_type is datetime:
+        return datetime.fromisoformat(value)
+    return value
+
+
+class DataclassJsonSerde[T](Serde[T]):
+    """Generic JSON serde for any @dataclass, using dataclasses.asdict() for
+    serialization and dataclasses.fields()/type hints to reconstruct nested
+    dataclasses, lists, Optional and datetime fields on deserialization. This
+    mirrors what a userver's ADL-based Serialize/Parse or Rust's
+    serde_json-backed JsonSerde<T> already gets "for free" from the type
+    system -- Python dataclasses have no built-in JSON codec, so this fills
+    that gap generically instead of requiring per-type generated code."""
+
+    _cls: type
+
+    def __init__(self, type_name: str, cls: type):
+        super().__init__(type_name)
+        self._cls = cls
+
+    def serialize_obj(self, obj: Any, b: BytesBuffer) -> bytearray:
+        return self.serialize(cast(T, obj), b)
+
+    def deserialize_obj(self, data: BytesBuffer) -> Any:
+        return self.deserialize(data)
+
+    def serialize(self, obj: T, b: BytesBuffer) -> bytearray:
+        if not isinstance(b, bytearray):
+            b = bytearray(b)
+        encoded = json.dumps(asdict(obj), default=_json_default).encode('utf-8')
+        b.extend(encoded)
+        return b
+
+    def deserialize(self, data: BytesBuffer) -> T:
+        if isinstance(data, memoryview):
+            data = data.tobytes()
+        elif isinstance(data, bytearray):
+            data = bytes(data)
+        value = json.loads(data)
+        return cast(T, _from_json_value(self._cls, value))
 
 
 def make_default_serde(serde_type: str) -> Optional[Serializer]:
