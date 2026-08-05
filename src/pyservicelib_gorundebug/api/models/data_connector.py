@@ -41,6 +41,7 @@ class DataConnector(BaseModel):
     host: Optional[StrictStr] = Field(default=None, description="Hostname or IP address. Applies to HTTP and gRPC connectors.")
     port: Optional[Annotated[int, Field(le=65535, strict=True, ge=80)]] = Field(default=None, description="Port number. Applies to HTTP and gRPC connectors.")
     address: Optional[StrictStr] = Field(default=None, description="gRPC connection address.")
+    connections_count: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=1, description="Number of independent transport connections used by a gRPC sink connector.", alias="connectionsCount")
     brokers: Optional[StrictStr] = Field(default=None, description="Comma-separated list of Kafka broker addresses (e.g. `kafka1:9092,kafka2:9092`). Applies to Kafka connectors.")
     version: Optional[StrictStr] = Field(default=None, description="Kafka protocol version expected by the broker (e.g. `2.8.0`). Applies to Kafka connectors.")
     dial_timeout: Optional[Union[Annotated[float, Field(le=3600000, strict=True, ge=0)], Annotated[int, Field(le=3600000, strict=True, ge=0)]]] = Field(default=None, description="Connection dial timeout in milliseconds. Applies to Kafka connectors.", alias="dialTimeout")
@@ -48,7 +49,7 @@ class DataConnector(BaseModel):
     var_async: Optional[StrictBool] = Field(default=None, description="When true, the Kafka producer operates in async mode — messages are batched and acknowledged asynchronously. Applies to Kafka sink connectors. ", alias="async")
     use_dedicated_listener: Optional[StrictBool] = Field(default=None, description="When true, this HTTP connector starts its own dedicated listener. When false, it shares the service's default HTTP server. Applies to HTTP source connectors. ", alias="useDedicatedListener")
     module: Optional[StrictStr] = Field(default=None, description="Contract module containing generated gRPC protobuf types for this connector. Used to resolve the correct generated bindings for each target language. Applies to gRPC connectors. ")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppImplementation", "pythonImplementation", "rustImplementation", "host", "port", "address", "brokers", "version", "dialTimeout", "usePartitioner", "async", "useDedicatedListener", "module"]
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppImplementation", "pythonImplementation", "rustImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "useDedicatedListener", "module"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -112,6 +113,7 @@ class DataConnector(BaseModel):
             "host": obj.get("host"),
             "port": obj.get("port"),
             "address": obj.get("address"),
+            "connectionsCount": obj.get("connectionsCount", 1),
             "brokers": obj.get("brokers"),
             "version": obj.get("version"),
             "dialTimeout": obj.get("dialTimeout"),
@@ -121,5 +123,4 @@ class DataConnector(BaseModel):
             "module": obj.get("module")
         })
         return _obj
-
 

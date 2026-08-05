@@ -118,12 +118,16 @@ class GrpcDataConnectorConfig(DataConnectorConfig):
 
     def __init__(self, id: int, name: str, implementation: DataConnectorImplementation,
                  address: Optional[str] = None, module: Optional[str] = None,
+                 connections_count: int = 1,
                  properties: Optional[dict[str, Any]] = None):
         self._id = id
         self._name = name
         self._implementation = implementation
         self._address = address
         self._module = module
+        if connections_count < 1:
+            raise ValueError("gRPC connections_count must be at least 1")
+        self._connections_count = connections_count
         self._properties = properties or {}
 
     @property
@@ -150,6 +154,10 @@ class GrpcDataConnectorConfig(DataConnectorConfig):
     def module(self) -> Optional[str]:
         return self._module
 
+    @property
+    def connections_count(self) -> int:
+        return self._connections_count
+
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "id": self._id,
@@ -161,6 +169,7 @@ class GrpcDataConnectorConfig(DataConnectorConfig):
             result["address"] = self._address
         if self._module is not None:
             result["module"] = self._module
+        result["connectionsCount"] = self._connections_count
         return result
 
     def get_property(self, name: str) -> Any:
