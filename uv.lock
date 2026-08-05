@@ -785,7 +785,7 @@ wheels = [
 
 [[package]]
 name = "pyservicelib-gorundebug"
-version = "0.0.15"
+version = "0.0.17"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
