@@ -37,6 +37,7 @@ from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.utils.asyncrwlock import AsyncRWLock
 
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
@@ -129,6 +130,7 @@ class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, Re
     _cb_lock: asyncio.Lock
     _span: Optional[Span]
     _once: bool  # guards done() to fire span event exactly once
+    _lifetime: AsyncRWLock
 
     def __init__(self, handler_state: HandlerState, sender: Sender[ResR], span: Optional[Span] = None):
         self.handler_state = handler_state
@@ -138,6 +140,7 @@ class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, Re
         self._cb_lock = asyncio.Lock()
         self._span = span
         self._once = False
+        self._lifetime = AsyncRWLock()
 
     def set_result_callback(
         self,
@@ -366,21 +369,36 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             ep.on_late_result(sid)
             return
 
-        message_id = self._handler.get_message_id(self._sc, result.handler_state, value)
+        async with result._lifetime.read_lock():
+            current, still_pending = self._pending.get(sid)
+            if not still_pending or current is not result:
+                ep.on_late_result(sid)
+                span_event(result._span, "late_result")
+                return
 
-        async with result._cb_lock:
-            cb = result._callbacks.get(message_id)
+            message_id = self._handler.get_message_id(
+                self._sc, result.handler_state, value
+            )
+
+            async with result._cb_lock:
+                cb = result._callbacks.get(message_id)
             if cb is None:
                 ep.on_unknown_message_id(sid, message_id)
                 span_event(result._span, "unknown_message_id", string_attr("message_id", message_id))
                 return
             remove = cb(self._sc, result.handler_state, value, result.sender)
             if remove:
-                if result._callbacks.pop(message_id, None) is None:
+                duplicate = False
+                async with result._cb_lock:
+                    if message_id in result._callbacks:
+                        del result._callbacks[message_id]
+                    else:
+                        duplicate = True
+                if duplicate:
                     ep.on_duplicate_message_id(sid, message_id)
                     span_event(result._span, "duplicate_message_id", string_attr("message_id", message_id))
 
-        span_event(result._span, "result_consumed", string_attr("message_id", message_id))
+            span_event(result._span, "result_consumed", string_attr("message_id", message_id))
 
     async def _handle_common(
         self,
@@ -466,12 +484,20 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                     except Exception as err:
                         span_error(span, err)
                         span_event(span, "consume_message.error", string_attr("error", str(err)))
-                        if result is not None and self._pending is not None:
-                            self._pending.pop(sid)
-                            ep.on_pending_remove(sid)
-                        self._handler.eof(self._sc, handler_state)
                         try:
-                            await self._handler.end_request(self._sc, err, handler_state)
+                            if result is not None and self._pending is not None:
+                                async with result._lifetime.write_lock():
+                                    self._pending.pop(sid)
+                                    ep.on_pending_remove(sid)
+                                    self._handler.eof(self._sc, handler_state)
+                                    await self._handler.end_request(
+                                        self._sc, err, handler_state
+                                    )
+                            else:
+                                self._handler.eof(self._sc, handler_state)
+                                await self._handler.end_request(
+                                    self._sc, err, handler_state
+                                )
                         except Exception as end_err:
                             span_error(span, end_err)
                             ep.on_request_end(start_time, end_err)
@@ -487,12 +513,20 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                 except Exception as err:
                     span_error(span, err)
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
-                    if result is not None and self._pending is not None:
-                        self._pending.pop(sid)
-                        ep.on_pending_remove(sid)
-                    self._handler.eof(self._sc, handler_state)
                     try:
-                        await self._handler.end_request(self._sc, err, handler_state)
+                        if result is not None and self._pending is not None:
+                            async with result._lifetime.write_lock():
+                                self._pending.pop(sid)
+                                ep.on_pending_remove(sid)
+                                self._handler.eof(self._sc, handler_state)
+                                await self._handler.end_request(
+                                    self._sc, err, handler_state
+                                )
+                        else:
+                            self._handler.eof(self._sc, handler_state)
+                            await self._handler.end_request(
+                                self._sc, err, handler_state
+                            )
                     except Exception as end_err:
                         span_error(span, end_err)
                         ep.on_request_end(start_time, end_err)
@@ -521,17 +555,16 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                 cancel_err = asyncio.CancelledError()
                 span_error(span, cancel_err)  # type: ignore[arg-type]
                 span_event(span, "context_cancelled", string_attr("error", "cancelled"))
-            finally:
+            async with result._lifetime.write_lock():
                 if self._pending is not None:
                     self._pending.pop(sid)
                     ep.on_pending_remove(sid)
-
-            try:
-                await self._handler.end_request(self._sc, None, handler_state)
-            except Exception as end_err:
-                span_error(span, end_err)
-                ep.on_request_end(start_time, end_err)
-                return end_err
+                try:
+                    await self._handler.end_request(self._sc, None, handler_state)
+                except Exception as end_err:
+                    span_error(span, end_err)
+                    ep.on_request_end(start_time, end_err)
+                    return end_err
             ep.on_request_end(start_time, None)
             return None
 

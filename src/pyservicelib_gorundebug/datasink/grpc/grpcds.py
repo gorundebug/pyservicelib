@@ -32,6 +32,7 @@ from ...runtime.environment.tracing import (
     sampling_enabled,
 )
 from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.utils.asyncrwlock import AsyncRWLock
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +255,7 @@ class _ClientStreamingSession[HandlerState, ReqT]:
     """Tracks one open client-streaming gRPC call shared by every Consume
     for the same stream_id. Port of Go's clientStreamingResult."""
     __slots__ = ("handler_state", "grpc_stream", "span", "sender", "done_ctx",
-                 "consume_lock", "finished")
+                 "lifetime", "finished")
 
     def __init__(self, handler_state, grpc_stream, span, sender, done_ctx):
         self.handler_state = handler_state
@@ -262,7 +263,7 @@ class _ClientStreamingSession[HandlerState, ReqT]:
         self.span = span
         self.sender = sender
         self.done_ctx = done_ctx
-        self.consume_lock = asyncio.Lock()
+        self.lifetime = AsyncRWLock()
         self.finished = False
 
 
@@ -270,7 +271,7 @@ class _BidiStreamingSession[HandlerState, ReqT]:
     """Tracks one open bidi-streaming gRPC call shared by every Consume for
     the same stream_id. Port of Go's bidiStreamingResult."""
     __slots__ = ("handler_state", "grpc_stream", "span", "sender", "done_ctx",
-                 "consume_lock", "finished", "recv_task")
+                 "lifetime", "finished", "recv_task")
 
     def __init__(self, handler_state, grpc_stream, span, sender, done_ctx):
         self.handler_state = handler_state
@@ -278,7 +279,7 @@ class _BidiStreamingSession[HandlerState, ReqT]:
         self.span = span
         self.sender = sender
         self.done_ctx = done_ctx
-        self.consume_lock = asyncio.Lock()
+        self.lifetime = AsyncRWLock()
         self.finished = False
         self.recv_task: Optional[asyncio.Task] = None
 
@@ -650,7 +651,7 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             assert cell.value is not None
             session = cell.value
 
-        async with session.consume_lock:
+        async with session.lifetime.read_lock():
             if session.finished:
                 return
             current, still_pending = self._pending.get(stream_id)
@@ -685,36 +686,36 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         try:
             with span.scoped():
                 await session.done_ctx.wait()
-                async with session.consume_lock:
+                async with session.lifetime.write_lock():
                     session.finished = True
-                session.sender.close()
-                current, found = self._pending.get(stream_id)
-                if found and current is cell:
-                    self._pending.pop(stream_id)
-                await session.grpc_stream.done_writing()
+                    session.sender.close()
+                    current, found = self._pending.get(stream_id)
+                    if found and current is cell:
+                        self._pending.pop(stream_id)
+                    await session.grpc_stream.done_writing()
 
-                try:
-                    resp = await session.grpc_stream  # type: ignore[misc]
-                except Exception as e:
-                    span_error(span, e)
-                    span_event(span, "close_and_recv.error", string_attr("error", str(e)))
-                    end_err = e
-                    await self._end(e, session.handler_state)
-                    return
+                    try:
+                        resp = await session.grpc_stream  # type: ignore[misc]
+                    except Exception as e:
+                        span_error(span, e)
+                        span_event(span, "close_and_recv.error", string_attr("error", str(e)))
+                        end_err = e
+                        await self._end(e, session.handler_state)
+                        return
 
-                try:
-                    await self._handler.handle_response(
-                        self._sc, session.handler_state, resp
-                    )
-                except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "handle_response.error", string_attr("error", str(err)))
-                    end_err = err
-                    await self._end(err, session.handler_state)
-                    return
+                    try:
+                        await self._handler.handle_response(
+                            self._sc, session.handler_state, resp
+                        )
+                    except Exception as err:
+                        span_error(span, err)
+                        span_event(span, "handle_response.error", string_attr("error", str(err)))
+                        end_err = err
+                        await self._end(err, session.handler_state)
+                        return
 
-                span_event(span, "handle_response")
-                await self._end(None, session.handler_state)
+                    span_event(span, "handle_response")
+                    await self._end(None, session.handler_state)
         finally:
             ep.on_request_end(start_time, end_err)
             span.end()
@@ -813,7 +814,7 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             assert cell.value is not None
             session = cell.value
 
-        async with session.consume_lock:
+        async with session.lifetime.read_lock():
             if session.finished:
                 return
             current, still_pending = self._pending.get(stream_id)
@@ -866,20 +867,20 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         try:
             with span.scoped():
                 await session.done_ctx.wait()
-                async with session.consume_lock:
+                async with session.lifetime.write_lock():
                     session.finished = True
-                session.sender.close()
-                await session.grpc_stream.done_writing()
-                assert session.recv_task is not None
-                recv_err = await session.recv_task
+                    session.sender.close()
+                    await session.grpc_stream.done_writing()
+                    assert session.recv_task is not None
+                    recv_err = await session.recv_task
 
-                current, found = self._pending.get(stream_id)
-                if found and current is cell:
-                    self._pending.pop(stream_id)
+                    current, found = self._pending.get(stream_id)
+                    if found and current is cell:
+                        self._pending.pop(stream_id)
 
-                if recv_err is not None:
-                    span_error(span, recv_err)
-                await self._end(recv_err, session.handler_state)
+                    if recv_err is not None:
+                        span_error(span, recv_err)
+                    await self._end(recv_err, session.handler_state)
         finally:
             ep.on_request_end(start_time, recv_err)
             span.end()

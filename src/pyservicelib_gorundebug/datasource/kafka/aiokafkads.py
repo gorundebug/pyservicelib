@@ -17,6 +17,7 @@ from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.utils.asyncrwlock import AsyncRWLock
 from ...runtime.environment.tracing import (
     Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
 )
@@ -74,6 +75,7 @@ class ResultContext[HandlerState, T, R, E]:
     _cb_lock: asyncio.Lock
     _span: Optional[Span]
     _once: bool
+    _lifetime: AsyncRWLock
 
     def __init__(self, handler_state: HandlerState):
         self._handler_state = handler_state
@@ -82,6 +84,7 @@ class ResultContext[HandlerState, T, R, E]:
         self._cb_lock = asyncio.Lock()
         self._span = None
         self._once = False
+        self._lifetime = AsyncRWLock()
 
     def set_result_callback(
         self,
@@ -348,9 +351,16 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if self._has_result and self._pending is not None:
-                        self._pending.pop(sid)
-                        ep.on_pending_remove(sid)
-                    await self._handler.end_request(self._sc, err, handler_state)
+                        async with result._lifetime.write_lock():
+                            self._pending.pop(sid)
+                            ep.on_pending_remove(sid)
+                            await self._handler.end_request(
+                                self._sc, err, handler_state
+                            )
+                    else:
+                        await self._handler.end_request(
+                            self._sc, err, handler_state
+                        )
                     return
                 span_event(span, "consume_message")
 
@@ -363,12 +373,13 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     span_event(span, "done_received")
                 except asyncio.CancelledError:
                     span_event(span, "context_cancelled")
-                finally:
+                async with result._lifetime.write_lock():
                     if self._pending is not None:
                         self._pending.pop(sid)
                         ep.on_pending_remove(sid)
-
-                await self._handler.end_request(self._sc, None, handler_state)
+                    await self._handler.end_request(
+                        self._sc, None, handler_state
+                    )
         finally:
             ep.on_request_end(start_time, end_err)
             span.end()
@@ -386,18 +397,44 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             ep.on_late_result(sid)
             return
 
-        message_id = self._handler.get_message_id(self._sc, result._handler_state, value)
+        async with result._lifetime.read_lock():
+            current, still_pending = self._pending.get(sid)
+            if not still_pending or current is not result:
+                ep.on_late_result(sid)
+                span_event(result._span, "late_result")
+                return
 
-        async with result._cb_lock:
-            cb = result._callbacks.pop(message_id, None)
+            message_id = self._handler.get_message_id(
+                self._sc, result._handler_state, value
+            )
+
+            async with result._cb_lock:
+                cb = result._callbacks.get(message_id)
             if cb is None:
-                ep.on_duplicate_message_id(sid, message_id)
-                span_event(result._span, "duplicate_message_id",
-                           string_attr("message_id", message_id))
+                ep.on_unknown_message_id(sid, message_id)
+                span_event(
+                    result._span, "unknown_message_id",
+                    string_attr("message_id", message_id),
+                )
                 return
             remove = cb(self._sc, result._handler_state, value)
-            if not remove:
-                result._callbacks[message_id] = cb
+            if remove:
+                duplicate = False
+                async with result._cb_lock:
+                    if message_id in result._callbacks:
+                        del result._callbacks[message_id]
+                    else:
+                        duplicate = True
+                if duplicate:
+                    ep.on_duplicate_message_id(sid, message_id)
+                    span_event(
+                        result._span, "duplicate_message_id",
+                        string_attr("message_id", message_id),
+                    )
+            span_event(
+                result._span, "result_consumed",
+                string_attr("message_id", message_id),
+            )
 
 
 def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:

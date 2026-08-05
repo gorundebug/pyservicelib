@@ -8,11 +8,16 @@ from abc import ABC, abstractmethod
 from typing import Protocol, Optional, Any, cast
 
 from ...runtime.common import (
-    Consume, ServiceExecutionEnvironment, InputEndpoint, TypedInputStream,
+    Consume, Consumer, ServiceExecutionEnvironment, InputEndpoint, TypedInputStream,
     DataSource, StreamContext, CollectFunc,
 )
 from ...runtime.context import Context
+from ...runtime.context.request import (
+    new_stream_id, stream_id_from_context, with_stream_id,
+)
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
+from ...runtime.store.rotatingmap import RotatingMap
+from ...runtime.utils.asyncrwlock import AsyncRWLock
 from ...runtime.environment.tracing import (
     Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
 )
@@ -86,18 +91,24 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
 
 class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
+    _handler_ctx: Context
     _handler_state: HandlerState
     _done: asyncio.Event
     _message_callbacks: dict[str, Any]
     _span: Optional[Span]
     _once: bool
+    _cb_lock: asyncio.Lock
+    _lifetime: AsyncRWLock
 
-    def __init__(self, handler_state: HandlerState):
+    def __init__(self, handler_ctx: Context, handler_state: HandlerState):
+        self._handler_ctx = handler_ctx
         self._handler_state = handler_state
         self._done = asyncio.Event()
         self._message_callbacks = {}
         self._span = None
         self._once = False
+        self._cb_lock = asyncio.Lock()
+        self._lifetime = AsyncRWLock()
 
     def set_result_callback(self, message_id: str,
                             cb: ResultCallback[HandlerState, T, R, E]) -> None:
@@ -156,6 +167,14 @@ class CustomDataSource(InputDataSource):
             self.environment.log.warn(f"Custom data source '{self.name}' stopped by timeout.")
 
 
+class _ResultConsumerProxy[R](Consumer[R]):
+    def __init__(self, consumer: "TypedCustomEndpointConsumer") -> None:  # type: ignore[type-arg]
+        self._consumer = consumer
+
+    async def consume(self, value: R) -> None:
+        await self._consumer._consume_result(value)  # type: ignore[arg-type]
+
+
 class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         DataSourceEndpointConsumer[T, R, E], CustomEndpointConsumer):
     _handler: EndpointHandler[HandlerState, T, R, E]
@@ -169,6 +188,7 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
     _stopped: bool
     _ctx: Optional[Context]
     _tracer: Optional[Tracer]
+    _pending: Optional[RotatingMap[str, _CustomResult[HandlerState, T, R, E]]]
 
     def __init__(self, input_stream: TypedInputStream[T, R, E],
                  data_producer: DataProducer[T],
@@ -188,6 +208,10 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         self._ctx = None
         tracing = env.tracing
         self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
+        self._pending = None
+
+        if self._has_result:
+            input_stream.set_result_consumer(_ResultConsumerProxy[R](self))
 
         error_collect = CollectFunc[E](input_stream.error_stream.consume)
         collect = CollectFunc[T](self.out)
@@ -229,8 +253,17 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     return
                 span_event(span, "begin_request")
 
-                result: _CustomResult[HandlerState, T, R, E] = _CustomResult(handler_state)
+                result: _CustomResult[HandlerState, T, R, E] = _CustomResult(
+                    handler_ctx, handler_state
+                )
                 result._span = span
+                sid = stream_id_from_context()
+                if sid is None:
+                    sid = new_stream_id()
+                    with_stream_id(sid)
+                if self._has_result and self._pending is not None:
+                    self._pending.set(sid, result)
+                    ep.on_pending_add(sid)
 
                 try:
                     await self._handler.consume_message(
@@ -239,7 +272,17 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     span_error(span, err)
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
-                    await self._handler.end_request(handler_ctx, self._sc, err, handler_state)
+                    if self._has_result and self._pending is not None:
+                        async with result._lifetime.write_lock():
+                            self._pending.pop(sid)
+                            ep.on_pending_remove(sid)
+                            await self._handler.end_request(
+                                handler_ctx, self._sc, err, handler_state
+                            )
+                    else:
+                        await self._handler.end_request(
+                            handler_ctx, self._sc, err, handler_state
+                        )
                     return
                 span_event(span, "consume_message")
 
@@ -251,10 +294,25 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     except (asyncio.TimeoutError, TypeError):
                         end_err = TimeoutError("result wait timeout")
                         span_error(span, end_err)
-                        await self._handler.end_request(handler_ctx, self._sc, end_err, handler_state)
+                        async with result._lifetime.write_lock():
+                            if self._pending is not None:
+                                self._pending.pop(sid)
+                                ep.on_pending_remove(sid)
+                            await self._handler.end_request(
+                                handler_ctx, self._sc, end_err, handler_state
+                            )
                         return
-
-                await self._handler.end_request(handler_ctx, self._sc, None, handler_state)
+                    async with result._lifetime.write_lock():
+                        if self._pending is not None:
+                            self._pending.pop(sid)
+                            ep.on_pending_remove(sid)
+                        await self._handler.end_request(
+                            handler_ctx, self._sc, None, handler_state
+                        )
+                else:
+                    await self._handler.end_request(
+                        handler_ctx, self._sc, None, handler_state
+                    )
         finally:
             ep.on_request_end(start_time, end_err)
             span.end()
@@ -290,6 +348,9 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
 
     async def start(self, ctx: Context) -> None:
         self._ctx = ctx
+        if self._has_result:
+            self._pending = RotatingMap[str, Any](30.0)
+            await self._pending.start(ctx)
         self._runner_task = asyncio.create_task(self._runner(ctx))
 
     async def stop(self, ctx: Context) -> None:
@@ -311,6 +372,61 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     f"Custom data source endpoint '{self.endpoint.name}' "
                     f"for stream '{self._input_stream.name}' stopped by timeout."
                 )
+        if self._pending is not None:
+            await self._pending.stop(ctx)
+
+    async def _consume_result(self, value: R) -> None:
+        if not self._has_result or self._pending is None:
+            return
+        ep = cast(DataSourceEndpoint, self._endpoint)
+        sid = stream_id_from_context()
+        if sid is None:
+            ep.on_missing_stream_id()
+            return
+        result, found = self._pending.get(sid)
+        if not found or result is None:
+            ep.on_late_result(sid)
+            return
+
+        async with result._lifetime.read_lock():
+            current, still_pending = self._pending.get(sid)
+            if not still_pending or current is not result:
+                ep.on_late_result(sid)
+                span_event(result._span, "late_result")
+                return
+
+            message_id = self._handler.get_message_id(
+                result._handler_ctx, self._sc, result._handler_state, value
+            )
+            async with result._cb_lock:
+                callback = result._message_callbacks.get(message_id)
+            if callback is None:
+                ep.on_unknown_message_id(sid, message_id)
+                span_event(
+                    result._span, "unknown_message_id",
+                    string_attr("message_id", message_id),
+                )
+                return
+            remove = callback(
+                result._handler_ctx, self._sc, result._handler_state, value
+            )
+            if remove:
+                duplicate = False
+                async with result._cb_lock:
+                    if message_id in result._message_callbacks:
+                        del result._message_callbacks[message_id]
+                    else:
+                        duplicate = True
+                if duplicate:
+                    ep.on_duplicate_message_id(sid, message_id)
+                    span_event(
+                        result._span, "duplicate_message_id",
+                        string_attr("message_id", message_id),
+                    )
+            span_event(
+                result._span, "result_consumed",
+                string_attr("message_id", message_id),
+            )
 
     @classmethod
     def _get_or_create_datasource(
