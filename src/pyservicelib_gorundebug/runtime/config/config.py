@@ -23,6 +23,7 @@ from ...api.models.pool import Pool
 from ...api.models.type import Type
 from ...api.models.service import Service
 from ...api.models.link import Link
+from ...api.models.module import Module
 from ...api.models.call_semantics import CallSemantics
 from ...api.models.project_settings import ProjectSettings as ApiProjectSettings
 from ...api.models.stream_app import StreamApp
@@ -156,6 +157,25 @@ class PoolConfig(Pool):
         _obj = cls(**obj)
         _obj.properties = obj
         return _obj
+
+
+class ModuleConfig(Module):
+    properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
+
+    def __getattr__(self, item: str) -> Any:
+        return _properties_getattr(self, item)
+
+    @classmethod
+    def from_dict(cls, obj: Optional[dict[str, Any]]) -> Optional[Self]:
+        if obj is None:
+            return None
+        normalized = dict(obj)
+        if "path" in normalized and "modulePath" not in normalized:
+            normalized["modulePath"] = normalized.pop("path")
+        normalized.setdefault("golangVersion", "")
+        result = cls(**normalized)
+        result.properties = obj
+        return result
 
 
 class TypeConfig(Type):
@@ -363,6 +383,7 @@ class RuntimeConfig:
     endpoints_by_id: dict[int, EndpointConfig]
     pool_by_name: dict[str, PoolConfig]
     types: dict[str, TypeConfig]
+    modules: dict[str, ModuleConfig]
 
     def __init__(self):
         self.streams_by_name = {}
@@ -376,6 +397,7 @@ class RuntimeConfig:
         self.endpoints_by_id = {}
         self.pool_by_name = {}
         self.types = {}
+        self.modules = {}
 
 
 class Config(ABC):
@@ -408,6 +430,8 @@ class ServiceAppConfig(StreamApp, Config):
                       for link_data in obj.get('links', [])],
             "types": [TypeConfig.from_dict(type_data)
                       for type_data in obj.get('types', [])],
+            "modules": [ModuleConfig.from_dict(module_data)
+                        for module_data in obj.get('modules', [])],
             "pools": [PoolConfig.from_dict(pool_data)
                       for pool_data in obj.get('pools', [])],
             "data_connectors": [DataConnectorConfig.from_dict(data_connector_data)
@@ -467,6 +491,18 @@ class ServiceAppConfig(StreamApp, Config):
                 cast(DataConnectorConfig, data_connector))
             self.runtime_config.data_connectors_by_id[data_connector.id] = (
                 cast(DataConnectorConfig, data_connector))
+
+        for module in self.modules or []:
+            if module.name in self.runtime_config.modules:
+                raise ValueError(f"duplicate module name: {module.name}")
+            module_config = (
+                module
+                if isinstance(module, ModuleConfig)
+                else ModuleConfig.from_dict(module.to_dict())
+            )
+            if module_config is None:
+                raise ValueError(f"invalid module config: {module.name}")
+            self.runtime_config.modules[module.name] = module_config
 
         for pool in self.pools:
             if pool.name in self.runtime_config.pool_by_name:
