@@ -20,7 +20,7 @@ from ..runtime.environment.tracing import (
     Tracer,
     span_error,
     span_event,
-    start_span,
+    start_stream_span,
     string_attr,
 )
 from .functions import DelayFunction
@@ -73,7 +73,7 @@ class DelayStream[T](TypedConsumedStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer, "stream.delay", string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.delay", self)
         duration = await self._f.call(value)
         if duration.total_seconds() > 0.0:
             if self._caller is not None:

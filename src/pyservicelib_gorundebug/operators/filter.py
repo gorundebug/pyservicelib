@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..runtime.common import StreamFunction, TypedStream, TypedConsumedStream
 from ..runtime.config.stream_types import FilterStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 from .functions import FilterFunction
 
 
@@ -41,8 +41,7 @@ class FilterStream[T](TypedConsumedStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.filter",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.filter", self)
         try:
             with span.scoped():
                 if await self._f.call(value):

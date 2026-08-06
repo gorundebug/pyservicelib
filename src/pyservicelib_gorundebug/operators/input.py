@@ -13,7 +13,7 @@ from ..runtime.common import (
 from .error import ErrorStream
 from ..runtime.config.stream_types import InputStreamConfig
 from ..runtime.datastruct import KeyValue
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 from ..runtime.serde.serde import StreamSerde, StubSerde
 
 
@@ -79,8 +79,7 @@ class InputStream[T, R, E](TypedInputStream[T, R, E]):
             await self._result_consumer.consume(value)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.input",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.input", self)
         try:
             with span.scoped():
                 if self._caller is not None:
@@ -157,8 +156,7 @@ class InputKVStream[K, V, R, E](TypedInputStream[KeyValue[K, V], R, E]):
             await self._result_consumer.consume(value)
 
     async def consume(self, value: KeyValue[K, V]) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.input",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.input", self)
         try:
             with span.scoped():
                 if self._caller is not None:

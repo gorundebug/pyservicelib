@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..runtime.common import StreamFunction, Collect, Collector, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from ..runtime.config.stream_types import FlatMapStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 from .functions import FlatMapFunction
 
 
@@ -53,8 +53,7 @@ class FlatMapStream[T, R](TypedTransformConsumedStream[T, R]):
         self._collector = Collector(self._caller)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.flatmap",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.flatmap", self)
         try:
             with span.scoped():
                 await self._f.call(value, self._collector)

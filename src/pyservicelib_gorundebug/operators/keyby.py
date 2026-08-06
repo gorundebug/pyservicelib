@@ -9,7 +9,7 @@ from typing import Hashable, Optional
 from ..runtime.common import StreamFunction, Collect, Collector, TypedStream, TypedTransformConsumedStream, RuntimeKeyValueHelpers
 from ..runtime.config.stream_types import KeyByStreamConfig
 from ..runtime.datastruct import KeyValue
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 from .functions import KeyByFunction
 
 
@@ -55,8 +55,7 @@ class KeyByStream[T, K, V](TypedTransformConsumedStream[T, KeyValue[K, V]]):
         self._collector = Collector(self._caller)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.keyby",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.keyby", self)
         try:
             with span.scoped():
                 await self._f.call(value, self._collector)

@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..runtime.common import TypedStream, TypedConsumedStream, TypedSplitStream, Stream
 from ..runtime.config.stream_types import SplitStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 
 
 class SplitLink[T](TypedConsumedStream[T]):
@@ -56,8 +56,7 @@ class SplitStream[T](TypedSplitStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.split",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.split", self)
         try:
             with span.scoped():
                 for link in self._links:
@@ -78,6 +77,15 @@ class SplitStream[T](TypedSplitStream[T]):
         for i, link in enumerate(self._links):
             if link.consumer is None:
                 raise ValueError(f"SplitStream '{self.name}' does not have a consumer for the link with index {i}")
+        # Match Go's SplitStream.Build: asynchronous branches must be
+        # scheduled before direct branches, and this topology work belongs to
+        # startup rather than the per-message path. Python's sort is stable,
+        # so declaration order is retained within both groups.
+        self._links.sort(
+            key=lambda link: not (
+                link._caller is not None and link._caller.is_async
+            )
+        )
 
     def add_stream(self) -> TypedConsumedStream[T]:
         index = len(self._links)

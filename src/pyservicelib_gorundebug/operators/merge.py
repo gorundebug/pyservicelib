@@ -9,7 +9,7 @@ from typing import Optional
 from ..runtime.common import TypedStream, TypedConsumedStream, StreamConsumer, Stream, ServiceExecutionEnvironment
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import MergeStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 
 
 class MergeLink[T](Stream, StreamConsumer[T]):
@@ -73,8 +73,7 @@ class MergeStream[T](TypedConsumedStream[T]):
         self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.merge",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.merge", self)
         try:
             with span.scoped():
                 if self._caller is not None:

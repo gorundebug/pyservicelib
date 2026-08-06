@@ -172,6 +172,13 @@ def start_span(tracer: Optional[Tracer], operation: str, *attrs: Attribute) -> T
     return tracer.start(operation, *attrs)
 
 
+def start_stream_span(tracer: Optional[Tracer], operation: str, stream: Any) -> Tuple[Any, Span]:
+    """Start an operator span without resolving stream metadata when unsampled."""
+    if tracer is None or not sampling_enabled():
+        return None, NOOP_SPAN
+    return tracer.start(operation, string_attr("stream", stream.name))
+
+
 def span_event(span: Optional[Span], name: str, *attrs: Attribute) -> None:
     if span is not None:
         span.add_event(name, *attrs)

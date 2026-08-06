@@ -9,7 +9,7 @@ from typing import get_origin, cast, Optional
 
 from ..runtime.common import TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from ..runtime.config.stream_types import FlatMapIterableStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 
 
 class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
@@ -41,8 +41,7 @@ class FlatMapIterableStream[T: Iterable, R](TypedTransformConsumedStream[T, R]):
             self._element_type = genetic_type
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.flatmap_iterable",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.flatmap_iterable", self)
         try:
             with span.scoped():
                 if self._caller is not None:

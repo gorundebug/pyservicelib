@@ -12,7 +12,7 @@ from ..runtime.common import (
 )
 from .error import ErrorStream
 from ..runtime.config.stream_types import SinkStreamConfig
-from ..runtime.environment.tracing import Tracer, start_span, string_attr, sampling_enabled
+from ..runtime.environment.tracing import Tracer, start_stream_span
 from ..runtime.serde.serde import StreamSerde, StubSerde
 
 
@@ -39,8 +39,7 @@ class SinkStream[T, E](TypedSinkStream[T, E]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.sink",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.sink", self)
         try:
             with span.scoped():
                 if self._sink_consumer is not None:
@@ -99,8 +98,7 @@ class SinkStreamWithResult[T, R, E](TypedSinkStreamWithResult[T, R, E]):
         self._caller = RuntimeHelpers[R](self.environment).make_caller(self)
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.sink",
-                             string_attr("stream", self.name))
+        _, span = start_stream_span(self._tracer, "stream.sink", self)
         try:
             with span.scoped():
                 if self._sink_consumer is not None:

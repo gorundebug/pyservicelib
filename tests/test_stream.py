@@ -17,7 +17,7 @@ from pyservicelib_gorundebug.runtime.config import ConfigSettings
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 from pyservicelib_gorundebug.runtime.common import CallerStatistics, DirectCaller
 from pyservicelib_gorundebug import transformation
-from pyservicelib_gorundebug.operators.split import SplitLink
+from pyservicelib_gorundebug.operators.split import SplitLink, SplitStream
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
 
@@ -152,6 +152,18 @@ def test_split_link_type_name_does_not_depend_on_orig_class():
 
     assert not hasattr(link, "__orig_class__")
     assert link.type_name == "int"
+
+
+def test_split_build_orders_async_links_once():
+    split = object.__new__(SplitStream)
+    split._links = [
+        SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=False)),
+        SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=True)),
+    ]
+
+    split.build()
+
+    assert [link._caller.is_async for link in split._links] == [True, False]
 
 
 @pytest.mark.benchmark(group="slots")
