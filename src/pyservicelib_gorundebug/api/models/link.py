@@ -17,7 +17,7 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
 from ..models.call_semantics import CallSemantics
 from typing import Optional, Set
@@ -31,9 +31,10 @@ class Link(BaseModel):
     var_from: StrictInt = Field(description="ID of the upstream (producer) stream node.", alias="from", json_schema_extra={"examples": [1]})
     to: StrictInt = Field(description="ID of the downstream (consumer) stream node.", json_schema_extra={"examples": [2]})
     call_semantics: CallSemantics = Field(alias="callSemantics")
+    var_async: Optional[StrictBool] = Field(default=False, description="Value returned by the caller's `IsAsync`/`isAsync` method when `callSemantics` is `FunctionCall`. Ignored for all other call semantics. ", alias="async")
     pool_name: Optional[StrictStr] = Field(default=None, description="Name of the worker pool to use when `callSemantics` is `TaskPool` or `PriorityTaskPool`. Must match a pool defined in `StreamApp.pools`. ", alias="poolName", json_schema_extra={"examples": ["default"]})
     priority: Optional[StrictInt] = Field(default=None, description="Message priority for `PriorityTaskPool` delivery. Higher values are processed first. Ignored for other call semantics. ")
-    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "poolName", "priority"]
+    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "async", "poolName", "priority"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -89,6 +90,7 @@ class Link(BaseModel):
             "from": obj.get("from"),
             "to": obj.get("to"),
             "callSemantics": obj.get("callSemantics"),
+            "async": obj.get("async") if obj.get("async") is not None else False,
             "poolName": obj.get("poolName"),
             "priority": obj.get("priority")
         })

@@ -323,6 +323,8 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 }
                 if l.call_semantics != CallSemantics.Inherited and l.call_semantics != 0:
                     l_node["callSemantics"] = l.call_semantics.name
+                if l.call_semantics == CallSemantics.FunctionCall and l.var_async:
+                    l_node["async"] = True
                 if l.pool_name:
                     l_node["poolName"] = l.pool_name
                 if l.priority is not None:

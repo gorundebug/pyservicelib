@@ -15,10 +15,28 @@ import pytest
 
 from pyservicelib_gorundebug.runtime.config import ConfigSettings
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
+from pyservicelib_gorundebug.runtime.common import CallerStatistics, DirectCaller
 from pyservicelib_gorundebug import transformation
 from pyservicelib_gorundebug.operators.split import SplitLink
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
+
+
+def test_function_call_async_flag_only_changes_caller_metadata():
+    async def consume(_value: int) -> None:
+        pass
+
+    consumer = SimpleNamespace(
+        stream=SimpleNamespace(name="target"),
+        consume=consume,
+    )
+    source = SimpleNamespace(name="source", consumer=consumer)
+
+    sync_caller = DirectCaller(source, CallerStatistics(), async_=False)
+    async_caller = DirectCaller(source, CallerStatistics(), async_=True)
+
+    assert sync_caller.is_async is False
+    assert async_caller.is_async is True
 
 class Value[T]:
     value: Optional[T]
@@ -160,4 +178,3 @@ def test_benchmark_without_slots(benchmark):
         objs = [WithoutSlots(i, i + 1) for i in range(100000)]
 
     benchmark(test)
-

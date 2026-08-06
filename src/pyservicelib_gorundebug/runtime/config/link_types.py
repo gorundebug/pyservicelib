@@ -18,6 +18,13 @@ class CallSemanticsConfig(ABC):
 
 class FunctionCallSemanticsConfig(CallSemanticsConfig):
 
+    def __init__(self, async_: bool = False):
+        self._async = async_
+
+    @property
+    def is_async(self) -> bool:
+        return self._async
+
     @property
     def call_semantics(self) -> CallSemantics:
         return CallSemantics.FunctionCall

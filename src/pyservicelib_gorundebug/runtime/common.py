@@ -102,8 +102,10 @@ class DirectCaller[T](Caller[T]):
 
     def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
                  tracer: Optional[Tracer] = None,
-                 messages_counter: Optional[Int64Counter] = None):
+                 messages_counter: Optional[Int64Counter] = None,
+                 async_: bool = False):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
+        self._async = async_
 
     async def consume(self, value: T):
         self._statistics.inc()
@@ -118,7 +120,7 @@ class DirectCaller[T](Caller[T]):
 
     @property
     def is_async(self) -> bool:
-        return False
+        return self._async
 
 
 class TaskPoolCaller[T](Caller[T]):
@@ -318,8 +320,13 @@ class RuntimeHelpers[T]:
         tracer = tracing.tracer(service_config.name) if tracing is not None else None
 
         if call_semantics == CallSemantics.FunctionCall:
+            async_ = bool(
+                link is not None
+                and link.call_semantics == CallSemantics.FunctionCall
+                and link.var_async
+            )
             return DirectCaller[T](source=source, statistics=statistics, tracer=tracer,
-                                   messages_counter=messages_counter)
+                                   messages_counter=messages_counter, async_=async_)
 
         elif call_semantics == CallSemantics.TaskPool:
             if link is None:

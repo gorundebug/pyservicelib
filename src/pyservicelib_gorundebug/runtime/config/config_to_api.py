@@ -138,13 +138,14 @@ def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:
 
 def link_config_to_api(l: LinkConfig) -> Link:
     cs = l.call_semantics if l.call_semantics is not None else CallSemantics.Inherited
-    return Link(
-        var_from=l.var_from,
-        to=l.to,
-        callSemantics=cs,
-        poolName=l.pool_name,
-        priority=l.priority,
-    )
+    return Link.model_validate({
+        "from": l.var_from,
+        "to": l.to,
+        "callSemantics": cs,
+        "async": l.var_async,
+        "poolName": l.pool_name,
+        "priority": l.priority,
+    })
 
 
 def type_config_to_api(t: TypeConfig) -> Type:
