@@ -10,6 +10,7 @@ from ...api.models.service import Service
 from ...api.models.stream import Stream
 from ...api.models.data_connector import DataConnector
 from ...api.models.data_connector_implementation import DataConnectorImplementation
+from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.endpoint import Endpoint
 from ...api.models.link import Link
 from ...api.models.type import Type
@@ -100,6 +101,8 @@ def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
         host=dc.host or None,
         port=dc.port or None,
         address=dc.address or None,
+        connectionsCount=(dc.connections_count or 1)
+        if dc.type == DataConnectorType.gRPC else None,
         brokers=dc.brokers or None,
         version=dc.version or None,
         dialTimeout=dc.dial_timeout or None,

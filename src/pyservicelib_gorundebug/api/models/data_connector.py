@@ -41,7 +41,7 @@ class DataConnector(BaseModel):
     host: Optional[StrictStr] = Field(default=None, description="Hostname or IP address. Applies to HTTP and gRPC connectors.")
     port: Optional[Annotated[int, Field(le=65535, strict=True, ge=80)]] = Field(default=None, description="Port number. Applies to HTTP and gRPC connectors.")
     address: Optional[StrictStr] = Field(default=None, description="gRPC connection address.")
-    connections_count: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=1, description="Number of independent transport connections used by a gRPC sink connector.", alias="connectionsCount")
+    connections_count: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Number of independent transport connections used by a gRPC sink connector.", alias="connectionsCount")
     brokers: Optional[StrictStr] = Field(default=None, description="Comma-separated list of Kafka broker addresses (e.g. `kafka1:9092,kafka2:9092`). Applies to Kafka connectors.")
     version: Optional[StrictStr] = Field(default=None, description="Kafka protocol version expected by the broker (e.g. `2.8.0`). Applies to Kafka connectors.")
     dial_timeout: Optional[Union[Annotated[float, Field(le=3600000, strict=True, ge=0)], Annotated[int, Field(le=3600000, strict=True, ge=0)]]] = Field(default=None, description="Connection dial timeout in milliseconds. Applies to Kafka connectors.", alias="dialTimeout")
@@ -113,7 +113,7 @@ class DataConnector(BaseModel):
             "host": obj.get("host"),
             "port": obj.get("port"),
             "address": obj.get("address"),
-            "connectionsCount": obj.get("connectionsCount", 1),
+            "connectionsCount": obj.get("connectionsCount"),
             "brokers": obj.get("brokers"),
             "version": obj.get("version"),
             "dialTimeout": obj.get("dialTimeout"),
@@ -123,4 +123,3 @@ class DataConnector(BaseModel):
             "module": obj.get("module")
         })
         return _obj
-
