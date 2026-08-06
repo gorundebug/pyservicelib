@@ -16,6 +16,34 @@ from .environment.metrics import (
     Metrics,
 )
 
+_HTTP_STATUS_CODES = tuple(
+    str(status)
+    for status in (
+        200, 201, 202, 204,
+        400, 401, 403, 404, 405, 408, 409, 413, 415, 422, 429,
+        500, 502, 503, 504,
+    )
+)
+_GRPC_STATUS_CODES = (
+    "OK",
+    "CANCELLED",
+    "UNKNOWN",
+    "INVALID_ARGUMENT",
+    "DEADLINE_EXCEEDED",
+    "NOT_FOUND",
+    "ALREADY_EXISTS",
+    "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION",
+    "ABORTED",
+    "OUT_OF_RANGE",
+    "UNIMPLEMENTED",
+    "INTERNAL",
+    "UNAVAILABLE",
+    "DATA_LOSS",
+    "UNAUTHENTICATED",
+)
+
 _DURATION_BUCKETS_SECONDS = (
     0.0005,
     0.001,
@@ -50,6 +78,13 @@ class TransportRequest:
     active: Optional[Int64Gauge]
 
 
+@dataclass(frozen=True)
+class _TransportOutcome:
+    duration: Float64Histogram
+    request_body_size: Optional[Float64Histogram]
+    response_body_size: Optional[Float64Histogram]
+
+
 class TransportRequestMetrics:
     """Protocol-level metrics consumed by the HTTP and gRPC dashboards."""
 
@@ -63,6 +98,7 @@ class TransportRequestMetrics:
         status_label: str,
         success_status: str,
         error_status: str,
+        statuses: tuple[str, ...],
         track_active: bool = False,
         track_body_size: bool = False,
     ) -> None:
@@ -72,13 +108,16 @@ class TransportRequestMetrics:
             "Duration of a transport request in seconds",
             *_DURATION_BUCKETS_SECONDS,
         )
-        self._active: Optional[Int64GaugeVec] = (
+        active_vec: Optional[Int64GaugeVec] = (
             scope.gauge_vec(
                 "active_requests",
                 "Number of active transport requests",
             )
             if track_active
             else None
+        )
+        self._active: Optional[Int64Gauge] = (
+            active_vec.with_(base_labels) if active_vec is not None else None
         )
         self._request_body_size: Optional[Float64HistogramVec] = (
             scope.histogram_vec(
@@ -98,17 +137,36 @@ class TransportRequestMetrics:
             if track_body_size
             else None
         )
-        self._base_labels = base_labels
-        self._status_label = status_label
         self._success_status = success_status
         self._error_status = error_status
+        self._outcomes: dict[tuple[str, bool], _TransportOutcome] = {}
+        for status in statuses:
+            failures = (False, True) if track_body_size else (False,)
+            for failed in failures:
+                labels = {
+                    **base_labels,
+                    status_label: status,
+                }
+                if status_label == "http_response_status_code":
+                    labels["error_type"] = "transport_error" if failed else ""
+                self._outcomes[(status, failed)] = _TransportOutcome(
+                    duration=self._duration.with_(labels),
+                    request_body_size=(
+                        self._request_body_size.with_(labels)
+                        if self._request_body_size is not None
+                        else None
+                    ),
+                    response_body_size=(
+                        self._response_body_size.with_(labels)
+                        if self._response_body_size is not None
+                        else None
+                    ),
+                )
+            if not track_body_size:
+                self._outcomes[(status, True)] = self._outcomes[(status, False)]
 
     def start(self) -> TransportRequest:
-        active = (
-            self._active.with_(self._base_labels)
-            if self._active is not None
-            else None
-        )
+        active = self._active
         if active is not None:
             active.inc()
         return TransportRequest(time.monotonic(), active)
@@ -123,35 +181,30 @@ class TransportRequestMetrics:
     ) -> None:
         if request.active is not None:
             request.active.dec()
-        labels = {
-            **self._base_labels,
-            self._status_label: status
-            or (self._success_status if err is None else self._error_status),
-        }
-        if self._status_label == "http_response_status_code":
-            labels["error_type"] = "" if err is None else type(err).__name__
-        self._duration.with_(labels).observe(
-            time.monotonic() - request.started_at
+        status = status or (
+            self._success_status if err is None else self._error_status
         )
+        failed = err is not None
+        outcome = self._outcomes.get((status, failed))
+        if outcome is None:
+            outcome = self._outcomes[(self._error_status, failed)]
+        outcome.duration.observe(time.monotonic() - request.started_at)
         self._observe_size(
-            self._request_body_size,
-            labels,
+            outcome.request_body_size,
             request_body_size,
         )
         self._observe_size(
-            self._response_body_size,
-            labels,
+            outcome.response_body_size,
             response_body_size,
         )
 
     @staticmethod
     def _observe_size(
-        histogram: Optional[Float64HistogramVec],
-        labels: Labels,
+        histogram: Optional[Float64Histogram],
         size: Optional[int],
     ) -> None:
         if histogram is not None and size is not None and size >= 0:
-            histogram.with_(labels).observe(float(size))
+            histogram.observe(float(size))
 
     @classmethod
     def http_server(
@@ -177,6 +230,7 @@ class TransportRequestMetrics:
             status_label="http_response_status_code",
             success_status="200",
             error_status="500",
+            statuses=_HTTP_STATUS_CODES,
             track_active=True,
             track_body_size=True,
         )
@@ -204,6 +258,7 @@ class TransportRequestMetrics:
             status_label="http_response_status_code",
             success_status="200",
             error_status="500",
+            statuses=_HTTP_STATUS_CODES,
             track_body_size=True,
         )
 
@@ -225,6 +280,7 @@ class TransportRequestMetrics:
             status_label="rpc_response_status_code",
             success_status="OK",
             error_status="UNKNOWN",
+            statuses=_GRPC_STATUS_CODES,
         )
 
     @classmethod
@@ -245,4 +301,5 @@ class TransportRequestMetrics:
             status_label="rpc_response_status_code",
             success_status="OK",
             error_status="UNKNOWN",
+            statuses=_GRPC_STATUS_CODES,
         )
