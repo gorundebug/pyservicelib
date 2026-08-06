@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from abc import ABC, abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
 type Labels = dict[str, str]
 type MetricsHandler = Callable[[], bytes]
@@ -201,3 +201,101 @@ class MetricsEngine(ABC):
 
     async def shutdown(self) -> None:
         pass
+
+
+class _NoopInt64CounterVec(Int64CounterVec):
+    def with_(self, labels: Labels) -> Int64Counter:
+        del labels
+        return NOOP_INT64_COUNTER
+
+
+class _NoopFloat64CounterVec(Float64CounterVec):
+    def with_(self, labels: Labels) -> Float64Counter:
+        del labels
+        return NOOP_FLOAT64_COUNTER
+
+
+class _NoopInt64GaugeVec(Int64GaugeVec):
+    def with_(self, labels: Labels) -> Int64Gauge:
+        del labels
+        return NOOP_INT64_GAUGE
+
+    def delete(self, labels: Labels) -> None:
+        del labels
+
+
+class _NoopFloat64GaugeVec(Float64GaugeVec):
+    def with_(self, labels: Labels) -> Float64Gauge:
+        del labels
+        return NOOP_FLOAT64_GAUGE
+
+    def delete(self, labels: Labels) -> None:
+        del labels
+
+
+class _NoopFloat64HistogramVec(Float64HistogramVec):
+    def with_(self, labels: Labels) -> Float64Histogram:
+        del labels
+        return NOOP_FLOAT64_HISTOGRAM
+
+
+class _NoopInt64HistogramVec(Int64HistogramVec):
+    def with_(self, labels: Labels) -> Int64Histogram:
+        del labels
+        return NOOP_INT64_HISTOGRAM
+
+
+class NoopMetricsScope(MetricsScope):
+    def counter(self, name: str, help: str, labels: Labels) -> Int64Counter:
+        del name, help, labels
+        return NOOP_INT64_COUNTER
+
+    def counter_vec(self, name: str, help: str) -> Int64CounterVec:
+        del name, help
+        return _NOOP_INT64_COUNTER_VEC
+
+    def gauge(self, name: str, help: str, labels: Labels) -> Int64Gauge:
+        del name, help, labels
+        return NOOP_INT64_GAUGE
+
+    def gauge_vec(self, name: str, help: str) -> Int64GaugeVec:
+        del name, help
+        return _NOOP_INT64_GAUGE_VEC
+
+    def histogram(self, name: str, help: str, labels: Labels, *buckets: float) -> Float64Histogram:
+        del name, help, labels, buckets
+        return NOOP_FLOAT64_HISTOGRAM
+
+    def histogram_vec(self, name: str, help: str, *buckets: float) -> Float64HistogramVec:
+        del name, help, buckets
+        return _NOOP_FLOAT64_HISTOGRAM_VEC
+
+    def observable_float64_gauge(self, name: str, help: str, fn: Callable[[], float]) -> None:
+        del name, help, fn
+
+
+class NoopMetrics(Metrics):
+    def scope(self, prefix: str, labels: Labels) -> MetricsScope:
+        del prefix, labels
+        return _NOOP_SCOPE
+
+
+class NoopMetricsEngine(MetricsEngine):
+    @property
+    def metrics(self) -> Metrics:
+        return _NOOP_METRICS
+
+    @property
+    def metrics_handler(self) -> MetricsHandler:
+        return _noop_metrics_handler
+
+
+def _noop_metrics_handler() -> bytes:
+    return b""
+
+
+_NOOP_INT64_COUNTER_VEC = _NoopInt64CounterVec()
+_NOOP_INT64_GAUGE_VEC = _NoopInt64GaugeVec()
+_NOOP_FLOAT64_HISTOGRAM_VEC = _NoopFloat64HistogramVec()
+_NOOP_SCOPE = NoopMetricsScope()
+_NOOP_METRICS = NoopMetrics()

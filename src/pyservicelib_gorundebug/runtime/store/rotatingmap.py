@@ -4,13 +4,13 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-from typing import Optional
 
 from ..context import Context
 
 # Rotate only when live entries have dropped below 1/SHRINK_FACTOR of the peak.
 # Mirrors the Go constant rotatingMapShrinkFactor = 4.
 _SHRINK_FACTOR = 4
+_DEFAULT_MIN_CAPACITY = 1_000
 
 
 class RotatingMap[K, V]:
@@ -19,9 +19,10 @@ class RotatingMap[K, V]:
     Items survive rotation (prev is merged into current on each rotation).
     The rotation timer fires periodically but the actual swap happens only when
     live entries < highWaterMark / _SHRINK_FACTOR to avoid pointless copies.
+    The single event-loop-owned map must also have reached min_capacity.
     """
 
-    def __init__(self, interval: float):
+    def __init__(self, interval: float, min_capacity: int = _DEFAULT_MIN_CAPACITY):
         """
         Args:
             interval: rotation check interval in seconds.
@@ -29,8 +30,9 @@ class RotatingMap[K, V]:
         self._interval = interval
         self._current: dict[K, V] = {}
         self._prev: dict[K, V] = {}
-        self._timer_task: Optional[asyncio.Task] = None
+        self._timer_task: asyncio.Task | None = None
         self._high_water_mark: int = 0
+        self._min_capacity = min_capacity
 
     async def start(self, ctx: Context) -> None:
         self._timer_task = asyncio.create_task(self._rotation_loop())
@@ -57,8 +59,10 @@ class RotatingMap[K, V]:
         # Compute before updating _high_water_mark so first call (= 0) always rotates.
         should_rotate = self._high_water_mark == 0 or total * _SHRINK_FACTOR < self._high_water_mark
 
-        if total > self._high_water_mark:
-            self._high_water_mark = total
+        self._high_water_mark = max(total, self._high_water_mark)
+
+        if self._high_water_mark < self._min_capacity:
+            return
 
         if not should_rotate:
             return

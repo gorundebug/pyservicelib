@@ -4,16 +4,28 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+
 import pytest
 
-from pyservicelib_gorundebug.runtime.store.rotatingmap import RotatingMap, _SHRINK_FACTOR
 from pyservicelib_gorundebug.runtime.context import default_context
+from pyservicelib_gorundebug.runtime.store.rotatingmap import (
+    _SHRINK_FACTOR,
+    RotatingMap,
+)
+
+
+def test_does_not_rotate_below_default_minimum_capacity():
+    m: RotatingMap[int, int] = RotatingMap(interval=3600)
+    for value in range(999):
+        m.set(value, value)
+    m._rotate()
+    assert not m._prev
 
 
 # ---------- construction ----------
 
 def test_initial_state():
-    m: RotatingMap[str, int] = RotatingMap(interval=1.0)
+    m: RotatingMap[str, int] = RotatingMap(interval=1.0, min_capacity=0)
     assert m._current == {}
     assert m._prev == {}
     assert m._timer_task is None
@@ -24,7 +36,7 @@ def test_initial_state():
 
 @pytest.mark.asyncio
 async def test_start_creates_timer_task():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     ctx = default_context()
     await m.start(ctx)
     assert m._timer_task is not None
@@ -34,7 +46,7 @@ async def test_start_creates_timer_task():
 
 @pytest.mark.asyncio
 async def test_stop_cancels_timer_task():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     ctx = default_context()
     await m.start(ctx)
     await m.stop(ctx)
@@ -44,7 +56,7 @@ async def test_stop_cancels_timer_task():
 
 @pytest.mark.asyncio
 async def test_stop_without_start_is_safe():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     ctx = default_context()
     await m.stop(ctx)  # must not raise
 
@@ -52,7 +64,7 @@ async def test_stop_without_start_is_safe():
 # ---------- set / get ----------
 
 def test_get_existing_key():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 42)
     v, ok = m.get("k")
     assert ok
@@ -60,14 +72,14 @@ def test_get_existing_key():
 
 
 def test_get_missing_key_returns_false():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     v, ok = m.get("missing")
     assert not ok
     assert v is None
 
 
 def test_get_value_none_is_distinguishable():
-    m: RotatingMap[str, None] = RotatingMap(interval=3600)
+    m: RotatingMap[str, None] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", None)
     v, ok = m.get("k")
     assert ok        # key found
@@ -75,14 +87,14 @@ def test_get_value_none_is_distinguishable():
 
 
 def test_set_duplicate_in_current_raises():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 1)
     with pytest.raises(ValueError):
         m.set("k", 2)
 
 
 def test_set_duplicate_in_prev_raises():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 1)
     m._rotate()  # k moves to prev
     with pytest.raises(ValueError):
@@ -92,7 +104,7 @@ def test_set_duplicate_in_prev_raises():
 # ---------- get_or_create ----------
 
 def test_get_or_create_creates_when_missing():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     v, loaded = m.get_or_create("k", lambda: 42)
     assert not loaded
     assert v == 42
@@ -100,7 +112,7 @@ def test_get_or_create_creates_when_missing():
 
 
 def test_get_or_create_returns_existing_from_current():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 1)
     calls = 0
 
@@ -116,7 +128,7 @@ def test_get_or_create_returns_existing_from_current():
 
 
 def test_get_or_create_returns_existing_from_prev():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 1)
     m._rotate()  # k moves to prev
 
@@ -129,7 +141,7 @@ def test_get_or_create_returns_existing_from_prev():
 # ---------- pop ----------
 
 def test_pop_existing_key():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 7)
     v, ok = m.pop("k")
     assert ok
@@ -139,14 +151,14 @@ def test_pop_existing_key():
 
 
 def test_pop_missing_key_returns_false():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     v, ok = m.pop("missing")
     assert not ok
     assert v is None
 
 
 def test_pop_twice_on_same_key():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 5)
     m.pop("k")
     _, ok = m.pop("k")
@@ -154,7 +166,7 @@ def test_pop_twice_on_same_key():
 
 
 def test_pop_value_none_is_distinguishable():
-    m: RotatingMap[str, None] = RotatingMap(interval=3600)
+    m: RotatingMap[str, None] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", None)
     v, ok = m.pop("k")
     assert ok
@@ -166,7 +178,7 @@ def test_pop_value_none_is_distinguishable():
 # ---------- rotate ----------
 
 def test_rotate_item_moves_to_prev():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 10)
     m._rotate()
 
@@ -177,7 +189,7 @@ def test_rotate_item_moves_to_prev():
 
 
 def test_rotate_pop_from_prev():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 20)
     m._rotate()
 
@@ -188,7 +200,7 @@ def test_rotate_pop_from_prev():
 
 
 def test_rotate_two_rotations_item_survives():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 5)
 
     m._rotate()  # current={} prev={k:5}, highWaterMark=1
@@ -200,7 +212,7 @@ def test_rotate_two_rotations_item_survives():
 
 
 def test_rotate_get_searches_current_then_prev():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("a", 1)
     m._rotate()  # a is in prev
 
@@ -213,7 +225,7 @@ def test_rotate_get_searches_current_then_prev():
 
 
 def test_rotate_pop_searches_current_then_prev():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("a", 1)
     m._rotate()
 
@@ -228,7 +240,7 @@ def test_rotate_pop_searches_current_then_prev():
 
 
 def test_rotate_set_after_rotate_goes_into_current():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("a", 1)
     m._rotate()
 
@@ -238,7 +250,7 @@ def test_rotate_set_after_rotate_goes_into_current():
 
 
 def test_rotate_merge_preserves_items_from_both_generations():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("a", 1)
     m._rotate()  # a in prev; highWaterMark=1
 
@@ -255,7 +267,7 @@ def test_rotate_merge_preserves_items_from_both_generations():
 # ---------- shrink-factor rotation guard ----------
 
 def test_skips_rotation_under_high_load():
-    m: RotatingMap[int, int] = RotatingMap(interval=3600)
+    m: RotatingMap[int, int] = RotatingMap(interval=3600, min_capacity=0)
     peak = 100
     for i in range(peak):
         m.set(i, i)
@@ -274,7 +286,7 @@ def test_skips_rotation_under_high_load():
 
 
 def test_rotates_after_burst_recovery():
-    m: RotatingMap[int, int] = RotatingMap(interval=3600)
+    m: RotatingMap[int, int] = RotatingMap(interval=3600, min_capacity=0)
     peak = 100
     for i in range(peak):
         m.set(i, i)
@@ -293,7 +305,7 @@ def test_rotates_after_burst_recovery():
 
 
 def test_high_water_mark_tracked_when_skipped():
-    m: RotatingMap[int, int] = RotatingMap(interval=3600)
+    m: RotatingMap[int, int] = RotatingMap(interval=3600, min_capacity=0)
 
     # First rotation with 10 entries
     for i in range(10):
@@ -309,7 +321,7 @@ def test_high_water_mark_tracked_when_skipped():
 
 
 def test_first_call_always_rotates():
-    m: RotatingMap[str, int] = RotatingMap(interval=3600)
+    m: RotatingMap[str, int] = RotatingMap(interval=3600, min_capacity=0)
     m.set("k", 1)
 
     m._rotate()  # highWaterMark was 0 → must rotate
@@ -322,7 +334,7 @@ def test_first_call_always_rotates():
 
 @pytest.mark.asyncio
 async def test_timer_triggers_rotation():
-    m: RotatingMap[str, int] = RotatingMap(interval=0.1)
+    m: RotatingMap[str, int] = RotatingMap(interval=0.1, min_capacity=0)
     m.set("k", 99)
 
     ctx = default_context()

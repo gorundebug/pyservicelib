@@ -5,7 +5,20 @@
 
 import pytest
 
+from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetricsEngine
 from pyservicelib_gorundebug.runtime.telemetry import create_prometheus_metrics_engine
+
+
+@pytest.mark.asyncio
+async def test_noop_metrics_discards_all_observations():
+    engine = NoopMetricsEngine()
+    scope = engine.metrics.scope("noop", {"service": "test"})
+    scope.counter("requests", "Requests", {}).inc()
+    scope.gauge("active", "Active", {}).set(42)
+    scope.histogram("latency", "Latency", {}).observe(1.5)
+    scope.observable_float64_gauge("value", "Value", lambda: 10.0)
+    assert engine.metrics_handler() == b""
+    await engine.shutdown()
 
 
 @pytest.mark.asyncio
