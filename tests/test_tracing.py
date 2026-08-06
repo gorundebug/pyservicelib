@@ -96,6 +96,9 @@ def test_noop_span_all_methods():
     NOOP_SPAN.add_event('e')
     sc = NOOP_SPAN.span_context()
     assert not sc.is_valid
+    assert NOOP_SPAN.scoped() is NOOP_SPAN
+    with NOOP_SPAN.scoped() as scoped:
+        assert scoped is NOOP_SPAN
 
 
 @pytest.mark.asyncio

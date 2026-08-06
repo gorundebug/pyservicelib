@@ -4,10 +4,10 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, ContextManager, Iterator, Mapping, MutableMapping, Optional, Tuple
 
 
 # ── Attribute ─────────────────────────────────────────────────────────────────
@@ -72,11 +72,10 @@ class Span(ABC):
     @abstractmethod
     def span_context(self) -> SpanContext: ...
 
-    @contextmanager
-    def scoped(self):
+    def scoped(self) -> ContextManager["Span"]:
         """Set this span as the current span for the duration of the block.
         Child spans created within the block will be linked to this span."""
-        yield self
+        return nullcontext(self)
 
 
 # ── Noop span ─────────────────────────────────────────────────────────────────
@@ -88,6 +87,18 @@ class _NoopSpan(Span):
     def set_status(self, code: int, description: str) -> None: pass
     def add_event(self, name: str, *attrs: Attribute) -> None: pass
     def span_context(self) -> SpanContext: return SpanContext()
+
+    # A noop span is immutable and can safely act as its own context manager.
+    # This avoids allocating a contextlib generator on every unsampled stream
+    # hop, which is the normal production path when trace sampling is disabled.
+    def scoped(self) -> ContextManager[Span]:
+        return self
+
+    def __enter__(self) -> "_NoopSpan":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        pass
 
 
 NOOP_SPAN: Span = _NoopSpan()

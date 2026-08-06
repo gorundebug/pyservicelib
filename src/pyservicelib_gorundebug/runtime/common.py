@@ -18,7 +18,14 @@ from .serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from .store import Storage
 from .pool import TaskPool, PriorityTaskPool
 from .environment.metrics import Metrics, Int64Counter, NOOP_INT64_COUNTER
-from .environment.tracing import Tracer, start_span, span_error, string_attr, sampling_enabled
+from .environment.tracing import (
+    Attribute,
+    Tracer,
+    sampling_enabled,
+    span_error,
+    start_span,
+    string_attr,
+)
 from .context import Context
 from .datastruct import KeyValue
 from .config import EndpointConfig, DataConnectorConfig
@@ -69,6 +76,7 @@ class Caller[T](Consumer[T], ABC):
     _consumer: "StreamConsumer[T]"
     _tracer: Optional[Tracer]
     _messages_counter: Int64Counter
+    _trace_attrs: tuple[Attribute, ...]
 
     def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
                  tracer: Optional[Tracer] = None,
@@ -80,6 +88,10 @@ class Caller[T](Consumer[T], ABC):
         self._statistics = statistics
         self._tracer = tracer
         self._messages_counter = messages_counter if messages_counter is not None else NOOP_INT64_COUNTER
+        self._trace_attrs = (
+            string_attr("from", self._source.name),
+            string_attr("to", self._consumer.stream.name),
+        )
 
     @property
     def is_async(self) -> bool:
@@ -97,8 +109,7 @@ class DirectCaller[T](Caller[T]):
         self._statistics.inc()
         self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             string_attr("from", self._source.name),
-                             string_attr("to", self._consumer.stream.name))
+                             *self._trace_attrs)
         try:
             with span.scoped():
                 await self._consumer.consume(value)
@@ -118,15 +129,16 @@ class TaskPoolCaller[T](Caller[T]):
                  messages_counter: Optional[Int64Counter] = None):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._task_pool = task_pool
+        self._trace_attrs += (
+            string_attr("type", "taskpool"),
+            string_attr("taskpoolname", task_pool.name),
+        )
 
     async def consume(self, value: T):
         self._statistics.inc()
         self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             string_attr("from", self._source.name),
-                             string_attr("to", self._consumer.stream.name),
-                             string_attr("type", "taskpool"),
-                             string_attr("taskpoolname", self._task_pool.name))
+                             *self._trace_attrs)
         consumer = self._consumer
 
         async def _task():
@@ -164,16 +176,17 @@ class PriorityTaskPoolCaller[T](Caller[T]):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._priority_task_pool = priority_task_pool
         self._priority = priority
+        self._trace_attrs += (
+            string_attr("type", "prioritytaskpool"),
+            string_attr("taskpoolname", priority_task_pool.name),
+        )
 
     async def consume(self, value: T):
         from .context import priority_from_context
         self._statistics.inc()
         self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             string_attr("from", self._source.name),
-                             string_attr("to", self._consumer.stream.name),
-                             string_attr("type", "prioritytaskpool"),
-                             string_attr("taskpoolname", self._priority_task_pool.name))
+                             *self._trace_attrs)
         priority = priority_from_context()
         if priority is None:
             priority = self._priority
@@ -207,15 +220,14 @@ class ParallelCaller[T](Caller[T]):
                  tracer: Optional[Tracer] = None,
                  messages_counter: Optional[Int64Counter] = None):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
+        self._trace_attrs += (string_attr("type", "parallel"),)
 
     async def consume(self, value: T):
         import asyncio
         self._statistics.inc()
         self._messages_counter.inc()
         _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             string_attr("from", self._source.name),
-                             string_attr("to", self._consumer.stream.name),
-                             string_attr("type", "parallel"))
+                             *self._trace_attrs)
         consumer = self._consumer
 
         async def _task():
