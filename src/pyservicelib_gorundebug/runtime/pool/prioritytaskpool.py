@@ -10,7 +10,15 @@ import asyncio
 from datetime import datetime, timezone
 
 from ..common import ServiceEnvironment
-from .pool import PriorityTaskPool, PoolAlreadyStartedError, PoolNotStartedError, PoolStoppedError, PoolCancelledError, _PoolTask, _AsyncWaitGroup
+from .pool import (
+    PriorityTaskPool,
+    PoolAlreadyStartedError,
+    PoolNotStartedError,
+    PoolStoppedError,
+    PoolCancelledError,
+    _PoolTask,
+    _AsyncWaitGroup,
+)
 from ..context import Context
 from ..context.request import (
     request_cancelled,
@@ -49,7 +57,9 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
     def __init__(self, name: str, env: ServiceEnvironment):
         cfg = env.config.get_pool_by_name(name)
         if cfg is None:
-            raise ValueError(f"Priority task pool configuration named '{name}' not found")
+            raise ValueError(
+                f"Priority task pool configuration named '{name}' not found"
+            )
         self._environment = env
         self._task_queue = asyncio.PriorityQueue()
         self._executors = []
@@ -64,16 +74,44 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         self._running_tasks = set()
         self._wg = _AsyncWaitGroup()
 
-        scope = env.metrics.scope('priority_task_pool', {'service': env.service_config.name, 'name': name})
-        self._gauge_queue_length = scope.gauge('queue_length', 'Priority task pool wait queue length', {})
-        self._gauge_executors_target = scope.gauge('executors_target', 'Desired number of priority task pool executors', {})
-        self._gauge_executors_allocated = scope.gauge('executors_allocated', 'Number of live priority task pool executors', {})
-        self._gauge_executors_busy = scope.gauge('executors_busy', 'Number of priority task pool executors running callbacks', {})
-        self._tasks_total = scope.counter('tasks_total', 'Total number of tasks executed by priority task pool', {})
-        self._execution_duration = scope.histogram('task_execution_duration_seconds', 'Task execution duration in seconds', {})
-        self._stop_timeout_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'stop_timeout'})
-        self._task_rejected_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'task_rejected'})
-        self._task_expired_counter = scope.counter('events_total', 'Total number of events in priority task pool', {'event': 'task_expired'})
+        scope = env.metrics.scope(
+            "priority_task_pool", {"service": env.service_config.name, "name": name}
+        )
+        self._gauge_queue_length = scope.gauge(
+            "queue_length", "Priority task pool wait queue length", {}
+        )
+        self._gauge_executors_target = scope.gauge(
+            "executors_target", "Desired number of priority task pool executors", {}
+        )
+        self._gauge_executors_allocated = scope.gauge(
+            "executors_allocated", "Number of live priority task pool executors", {}
+        )
+        self._gauge_executors_busy = scope.gauge(
+            "executors_busy",
+            "Number of priority task pool executors running callbacks",
+            {},
+        )
+        self._tasks_total = scope.counter(
+            "tasks_total", "Total number of tasks executed by priority task pool", {}
+        )
+        self._execution_duration = scope.histogram(
+            "task_execution_duration_seconds", "Task execution duration in seconds", {}
+        )
+        self._stop_timeout_counter = scope.counter(
+            "events_total",
+            "Total number of events in priority task pool",
+            {"event": "stop_timeout"},
+        )
+        self._task_rejected_counter = scope.counter(
+            "events_total",
+            "Total number of events in priority task pool",
+            {"event": "task_rejected"},
+        )
+        self._task_expired_counter = scope.counter(
+            "events_total",
+            "Total number of events in priority task pool",
+            {"event": "task_expired"},
+        )
 
     @property
     def name(self) -> str:
@@ -96,8 +134,14 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         return t
 
     async def _run_task(self, task: _PoolTask) -> None:
-        token = request_deadline.set(task.deadline) if task.deadline is not None else None
-        cancelled_token = request_cancelled.set(task.cancelled_event) if task.cancelled_event is not None else None
+        token = (
+            request_deadline.set(task.deadline) if task.deadline is not None else None
+        )
+        cancelled_token = (
+            request_cancelled.set(task.cancelled_event)
+            if task.cancelled_event is not None
+            else None
+        )
         try:
             # Always dispatch — cancelled/expired tasks still reach user code for cleanup/release.
             start = time.monotonic()
@@ -105,8 +149,11 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
             self._tasks_total.inc()
             self._execution_duration.observe(time.monotonic() - start)
         except Exception as e:
-            self._environment.log.warn('priority task pool task error',
-                                       str_field('pool', self._name), err_field(e))
+            self._environment.log.warn(
+                "priority task pool task error",
+                str_field("pool", self._name),
+                err_field(e),
+            )
         finally:
             if token is not None:
                 request_deadline.reset(token)
@@ -115,37 +162,31 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
             self._wg.done()
 
     async def _watch_context(self, task: _PoolTask) -> None:
-        waiters: list[asyncio.Task[Any]] = []
-        if task.deadline_ts is not None:
-            waiters.append(asyncio.create_task(asyncio.sleep(
-                max(
-                    0.0,
-                    task.deadline_ts - asyncio.get_running_loop().time(),
-                )
-            )))
-        if task.cancelled_event is not None:
-            waiters.append(asyncio.create_task(task.cancelled_event.wait()))
-        if not waiters:
-            return
         try:
-            _, pending = await asyncio.wait(
-                waiters,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for waiter in pending:
-                waiter.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            if task.cancelled_event is None:
+                assert task.deadline_ts is not None
+                await asyncio.sleep(
+                    max(
+                        0.0,
+                        task.deadline_ts - asyncio.get_running_loop().time(),
+                    )
+                )
+            elif task.deadline_ts is None:
+                await task.cancelled_event.wait()
+            else:
+                try:
+                    async with asyncio.timeout_at(task.deadline_ts):
+                        await task.cancelled_event.wait()
+                except TimeoutError:
+                    pass
         except asyncio.CancelledError:
-            for waiter in waiters:
-                waiter.cancel()
-            await asyncio.gather(*waiters, return_exceptions=True)
             return
         async with self._lock:
-            if task.state != 'delayed':
+            if task.state != "delayed":
                 return
             seq = self._counter
             self._counter += 1
-            self._task_queue.put_nowait((float('-inf'), seq, task))
+            self._task_queue.put_nowait((float("-inf"), seq, task))
         self._task_expired_counter.inc()
 
     async def _run_in_request_context(self, task: _PoolTask) -> None:
@@ -167,8 +208,8 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
                 task.after_task.cancel()
             run = False
             async with self._lock:
-                if task.state == 'delayed':
-                    task.state = 'running'
+                if task.state == "delayed":
+                    task.state = "running"
                     run = True
             if run:
                 self._gauge_queue_length.dec()
@@ -227,9 +268,7 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
                         # *pRestart check before cond.Wait / heap.Pop).
                         # Negative sequence also places the sentinel before an
                         # already-promoted real task at the same -inf priority.
-                        await self._task_queue.put(
-                            (float('-inf'), -seq - 1, None)
-                        )
+                        await self._task_queue.put((float("-inf"), -seq - 1, None))
 
                     # Wait for all old executors to stop before spawning new ones.
                     # If manager is cancelled here, old executors keep draining on their
@@ -240,10 +279,10 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
                 executors_count = new_count
 
                 self._environment.log.info(
-                    'priority task pool executor count changed',
-                    str_field('pool', self._name),
-                    int_field('old_count', old_count),
-                    int_field('new_count', new_count),
+                    "priority task pool executor count changed",
+                    str_field("pool", self._name),
+                    int_field("old_count", old_count),
+                    int_field("new_count", new_count),
                 )
         except asyncio.CancelledError:
             pass
@@ -257,11 +296,15 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
             self._started = True
         cfg = self._environment.config.get_pool_by_name(self._name)
         if cfg is None:
-            raise ValueError(f"Priority task pool configuration named '{self._name}' not found")
+            raise ValueError(
+                f"Priority task pool configuration named '{self._name}' not found"
+            )
         executors_count = cfg.executors_count or 1
         self._gauge_executors_target.set(executors_count)
         self._executors = [self._spawn_executor() for _ in range(executors_count)]
-        self._executor_manager_task = asyncio.create_task(self._executor_manager(executors_count))
+        self._executor_manager_task = asyncio.create_task(
+            self._executor_manager(executors_count)
+        )
 
     async def stop(self, ctx: Context):
         async with self._lock:
@@ -289,7 +332,7 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         for _ in all_executors:
             seq = self._counter
             self._counter += 1
-            await self._task_queue.put((float('inf'), seq, None))
+            await self._task_queue.put((float("inf"), seq, None))
 
         async def _wait_all():
             await self._wg.wait()
@@ -302,13 +345,17 @@ class PriorityTaskPoolImpl(PriorityTaskPool):
         except asyncio.TimeoutError:
             pass
 
-        self._environment.log.warn('priority task pool stopped by timeout',
-                                   str_field('pool', self._name),
-                                   int_field('tasks_count', self._task_queue.qsize()))
+        self._environment.log.warn(
+            "priority task pool stopped by timeout",
+            str_field("pool", self._name),
+            int_field("tasks_count", self._task_queue.qsize()),
+        )
         self._stop_timeout_counter.inc()
         await wait_task
 
-    async def add_task(self, priority: int, fn: Callable[..., Awaitable[Any]], *args, **kwargs):
+    async def add_task(
+        self, priority: int, fn: Callable[..., Awaitable[Any]], *args, **kwargs
+    ):
         if request_context_error() is not None:
             self._task_rejected_counter.inc()
             raise PoolCancelledError()

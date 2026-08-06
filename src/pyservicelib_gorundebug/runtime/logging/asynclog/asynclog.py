@@ -15,8 +15,8 @@ from ...environment.log import Logger, LogsEngine, Config, Field
 
 def _format_fields(fields: tuple[Field, ...]) -> str:
     if not fields:
-        return ''
-    return '  ' + '  '.join(f'{f.key}={f.string_value()!r}' for f in fields)
+        return ""
+    return "  " + "  ".join(f"{f.key}={f.string_value()!r}" for f in fields)
 
 
 class AsyncLogger(Logger):
@@ -27,13 +27,24 @@ class AsyncLogger(Logger):
     _init_lock: asyncio.Lock
     _ready: bool
 
-    def __init__(self, cfg: Optional[Config] = None, name: Optional[str] = None, level: int = logging.DEBUG):
+    def __init__(
+        self,
+        cfg: Optional[Config] = None,
+        name: Optional[str] = None,
+        level: int = logging.DEBUG,
+    ):
         self._init_lock = asyncio.Lock()
         self._ready = False
-        self._log = logging.getLogger(name)
+        # Never install ServiceLib's queue handler on the root logger. Doing so
+        # also enables and forwards verbose records from dependencies such as
+        # grpc.aio, turning a single framework logger into per-request logging.
+        self._log = logging.getLogger(name or "pyservicelib")
+        self._log.propagate = False
         self._que = Queue()
         handler = QueueHandler(self._que)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
         handler.setFormatter(formatter)
         self._log.addHandler(handler)
         self._log.setLevel(level)
@@ -71,7 +82,7 @@ class AsyncLogger(Logger):
             except asyncio.CancelledError:
                 pass
 
-    async def logger(self) -> 'AsyncLogger':
+    async def logger(self) -> "AsyncLogger":
         if not self._ready:
             async with self._init_lock:
                 if not self._ready:
@@ -82,7 +93,7 @@ class AsyncLogger(Logger):
 
 class AsyncLogsEngine(LogsEngine):
     _default_logger: AsyncLogger
-    _engine: Optional['AsyncLogsEngine'] = None
+    _engine: Optional["AsyncLogsEngine"] = None
     _lock: asyncio.Lock = asyncio.Lock()
 
     def __init__(self):
@@ -96,7 +107,7 @@ class AsyncLogsEngine(LogsEngine):
         await self._default_logger.stop()
 
     @classmethod
-    async def engine(cls) -> 'AsyncLogsEngine':
+    async def engine(cls) -> "AsyncLogsEngine":
         if cls._engine is None:
             async with cls._lock:
                 if cls._engine is None:
