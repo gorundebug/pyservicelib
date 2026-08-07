@@ -72,11 +72,11 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
         cs = li.call_semantics
         if cs == CallSemantics.Inherited or cs == default_cs:
             continue
-        link = Link(
-            var_from=li.from_id,
-            to=li.to_id,
-            callSemantics=cs,
-        )
+        link = Link.model_validate({
+            "from": li.from_id,
+            "to": li.to_id,
+            "callSemantics": cs,
+        })
         links.append(link)
 
     types = list(config.types)

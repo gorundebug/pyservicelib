@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..runtime.common import StreamFunction, Collect, Collector, TypedStream, TypedTransformConsumedStream, RuntimeHelpers
 from ..runtime.config.stream_types import MapStreamConfig
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 from .functions import MapFunction
 
 
@@ -53,6 +53,9 @@ class MapStream[T, R](TypedTransformConsumedStream[T, R]):
         self._collector = Collector(self._caller)
 
     async def consume(self, value: T) -> None:
+        if self._tracer is None or not sampling_enabled():
+            await self._f.call(value, self._collector)
+            return
         _, span = start_stream_span(self._tracer, "stream.map", self)
         try:
             with span.scoped():

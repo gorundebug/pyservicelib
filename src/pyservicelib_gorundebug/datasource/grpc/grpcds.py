@@ -26,8 +26,8 @@ import grpc
 import grpc.aio
 
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_span, span_event, span_error, span_attrs,
-    string_attr, bool_attr, sampling_enabled, sampling_scope,
+    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, span_attrs,
+    string_attr, bool_attr, sampling_scope,
 )
 from ...runtime.common import (
     TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
@@ -37,13 +37,8 @@ from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
-from ...runtime.utils.asyncrwlock import AsyncRWLock
 
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
-
-
-def _stream_id_from_grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> Optional[str]:
-    return _grpc_metadata(context).get('x-stream-id')
 
 
 def _grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> dict[str, str]:
@@ -103,6 +98,8 @@ class ResultContext[HandlerState, T, ResR, R, E](ABC):
     Equivalent to Go's datasource/grpc ResultContext.
     """
 
+    __slots__ = ()
+
     @abstractmethod
     def set_result_callback(
         self,
@@ -115,6 +112,8 @@ class ResultContext[HandlerState, T, ResR, R, E](ABC):
 
 
 class _NoopResultContext[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, ResR, R, E]):
+    __slots__ = ()
+
     def set_result_callback(self, message_id: str, cb: Any) -> None:
         pass
 
@@ -122,25 +121,26 @@ class _NoopResultContext[HandlerState, T, ResR, R, E](ResultContext[HandlerState
         pass
 
 
+_NOOP_RESULT_CONTEXT: Any = _NoopResultContext()
+
+
 class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, ResR, R, E]):
+    __slots__ = ("handler_state", "sender", "_done", "_callbacks", "_span", "_once")
+
     handler_state: HandlerState
     sender: Sender[ResR]
-    _done: asyncio.Event
+    _done: asyncio.Future[None]
     _callbacks: dict[str, Any]
-    _cb_lock: asyncio.Lock
     _span: Optional[Span]
     _once: bool  # guards done() to fire span event exactly once
-    _lifetime: AsyncRWLock
 
     def __init__(self, handler_state: HandlerState, sender: Sender[ResR], span: Optional[Span] = None):
         self.handler_state = handler_state
         self.sender = sender
-        self._done = asyncio.Event()
+        self._done = asyncio.get_running_loop().create_future()
         self._callbacks = {}
-        self._cb_lock = asyncio.Lock()
         self._span = span
         self._once = False
-        self._lifetime = AsyncRWLock()
 
     def set_result_callback(
         self,
@@ -153,7 +153,8 @@ class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, Re
         if not self._once:
             self._once = True
             span_event(self._span, "done_called")
-        self._done.set()
+        if not self._done.done():
+            self._done.set_result(None)
 
 
 class EndpointHandler[HandlerState, ReqT, ResR, T, R, E](Protocol):
@@ -239,6 +240,8 @@ class _GrpcEndpoint(DataSourceEndpoint):
 # ---------------------------------------------------------------------------
 
 class _UnarySender[ResR](Sender[ResR]):
+    __slots__ = ("_future", "_span")
+
     _future: "asyncio.Future[ResR]"
     _span: Optional[Span]
 
@@ -258,6 +261,8 @@ class _UnarySender[ResR](Sender[ResR]):
 
 
 class _StreamSender[ResR](Sender[ResR]):
+    __slots__ = ("_send_fn", "_lock", "_active", "_span")
+
     _send_fn: Any  # grpc.aio.ServicerContext.write or stream.send
     _lock: asyncio.Lock
     _active: bool
@@ -369,54 +374,44 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             ep.on_late_result(sid)
             return
 
-        async with result._lifetime.read_lock():
-            current, still_pending = self._pending.get(sid)
-            if not still_pending or current is not result:
-                ep.on_late_result(sid)
-                span_event(result._span, "late_result")
-                return
+        message_id = self._handler.get_message_id(
+            self._sc, result.handler_state, value
+        )
+        cb = result._callbacks.get(message_id)
+        if cb is None:
+            ep.on_unknown_message_id(sid, message_id)
+            span_event(result._span, "unknown_message_id", string_attr("message_id", message_id))
+            return
+        remove = cb(self._sc, result.handler_state, value, result.sender)
+        if remove and result._callbacks.pop(message_id, None) is None:
+            ep.on_duplicate_message_id(sid, message_id)
+            span_event(result._span, "duplicate_message_id", string_attr("message_id", message_id))
 
-            message_id = self._handler.get_message_id(
-                self._sc, result.handler_state, value
-            )
-
-            async with result._cb_lock:
-                cb = result._callbacks.get(message_id)
-            if cb is None:
-                ep.on_unknown_message_id(sid, message_id)
-                span_event(result._span, "unknown_message_id", string_attr("message_id", message_id))
-                return
-            remove = cb(self._sc, result.handler_state, value, result.sender)
-            if remove:
-                duplicate = False
-                async with result._cb_lock:
-                    if message_id in result._callbacks:
-                        del result._callbacks[message_id]
-                    else:
-                        duplicate = True
-                if duplicate:
-                    ep.on_duplicate_message_id(sid, message_id)
-                    span_event(result._span, "duplicate_message_id", string_attr("message_id", message_id))
-
-            span_event(result._span, "result_consumed", string_attr("message_id", message_id))
+        span_event(result._span, "result_consumed", string_attr("message_id", message_id))
 
     async def _handle_common(
         self,
         grpc_context: grpc.aio.ServicerContext[Any, Any],
+        carrier: dict[str, str],
         sid: str,
         req: ReqT,
         sender: "Sender[ResR]",
         eof_after_first: bool,
         request_iter: Optional[AsyncIterator[ReqT]] = None,
     ) -> Optional[Exception]:
-        carrier = _grpc_metadata(grpc_context)
+        trace_requested = bool(carrier.get('x-trace'))
+        has_remote_parent = bool(carrier.get('traceparent'))
+        if not trace_requested and not has_remote_parent:
+            return await self._handle_common_inner(
+                sid, req, sender, eof_after_first, request_iter
+            )
         if self._tracing is None:
-            with sampling_scope(bool(carrier.get('x-trace'))):
+            with sampling_scope(trace_requested):
                 return await self._handle_common_inner(
                     sid, req, sender, eof_after_first, request_iter
                 )
         with self._tracing.extract(carrier) as remote_sampled:
-            with sampling_scope(bool(carrier.get('x-trace')) or remote_sampled):
+            with sampling_scope(trace_requested or remote_sampled):
                 return await self._handle_common_inner(
                     sid, req, sender, eof_after_first, request_iter
                 )
@@ -432,11 +427,11 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         """Shared request lifecycle used by all streaming modes."""
         with_stream_id(sid)
 
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "grpc.input",
-            string_attr("stream", self._sc.stream.name),
-            string_attr("endpoint", self._endpoint.name),
+            self._sc.stream.name,
+            self._endpoint.name,
         )
         span_scope = span.scoped()
         span_scope.__enter__()
@@ -471,7 +466,7 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                 ep.on_pending_add(sid)
                 result_ctx = result
             else:
-                result_ctx = _NoopResultContext()
+                result_ctx = cast(ResultContext, _NOOP_RESULT_CONTEXT)
 
             # Process request(s)
             if request_iter is not None:
@@ -486,13 +481,12 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                         span_event(span, "consume_message.error", string_attr("error", str(err)))
                         try:
                             if result is not None and self._pending is not None:
-                                async with result._lifetime.write_lock():
-                                    self._pending.pop(sid)
-                                    ep.on_pending_remove(sid)
-                                    self._handler.eof(self._sc, handler_state)
-                                    await self._handler.end_request(
-                                        self._sc, err, handler_state
-                                    )
+                                self._pending.pop(sid)
+                                ep.on_pending_remove(sid)
+                                self._handler.eof(self._sc, handler_state)
+                                await self._handler.end_request(
+                                    self._sc, err, handler_state
+                                )
                             else:
                                 self._handler.eof(self._sc, handler_state)
                                 await self._handler.end_request(
@@ -515,13 +509,12 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     try:
                         if result is not None and self._pending is not None:
-                            async with result._lifetime.write_lock():
-                                self._pending.pop(sid)
-                                ep.on_pending_remove(sid)
-                                self._handler.eof(self._sc, handler_state)
-                                await self._handler.end_request(
-                                    self._sc, err, handler_state
-                                )
+                            self._pending.pop(sid)
+                            ep.on_pending_remove(sid)
+                            self._handler.eof(self._sc, handler_state)
+                            await self._handler.end_request(
+                                self._sc, err, handler_state
+                            )
                         else:
                             self._handler.eof(self._sc, handler_state)
                             await self._handler.end_request(
@@ -549,22 +542,21 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                 return None
 
             try:
-                await result._done.wait()
+                await result._done
                 span_event(span, "done_received")
             except asyncio.CancelledError:
                 cancel_err = asyncio.CancelledError()
                 span_error(span, cancel_err)  # type: ignore[arg-type]
                 span_event(span, "context_cancelled", string_attr("error", "cancelled"))
-            async with result._lifetime.write_lock():
-                if self._pending is not None:
-                    self._pending.pop(sid)
-                    ep.on_pending_remove(sid)
-                try:
-                    await self._handler.end_request(self._sc, None, handler_state)
-                except Exception as end_err:
-                    span_error(span, end_err)
-                    ep.on_request_end(start_time, end_err)
-                    return end_err
+            if self._pending is not None:
+                self._pending.pop(sid)
+                ep.on_pending_remove(sid)
+            try:
+                await self._handler.end_request(self._sc, None, handler_state)
+            except Exception as end_err:
+                span_error(span, end_err)
+                ep.on_request_end(start_time, end_err)
+                return end_err
             ep.on_request_end(start_time, None)
             return None
 
@@ -620,9 +612,10 @@ def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> ResR:
-        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        carrier = _grpc_metadata(context)
+        sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _UnarySender[ResR]()
-        err = await ec._handle_common(context, sid, request, sender, eof_after_first=True)
+        err = await ec._handle_common(context, carrier, sid, request, sender, eof_after_first=True)
         if err is not None:
             await context.abort(grpc.StatusCode.INTERNAL, str(err))
         return await sender._future
@@ -643,9 +636,10 @@ def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> None:
-        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        carrier = _grpc_metadata(context)
+        sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _StreamSender[ResR](context.write)
-        err = await ec._handle_common(context, sid, request, sender, eof_after_first=True)
+        err = await ec._handle_common(context, carrier, sid, request, sender, eof_after_first=True)
         sender.close()
         if err is not None:
             await context.abort(grpc.StatusCode.INTERNAL, str(err))
@@ -669,10 +663,11 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
         request_iterator: AsyncIterator[ReqT],
         context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> ResR:
-        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        carrier = _grpc_metadata(context)
+        sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _UnarySender[ResR]()
         err = await ec._handle_common(
-            context, sid, cast(ReqT, None), sender, eof_after_first=False,
+            context, carrier, sid, cast(ReqT, None), sender, eof_after_first=False,
             request_iter=request_iterator,
         )
         if err is not None:
@@ -698,10 +693,11 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
         request_iterator: AsyncIterator[ReqT],
         context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> None:
-        sid = _stream_id_from_grpc_metadata(context) or new_stream_id()
+        carrier = _grpc_metadata(context)
+        sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _StreamSender[ResR](context.write)
         err = await ec._handle_common(
-            context, sid, cast(ReqT, None), sender, eof_after_first=False,
+            context, carrier, sid, cast(ReqT, None), sender, eof_after_first=False,
             request_iter=request_iterator,
         )
         sender.close()

@@ -12,6 +12,7 @@ from pyservicelib_gorundebug.runtime.telemetry import create_prometheus_metrics_
 @pytest.mark.asyncio
 async def test_noop_metrics_discards_all_observations():
     engine = NoopMetricsEngine()
+    assert engine.metrics.enabled is False
     scope = engine.metrics.scope("noop", {"service": "test"})
     scope.counter("requests", "Requests", {}).inc()
     scope.gauge("active", "Active", {}).set(42)
@@ -25,6 +26,7 @@ async def test_noop_metrics_discards_all_observations():
 async def test_metrics_scope_counter():
     engine = create_prometheus_metrics_engine()
     metrics = engine.metrics
+    assert metrics.enabled is True
     scope = metrics.scope('test', {'service': 'test_svc'})
 
     counter = scope.counter('requests', 'Total requests', {})

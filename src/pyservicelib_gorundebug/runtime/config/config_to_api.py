@@ -93,24 +93,24 @@ def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
         impl_val = DataConnectorImplementation.Undefined
     else:
         impl_val = DataConnectorImplementation(impl)
-    return DataConnector(
-        id=dc.id,
-        name=dc.name,
-        type=dc.type,
-        implementation=impl_val,
-        host=dc.host or None,
-        port=dc.port or None,
-        address=dc.address or None,
-        connectionsCount=(dc.connections_count or 1)
+    return DataConnector.model_validate({
+        "id": dc.id,
+        "name": dc.name,
+        "type": dc.type,
+        "implementation": impl_val,
+        "host": dc.host or None,
+        "port": dc.port or None,
+        "address": dc.address or None,
+        "connectionsCount": (dc.connections_count or 1)
         if dc.type == DataConnectorType.gRPC else None,
-        brokers=dc.brokers or None,
-        version=dc.version or None,
-        dialTimeout=dc.dial_timeout or None,
-        usePartitioner=dc.use_partitioner or None,
-        **{"async": dc.var_async or None},
-        useDedicatedListener=dc.use_dedicated_listener or None,
-        module=dc.module or None,
-    )
+        "brokers": dc.brokers or None,
+        "version": dc.version or None,
+        "dialTimeout": dc.dial_timeout or None,
+        "usePartitioner": dc.use_partitioner or None,
+        "async": dc.var_async or None,
+        "useDedicatedListener": dc.use_dedicated_listener or None,
+        "module": dc.module or None,
+    })
 
 
 def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:

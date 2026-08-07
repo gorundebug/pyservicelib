@@ -17,9 +17,8 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
 from ...runtime.store.rotatingmap import RotatingMap
-from ...runtime.utils.asyncrwlock import AsyncRWLock
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_span, span_event, span_error, string_attr, sampling_enabled,
+    Tracer, Span, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -41,6 +40,8 @@ class ResultCallback[HandlerState, T, R, E](Protocol):
 
 class ResultContext[HandlerState, T, R, E](ABC):
 
+    __slots__ = ()
+
     @abstractmethod
     def set_result_callback(self, message_id: str,
                             cb: ResultCallback[HandlerState, T, R, E]) -> None:
@@ -49,6 +50,19 @@ class ResultContext[HandlerState, T, R, E](ABC):
     @abstractmethod
     def done(self) -> None:
         pass
+
+
+class _NoopResultContext(ResultContext):
+    __slots__ = ()
+
+    def set_result_callback(self, message_id: str, cb: Any) -> None:
+        del message_id, cb
+
+    def done(self) -> None:
+        pass
+
+
+_NOOP_RESULT_CONTEXT = _NoopResultContext()
 
 
 class EndpointHandler[HandlerState, T, R, E](Protocol):
@@ -91,24 +105,25 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
 
 class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
+    __slots__ = (
+        "_handler_ctx", "_handler_state", "_done", "_message_callbacks",
+        "_span", "_once",
+    )
+
     _handler_ctx: Context
     _handler_state: HandlerState
-    _done: asyncio.Event
+    _done: asyncio.Future[None]
     _message_callbacks: dict[str, Any]
     _span: Optional[Span]
     _once: bool
-    _cb_lock: asyncio.Lock
-    _lifetime: AsyncRWLock
 
     def __init__(self, handler_ctx: Context, handler_state: HandlerState):
         self._handler_ctx = handler_ctx
         self._handler_state = handler_state
-        self._done = asyncio.Event()
+        self._done = asyncio.get_running_loop().create_future()
         self._message_callbacks = {}
         self._span = None
         self._once = False
-        self._cb_lock = asyncio.Lock()
-        self._lifetime = AsyncRWLock()
 
     def set_result_callback(self, message_id: str,
                             cb: ResultCallback[HandlerState, T, R, E]) -> None:
@@ -118,7 +133,8 @@ class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E])
         if not self._once:
             self._once = True
             span_event(self._span, "done_called")
-        self._done.set()
+        if not self._done.done():
+            self._done.set_result(None)
 
 
 class CustomEndpointConsumer(ABC):
@@ -233,11 +249,11 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         ctx = self._ctx or Context()
         ep = cast(DataSourceEndpoint, self._endpoint)
 
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "local.input",
-            string_attr("stream", self._input_stream.name),
-            string_attr("endpoint", ep.name),
+            self._input_stream.name,
+            ep.name,
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
@@ -253,32 +269,35 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     return
                 span_event(span, "begin_request")
 
-                result: _CustomResult[HandlerState, T, R, E] = _CustomResult(
-                    handler_ctx, handler_state
-                )
-                result._span = span
+                result: Optional[_CustomResult[HandlerState, T, R, E]] = None
+                result_ctx: ResultContext[HandlerState, T, R, E]
+                if self._has_result:
+                    result = _CustomResult(handler_ctx, handler_state)
+                    result._span = span
+                    result_ctx = result
+                else:
+                    result_ctx = cast(ResultContext, _NOOP_RESULT_CONTEXT)
                 sid = stream_id_from_context()
                 if sid is None:
                     sid = new_stream_id()
                     with_stream_id(sid)
-                if self._has_result and self._pending is not None:
+                if result is not None and self._pending is not None:
                     self._pending.set(sid, result)
                     ep.on_pending_add(sid)
 
                 try:
                     await self._handler.consume_message(
-                        handler_ctx, self._sc, handler_state, value, result)
+                        handler_ctx, self._sc, handler_state, value, result_ctx)
                 except Exception as err:
                     span_error(span, err)
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if self._has_result and self._pending is not None:
-                        async with result._lifetime.write_lock():
-                            self._pending.pop(sid)
-                            ep.on_pending_remove(sid)
-                            await self._handler.end_request(
-                                handler_ctx, self._sc, err, handler_state
-                            )
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+                        await self._handler.end_request(
+                            handler_ctx, self._sc, err, handler_state
+                        )
                     else:
                         await self._handler.end_request(
                             handler_ctx, self._sc, err, handler_state
@@ -287,28 +306,28 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                 span_event(span, "consume_message")
 
                 if self._has_result:
+                    if result is None:
+                        raise RuntimeError("Local source result context was not initialized")
                     try:
                         time_left = ctx.time_left
-                        await asyncio.wait_for(result._done.wait(), timeout=time_left)
+                        await asyncio.wait_for(result._done, timeout=time_left)
                         span_event(span, "done_received")
                     except (asyncio.TimeoutError, TypeError):
                         end_err = TimeoutError("result wait timeout")
                         span_error(span, end_err)
-                        async with result._lifetime.write_lock():
-                            if self._pending is not None:
-                                self._pending.pop(sid)
-                                ep.on_pending_remove(sid)
-                            await self._handler.end_request(
-                                handler_ctx, self._sc, end_err, handler_state
-                            )
-                        return
-                    async with result._lifetime.write_lock():
                         if self._pending is not None:
                             self._pending.pop(sid)
                             ep.on_pending_remove(sid)
                         await self._handler.end_request(
-                            handler_ctx, self._sc, None, handler_state
+                            handler_ctx, self._sc, end_err, handler_state
                         )
+                        return
+                    if self._pending is not None:
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+                    await self._handler.end_request(
+                        handler_ctx, self._sc, None, handler_state
+                    )
                 else:
                     await self._handler.end_request(
                         handler_ctx, self._sc, None, handler_state
@@ -388,45 +407,30 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
             ep.on_late_result(sid)
             return
 
-        async with result._lifetime.read_lock():
-            current, still_pending = self._pending.get(sid)
-            if not still_pending or current is not result:
-                ep.on_late_result(sid)
-                span_event(result._span, "late_result")
-                return
-
-            message_id = self._handler.get_message_id(
-                result._handler_ctx, self._sc, result._handler_state, value
-            )
-            async with result._cb_lock:
-                callback = result._message_callbacks.get(message_id)
-            if callback is None:
-                ep.on_unknown_message_id(sid, message_id)
-                span_event(
-                    result._span, "unknown_message_id",
-                    string_attr("message_id", message_id),
-                )
-                return
-            remove = callback(
-                result._handler_ctx, self._sc, result._handler_state, value
-            )
-            if remove:
-                duplicate = False
-                async with result._cb_lock:
-                    if message_id in result._message_callbacks:
-                        del result._message_callbacks[message_id]
-                    else:
-                        duplicate = True
-                if duplicate:
-                    ep.on_duplicate_message_id(sid, message_id)
-                    span_event(
-                        result._span, "duplicate_message_id",
-                        string_attr("message_id", message_id),
-                    )
+        message_id = self._handler.get_message_id(
+            result._handler_ctx, self._sc, result._handler_state, value
+        )
+        callback = result._message_callbacks.get(message_id)
+        if callback is None:
+            ep.on_unknown_message_id(sid, message_id)
             span_event(
-                result._span, "result_consumed",
+                result._span, "unknown_message_id",
                 string_attr("message_id", message_id),
             )
+            return
+        remove = callback(
+            result._handler_ctx, self._sc, result._handler_state, value
+        )
+        if remove and result._message_callbacks.pop(message_id, None) is None:
+            ep.on_duplicate_message_id(sid, message_id)
+            span_event(
+                result._span, "duplicate_message_id",
+                string_attr("message_id", message_id),
+            )
+        span_event(
+            result._span, "result_consumed",
+            string_attr("message_id", message_id),
+        )
 
     @classmethod
     def _get_or_create_datasource(

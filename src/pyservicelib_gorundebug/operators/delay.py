@@ -18,6 +18,7 @@ from ..runtime.config.stream_types import DelayStreamConfig
 from ..runtime.context.request import request_context_error
 from ..runtime.environment.tracing import (
     Tracer,
+    sampling_enabled,
     span_error,
     span_event,
     start_stream_span,
@@ -73,6 +74,30 @@ class DelayStream[T](TypedConsumedStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
+        if self._tracer is None or not sampling_enabled():
+            duration = await self._f.call(value)
+            if duration.total_seconds() > 0.0:
+                if self._caller is None:
+                    return
+                caller = self._caller
+
+                async def _delayed_untraced(v: T) -> None:
+                    if request_context_error() is None:
+                        await caller.consume(v)
+
+                try:
+                    await self.environment.delay(duration, _delayed_untraced, value)
+                except Exception as error:
+                    await self._f.call_error(
+                        value,
+                        error,
+                        Collector(self._caller),
+                    )
+                return
+            if self._caller is not None:
+                await self._caller.consume(value)
+            return
+
         _, span = start_stream_span(self._tracer, "stream.delay", self)
         duration = await self._f.call(value)
         if duration.total_seconds() > 0.0:

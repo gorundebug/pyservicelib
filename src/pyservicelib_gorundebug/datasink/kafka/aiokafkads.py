@@ -6,7 +6,7 @@
 import asyncio
 from typing import Optional, Protocol, Callable, Any, cast
 
-from aiokafka import AIOKafkaProducer  # type: ignore[import-not-found]
+from aiokafka import AIOKafkaProducer  # type: ignore[import-not-found,import-untyped]
 
 from ...runtime.common import (
     Consumer, TypedSinkStream, ServiceExecutionEnvironment, Stream,
@@ -16,7 +16,7 @@ from ...runtime.context import Context
 from ...runtime.context.request import with_stream_id
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+    Tracer, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -232,12 +232,13 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         with_stream_id(sid)
 
         ep = self._endpoint
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "kafka.output",
-            string_attr("stream", stream.name),
-            string_attr("endpoint", ep.name),
-            string_attr("stream_id", sid),
+            stream.name,
+            ep.name,
+            "stream_id",
+            sid,
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None

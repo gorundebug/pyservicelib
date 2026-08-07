@@ -184,6 +184,11 @@ class MetricsScope(ABC):
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
 class Metrics(ABC):
+    @property
+    def enabled(self) -> bool:
+        """Whether recording metrics requires hot-path bookkeeping."""
+        return True
+
     @abstractmethod
     def scope(self, prefix: str, labels: Labels) -> MetricsScope: ...
 
@@ -275,6 +280,10 @@ class NoopMetricsScope(MetricsScope):
 
 
 class NoopMetrics(Metrics):
+    @property
+    def enabled(self) -> bool:
+        return False
+
     def scope(self, prefix: str, labels: Labels) -> MetricsScope:
         del prefix, labels
         return _NOOP_SCOPE

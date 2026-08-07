@@ -28,7 +28,7 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, string_attr,
     sampling_enabled,
 )
 from ...runtime.store.rotatingmap import RotatingMap
@@ -104,21 +104,29 @@ class ResultContext(Protocol):
 
 
 class _NopResultContext:
+    __slots__ = ()
+
     def done(self) -> None:
         pass
 
 
+_NOP_RESULT_CONTEXT = _NopResultContext()
+
+
 class _DoneResultContext:
-    _event: asyncio.Event
+    __slots__ = ("_future",)
+
+    _future: asyncio.Future[None]
 
     def __init__(self):
-        self._event = asyncio.Event()
+        self._future = asyncio.get_running_loop().create_future()
 
     def done(self) -> None:
-        self._event.set()
+        if not self._future.done():
+            self._future.set_result(None)
 
     async def wait(self) -> None:
-        await self._event.wait()
+        await self._future
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +181,8 @@ class EndpointHandler[HandlerState, ReqT, ResR, T, R, E](Protocol):
 
 class _RequestSender[ReqT](Sender[ReqT]):
     """Stores the request for later use (unary / server-streaming)."""
+    __slots__ = ("req",)
+
     req: Optional[ReqT]
 
     def __init__(self):
@@ -185,6 +195,8 @@ class _RequestSender[ReqT](Sender[ReqT]):
 class _GrpcStreamSender[ReqT](Sender[ReqT]):
     """Forwards send() to the live gRPC stream and records span events.
     Port of Go's grpcSender."""
+    __slots__ = ("_write_fn", "_lock", "_active", "_span")
+
     _write_fn: Any
     _lock: asyncio.Lock
     _active: bool
@@ -375,12 +387,13 @@ class _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](Consumer[T], 
         await self._handler.end_request(self._sc, err, handler_state)
 
     def _metadata(self) -> list[tuple[str, str]]:
+        sid = stream_id_from_context()
+        if not sampling_enabled():
+            return [('x-stream-id', sid)] if sid else []
         carrier: dict[str, str] = {}
         if self._tracing is not None:
             self._tracing.inject(carrier)
-        if sampling_enabled():
-            carrier['x-trace'] = '1'
-        sid = stream_id_from_context()
+        carrier['x-trace'] = '1'
         if sid:
             carrier['x-stream-id'] = sid
         return list(carrier.items())
@@ -407,10 +420,8 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(
-            self._tracer, "grpc.output",
-            string_attr("stream", self._stream.name),
-            string_attr("endpoint", self._endpoint.name),
+        _, span = start_endpoint_span(
+            self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
         )
         ep = self._endpoint
         start_time = ep.on_request_start()
@@ -430,7 +441,7 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                 sender = _RequestSender[ReqT]()
                 try:
                     await self._handler.consume_message(
-                        self._sc, handler_state, value, sender, _NopResultContext()
+                        self._sc, handler_state, value, sender, _NOP_RESULT_CONTEXT
                     )
                 except Exception as err:
                     span_error(span, err)
@@ -492,10 +503,8 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
-        _, span = start_span(
-            self._tracer, "grpc.output",
-            string_attr("stream", self._stream.name),
-            string_attr("endpoint", self._endpoint.name),
+        _, span = start_endpoint_span(
+            self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
         )
         ep = self._endpoint
         start_time = ep.on_request_start()
@@ -515,7 +524,7 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                 sender = _RequestSender[ReqT]()
                 try:
                     await self._handler.consume_message(
-                        self._sc, handler_state, value, sender, _NopResultContext()
+                        self._sc, handler_state, value, sender, _NOP_RESULT_CONTEXT
                     )
                 except Exception as err:
                     span_error(span, err)
@@ -597,10 +606,8 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         session: _ClientStreamingSession
 
         if not loaded:
-            _, span = start_span(
-                self._tracer, "grpc.output",
-                string_attr("stream", self._stream.name),
-                string_attr("endpoint", self._endpoint.name),
+            _, span = start_endpoint_span(
+                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
             )
             with span.scoped():
                 try:
@@ -757,10 +764,8 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         session: _BidiStreamingSession
 
         if not loaded:
-            _, span = start_span(
-                self._tracer, "grpc.output",
-                string_attr("stream", self._stream.name),
-                string_attr("endpoint", self._endpoint.name),
+            _, span = start_endpoint_span(
+                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
             )
             with span.scoped():
                 try:

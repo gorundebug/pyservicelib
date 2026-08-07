@@ -13,7 +13,7 @@ from ..runtime.common import (StreamFunction, Collect, Collector, Stream, Stream
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import MultiJoinStreamConfig
 from ..runtime.datastruct import KeyValue
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 from ..runtime.serde import Serializer, BytesBuffer, StreamKeyValueSerde
 from ..runtime.store import JoinStorageFactory, JoinStorage
 from ..runtime.store.storage import JoinStorageConfig
@@ -98,6 +98,9 @@ class MultiJoinStream[K: Hashable, T, R](TypedMultiJoinConsumedStream[K, T, R]):
         await self._join_storage.join_value(key, index, value, _join_callback)
 
     async def consume(self, value: KeyValue[K, T]) -> None:
+        if self._tracer is None or not sampling_enabled():
+            await self._consume(value.key, 0, value.value)
+            return
         _, span = start_stream_span(self._tracer, "stream.join", self)
         try:
             with span.scoped():

@@ -13,7 +13,7 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+    Tracer, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -118,11 +118,11 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
         stream = self.stream
         ep = cast(DataSinkEndpoint, self._endpoint)
 
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "local.output",
-            string_attr("stream", stream.name),
-            string_attr("endpoint", ep.name),
+            stream.name,
+            ep.name,
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None

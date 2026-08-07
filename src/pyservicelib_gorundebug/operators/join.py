@@ -12,7 +12,7 @@ from ..runtime.common import (StreamFunction, Collect, Collector, Stream, Stream
 from ..runtime.config import StreamConfig
 from ..runtime.config.stream_types import JoinStreamConfig
 from ..runtime.datastruct import KeyValue
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 from ..runtime.store import JoinStorageFactory, JoinStorage
 from ..runtime.store.storage import JoinStorageConfig
 from .functions import JoinFunction
@@ -109,6 +109,9 @@ class JoinStream[K: Hashable, T1, T2, R](TypedJoinConsumedStream[K, T1, T2, R]):
         await self._join_storage.join_value(key, index, value, _join_callback)
 
     async def consume(self, value: KeyValue[K, T1]) -> None:
+        if self._tracer is None or not sampling_enabled():
+            await self._consume(value.key, 0, value.value)
+            return
         _, span = start_stream_span(self._tracer, "stream.join", self)
         try:
             with span.scoped():

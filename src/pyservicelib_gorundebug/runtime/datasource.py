@@ -71,6 +71,7 @@ class DataSourceEndpoint(InputEndpoint):
     _pending_start_times: dict[str, float]
     _transport_metrics: Optional[TransportRequestMetrics]
     _transport_requests: dict[float, TransportRequest]
+    _metrics_enabled: bool
 
     def __init__(self, datasource: DataSource, id_endpoint: int):
         self._id = id_endpoint
@@ -78,6 +79,7 @@ class DataSourceEndpoint(InputEndpoint):
         self._endpoint_consumers = []
         self._pending_start_times = {}
         self._transport_requests = {}
+        self._metrics_enabled = datasource.environment.metrics.enabled
 
         endpoint_config = datasource.environment.config.get_endpoint_config_by_id(id_endpoint)
         endpoint_name = endpoint_config.name
@@ -232,14 +234,20 @@ class DataSourceEndpoint(InputEndpoint):
         self._duplicate_message_id_counter.inc()
 
     def on_pending_add(self, stream_id: str) -> None:
+        if not self._metrics_enabled:
+            return
         self._pending_requests.inc()
         self._pending_start_times[stream_id] = time.monotonic()
 
     def on_pending_remove(self, stream_id: str) -> None:
+        if not self._metrics_enabled:
+            return
         self._pending_requests.dec()
         self._pending_start_times.pop(stream_id, None)
 
     def on_request_start(self) -> float:
+        if not self._metrics_enabled:
+            return 0.0
         self._active_requests.inc()
         started_at = time.monotonic()
         if self._transport_metrics is not None:
@@ -254,6 +262,8 @@ class DataSourceEndpoint(InputEndpoint):
         request_body_size: Optional[int] = None,
         response_body_size: Optional[int] = None,
     ) -> None:
+        if not self._metrics_enabled:
+            return
         self._active_requests.dec()
         self._request_duration.observe(time.monotonic() - start_time)
         transport_request = self._transport_requests.pop(start_time, None)

@@ -17,7 +17,7 @@ from ...runtime.context import Context
 from ...runtime.context.request import stream_id_from_context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_span, span_event, span_error, string_attr, sampling_enabled,
+    Tracer, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -246,11 +246,11 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
             return
 
         ep = self._endpoint
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "http.output",
-            string_attr("stream", self._stream.name),
-            string_attr("endpoint", ep.name),
+            self._stream.name,
+            ep.name,
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None

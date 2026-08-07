@@ -274,7 +274,10 @@ class LinkConfig(Link):
     properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __init__(self, *, var_from: int, **data: Any) -> None:
-        super().__init__(var_from=var_from, **data)
+        # Pydantic accepts field names and aliases, but its mypy signature for
+        # generated models exposes only the JSON alias ("from"). Passing one
+        # mapping keeps the runtime alias and the static signature consistent.
+        super().__init__(**{"from": var_from, **data})
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)

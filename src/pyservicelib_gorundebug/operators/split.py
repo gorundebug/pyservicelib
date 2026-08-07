@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..runtime.common import TypedStream, TypedConsumedStream, TypedSplitStream, Stream
 from ..runtime.config.stream_types import SplitStreamConfig
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 
 
 class SplitLink[T](TypedConsumedStream[T]):
@@ -56,6 +56,10 @@ class SplitStream[T](TypedSplitStream[T]):
         stream.consumer = self
 
     async def consume(self, value: T) -> None:
+        if self._tracer is None or not sampling_enabled():
+            for link in self._links:
+                await link.consume(value)
+            return
         _, span = start_stream_span(self._tracer, "stream.split", self)
         try:
             with span.scoped():

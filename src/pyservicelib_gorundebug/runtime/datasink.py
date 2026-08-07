@@ -65,12 +65,14 @@ class DataSinkEndpoint(SinkEndpoint):
     _late_result_counter: Int64Counter
     _transport_metrics: Optional[TransportRequestMetrics]
     _transport_requests: dict[float, TransportRequest]
+    _metrics_enabled: bool
 
     def __init__(self, data_sink: DataSink, id_endpoint: int):
         self._id = id_endpoint
         self._data_sink = data_sink
         self._endpoint_consumers = []
         self._transport_requests = {}
+        self._metrics_enabled = data_sink.environment.metrics.enabled
 
         endpoint_config = data_sink.environment.config.get_endpoint_config_by_id(id_endpoint)
         endpoint_name = endpoint_config.name
@@ -175,6 +177,8 @@ class DataSinkEndpoint(SinkEndpoint):
         self._late_result_counter.inc()
 
     def on_request_start(self) -> float:
+        if not self._metrics_enabled:
+            return 0.0
         self._active_requests.inc()
         started_at = time.monotonic()
         if self._transport_metrics is not None:
@@ -189,6 +193,8 @@ class DataSinkEndpoint(SinkEndpoint):
         request_body_size: Optional[int] = None,
         response_body_size: Optional[int] = None,
     ) -> None:
+        if not self._metrics_enabled:
+            return
         self._active_requests.dec()
         self._request_duration.observe(time.monotonic() - start_time)
         transport_request = self._transport_requests.pop(start_time, None)

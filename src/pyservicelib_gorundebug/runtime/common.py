@@ -30,7 +30,6 @@ from .context import Context
 from .datastruct import KeyValue
 from .config import EndpointConfig, DataConnectorConfig
 from .serde import BytesBuffer
-from .utils.atomicint import AtomicInteger
 
 
 class Consume[T](Protocol):
@@ -56,17 +55,20 @@ class ConsumeStatistics(ABC):
 
 class CallerStatistics(ConsumeStatistics):
 
-    _count: AtomicInteger
+    __slots__ = ("_count",)
 
     def __init__(self):
-        self._count = AtomicInteger()
+        # Caller.consume() runs on the service event-loop thread. A
+        # threading.Lock here serialized every graph transition while adding
+        # no safety for asyncio task interleaving (there is no await in inc).
+        self._count = 0
 
     @property
     def count(self) -> int:
-        return self._count.get()
+        return self._count
 
     def inc(self, amount: int = 1):
-        self._count.inc(amount)
+        self._count += amount
 
 
 class Caller[T](Consumer[T], ABC):
@@ -76,6 +78,7 @@ class Caller[T](Consumer[T], ABC):
     _consumer: "StreamConsumer[T]"
     _tracer: Optional[Tracer]
     _messages_counter: Int64Counter
+    _record_messages: bool
     _trace_attrs: tuple[Attribute, ...]
 
     def __init__(self, source: "TypedStream[T]", statistics: CallerStatistics,
@@ -88,6 +91,7 @@ class Caller[T](Consumer[T], ABC):
         self._statistics = statistics
         self._tracer = tracer
         self._messages_counter = messages_counter if messages_counter is not None else NOOP_INT64_COUNTER
+        self._record_messages = self._messages_counter is not NOOP_INT64_COUNTER
         self._trace_attrs = (
             string_attr("from", self._source.name),
             string_attr("to", self._consumer.stream.name),
@@ -109,8 +113,12 @@ class DirectCaller[T](Caller[T]):
 
     async def consume(self, value: T):
         self._statistics.inc()
-        self._messages_counter.inc()
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
+        if self._record_messages:
+            self._messages_counter.inc()
+        if self._tracer is None or not sampling_enabled():
+            await self._consumer.consume(value)
+            return
+        _, span = start_span(self._tracer, "stream.call",
                              *self._trace_attrs)
         try:
             with span.scoped():
@@ -138,10 +146,16 @@ class TaskPoolCaller[T](Caller[T]):
 
     async def consume(self, value: T):
         self._statistics.inc()
-        self._messages_counter.inc()
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             *self._trace_attrs)
+        if self._record_messages:
+            self._messages_counter.inc()
         consumer = self._consumer
+        if self._tracer is None or not sampling_enabled():
+            async def _task_untraced():
+                await consumer.consume(value)
+
+            await self._task_pool.add_task(_task_untraced)
+            return
+        _, span = start_span(self._tracer, "stream.call", *self._trace_attrs)
 
         async def _task():
             try:
@@ -186,13 +200,19 @@ class PriorityTaskPoolCaller[T](Caller[T]):
     async def consume(self, value: T):
         from .context import priority_from_context
         self._statistics.inc()
-        self._messages_counter.inc()
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             *self._trace_attrs)
+        if self._record_messages:
+            self._messages_counter.inc()
         priority = priority_from_context()
         if priority is None:
             priority = self._priority
         consumer = self._consumer
+        if self._tracer is None or not sampling_enabled():
+            async def _task_untraced():
+                await consumer.consume(value)
+
+            await self._priority_task_pool.add_task(priority, _task_untraced)
+            return
+        _, span = start_span(self._tracer, "stream.call", *self._trace_attrs)
 
         async def _task():
             try:
@@ -227,10 +247,13 @@ class ParallelCaller[T](Caller[T]):
     async def consume(self, value: T):
         import asyncio
         self._statistics.inc()
-        self._messages_counter.inc()
-        _, span = start_span(self._tracer if sampling_enabled() else None, "stream.call",
-                             *self._trace_attrs)
+        if self._record_messages:
+            self._messages_counter.inc()
         consumer = self._consumer
+        if self._tracer is None or not sampling_enabled():
+            asyncio.create_task(consumer.consume(value))
+            return
+        _, span = start_span(self._tracer, "stream.call", *self._trace_attrs)
 
         async def _task():
             try:

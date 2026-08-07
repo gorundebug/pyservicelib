@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, fields as dc_fields, is_dataclass
 from datetime import datetime
 from types import UnionType
-from typing import Any, List, cast, Hashable, Optional, Union, get_args, get_origin, get_type_hints
+from typing import Any, Callable, List, cast, Hashable, Optional, Union, get_args, get_origin, get_type_hints
 
 from ..datastruct import KeyValue
 
@@ -980,7 +980,7 @@ def _from_json_value(field_type: Any, value: Any) -> Any:
         for f in dc_fields(field_type):
             if f.name in value:
                 kwargs[f.name] = _from_json_value(hints[f.name], value[f.name])
-        return field_type(**kwargs)
+        return cast(Callable[..., Any], field_type)(**kwargs)
     if field_type is datetime:
         return datetime.fromisoformat(value)
     return value
@@ -1010,7 +1010,7 @@ class DataclassJsonSerde[T](Serde[T]):
     def serialize(self, obj: T, b: BytesBuffer) -> bytearray:
         if not isinstance(b, bytearray):
             b = bytearray(b)
-        encoded = json.dumps(asdict(obj), default=_json_default).encode('utf-8')
+        encoded = json.dumps(asdict(cast(Any, obj)), default=_json_default).encode('utf-8')
         b.extend(encoded)
         return b
 

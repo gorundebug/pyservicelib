@@ -12,7 +12,7 @@ from ..runtime.common import (
 )
 from .error import ErrorStream
 from ..runtime.config.stream_types import ProcessStreamConfig
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 from ..runtime.serde.serde import StreamSerde, StubSerde
 from .functions import ProcessFunction
 
@@ -68,6 +68,9 @@ class ProcessStream[T, R, E](TypedTransformConsumedStream[T, R]):
         return self._error_stream
 
     async def consume(self, value: T) -> None:
+        if self._tracer is None or not sampling_enabled():
+            await self._f.call(value, self._out_collector, self._error_stream)
+            return
         _, span = start_stream_span(self._tracer, "stream.process", self)
         try:
             with span.scoped():

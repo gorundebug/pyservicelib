@@ -11,7 +11,7 @@ from ..runtime.common import (
     RuntimeHelpers,
 )
 from ..runtime.config.stream_types import CaseStreamConfig, WhenStreamConfig
-from ..runtime.environment.tracing import Tracer, start_stream_span
+from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 from .functions import BuildSwitchFunction, When
 
 
@@ -86,6 +86,11 @@ class CaseStream[T](TypedCaseStream[T]):
         self._when_streams.append(stream)
 
     async def consume(self, value: T) -> None:
+        if self._tracer is None or not sampling_enabled():
+            if self._when_func is not None:
+                index = self._when_func(value)
+                await self._when_streams[index].consume_case(value)
+            return
         _, span = start_stream_span(self._tracer, "stream.case", self)
         try:
             with span.scoped():

@@ -19,10 +19,9 @@ from ...runtime.context import Context
 from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
-from ...runtime.utils.asyncrwlock import AsyncRWLock
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_span, span_event, span_error, string_attr,
-    sampling_enabled, sampling_scope,
+    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, string_attr,
+    sampling_scope,
 )
 
 _PENDING_ROTATION_INTERVAL = 30.0
@@ -79,6 +78,8 @@ class AIOHttpDataSource(InputDataSource):
 class HandlerData:
     """Carries the aiohttp request and a settable response slot. Equivalent to Go's HandlerData."""
 
+    __slots__ = ("request", "_response")
+
     request: web.Request
     _response: "asyncio.Future[web.Response]"
 
@@ -106,6 +107,8 @@ class ResultCallback[HandlerState, T, R, E](Protocol):
 
 
 class ResultContext[HandlerState, T, R, E](ABC):
+    __slots__ = ()
+
     @abstractmethod
     def set_result_callback(
         self,
@@ -115,6 +118,19 @@ class ResultContext[HandlerState, T, R, E](ABC):
 
     @abstractmethod
     def done(self) -> None: ...
+
+
+class _NoopResultContext(ResultContext):
+    __slots__ = ()
+
+    def set_result_callback(self, message_id: str, cb: Any) -> None:
+        del message_id, cb
+
+    def done(self) -> None:
+        pass
+
+
+_NOOP_RESULT_CONTEXT = _NoopResultContext()
 
 
 class EndpointHandler[HandlerState, T, R, E](Protocol):
@@ -159,24 +175,22 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
 
 class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
+    __slots__ = ("handler_state", "data", "_done", "_callbacks", "_span", "_once")
+
     handler_state: HandlerState
     data: HandlerData
-    _done: asyncio.Event
+    _done: asyncio.Future[None]
     _callbacks: dict[str, Any]
-    _cb_lock: asyncio.Lock
     _span: Optional[Span]
     _once: bool
-    _lifetime: AsyncRWLock
 
     def __init__(self, handler_state: HandlerState, data: HandlerData):
         self.handler_state = handler_state
         self.data = data
-        self._done = asyncio.Event()
+        self._done = asyncio.get_running_loop().create_future()
         self._callbacks = {}
-        self._cb_lock = asyncio.Lock()
         self._span = None
         self._once = False
-        self._lifetime = AsyncRWLock()
 
     def set_result_callback(
         self,
@@ -189,7 +203,8 @@ class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
         if not self._once:
             self._once = True
             span_event(self._span, "done_called")
-        self._done.set()
+        if not self._done.done():
+            self._done.set_result(None)
 
 
 class _NetHTTPEndpoint(DataSourceEndpoint):
@@ -276,12 +291,17 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             await self._pending.stop(ctx)
 
     async def serve_http(self, request: web.Request) -> web.Response:
-        if self._tracing is None:
+        trace_requested = bool(request.headers.get('x-trace'))
+        has_remote_parent = bool(request.headers.get('traceparent'))
+        if not trace_requested and not has_remote_parent:
             return await self._serve_http(request)
+        if self._tracing is None:
+            with sampling_scope(trace_requested):
+                return await self._serve_http(request)
         carrier = {key.lower(): value for key, value in request.headers.items()}
         with self._tracing.extract(carrier) as remote_sampled:
             with sampling_scope(
-                bool(request.headers.get('x-trace')) or remote_sampled
+                trace_requested or remote_sampled
             ):
                 return await self._serve_http(request)
 
@@ -295,13 +315,15 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
         method = getattr(cfg, 'method', '') or ''
         path = getattr(cfg, 'path', '') or ''
 
-        _, span = start_span(
-            self._tracer if sampling_enabled() else None,
+        _, span = start_endpoint_span(
+            self._tracer,
             "http.input",
-            string_attr("stream", self._input_stream.name),
-            string_attr("endpoint", ep.name),
-            string_attr("method", method),
-            string_attr("path", path),
+            self._input_stream.name,
+            ep.name,
+            "method",
+            method,
+            "path",
+            path,
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
@@ -319,25 +341,30 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                     return await data.get_response()
                 span_event(span, "begin_request")
 
-                result: _HttpResult[HandlerState, T, R, E] = _HttpResult(handler_state, handler_data)
-                result._span = span
-                if self._has_result and self._pending is not None:
+                result: Optional[_HttpResult[HandlerState, T, R, E]] = None
+                result_ctx: ResultContext[HandlerState, T, R, E]
+                if self._has_result:
+                    result = _HttpResult(handler_state, handler_data)
+                    result._span = span
+                    result_ctx = result
+                else:
+                    result_ctx = cast(ResultContext, _NOOP_RESULT_CONTEXT)
+                if result is not None and self._pending is not None:
                     self._pending.set(sid, result)
                     ep.on_pending_add(sid)
 
                 try:
-                    await self._handler.consume_message(self._sc, handler_state, handler_data, result)
+                    await self._handler.consume_message(self._sc, handler_state, handler_data, result_ctx)
                 except Exception as err:
                     span_error(span, err)
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if self._has_result and self._pending is not None:
-                        async with result._lifetime.write_lock():
-                            self._pending.pop(sid)
-                            ep.on_pending_remove(sid)
-                            await self._handler.end_request(
-                                self._sc, err, handler_state, handler_data
-                            )
+                        self._pending.pop(sid)
+                        ep.on_pending_remove(sid)
+                        await self._handler.end_request(
+                            self._sc, err, handler_state, handler_data
+                        )
                     else:
                         await self._handler.end_request(
                             self._sc, err, handler_state, handler_data
@@ -353,18 +380,20 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                         data.set_response(web.Response())
                     return await data.get_response()
 
+                if result is None:
+                    raise RuntimeError("HTTP result context was not initialized")
+
                 try:
-                    await result._done.wait()
+                    await result._done
                     span_event(span, "done_received")
                 except asyncio.CancelledError:
                     span_event(span, "context_cancelled")
-                async with result._lifetime.write_lock():
-                    if self._pending is not None:
-                        self._pending.pop(sid)
-                        ep.on_pending_remove(sid)
-                    await self._handler.end_request(
-                        self._sc, None, handler_state, handler_data
-                    )
+                if self._pending is not None:
+                    self._pending.pop(sid)
+                    ep.on_pending_remove(sid)
+                await self._handler.end_request(
+                    self._sc, None, handler_state, handler_data
+                )
                 if not data._response.done():
                     data.set_response(web.Response())
                 return await data.get_response()
@@ -411,44 +440,32 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             ep.on_late_result(sid)
             return
 
-        async with result._lifetime.read_lock():
-            current, still_pending = self._pending.get(sid)
-            if not still_pending or current is not result:
-                ep.on_late_result(sid)
-                span_event(result._span, "late_result")
-                return
-
-            message_id = self._handler.get_message_id(
-                self._sc, result.handler_state, value
-            )
-
-            async with result._cb_lock:
-                cb = result._callbacks.get(message_id)
-            if cb is None:
-                ep.on_unknown_message_id(sid, message_id)
-                span_event(
-                    result._span, "unknown_message_id",
-                    string_attr("message_id", message_id),
-                )
-                return
-            remove = cb(self._sc, result.handler_state, value, result.data)
-            if remove:
-                duplicate = False
-                async with result._cb_lock:
-                    if message_id in result._callbacks:
-                        del result._callbacks[message_id]
-                    else:
-                        duplicate = True
-                if duplicate:
-                    ep.on_duplicate_message_id(sid, message_id)
-                    span_event(
-                        result._span, "duplicate_message_id",
-                        string_attr("message_id", message_id),
-                    )
+        # There is no await between the pending lookup, callback lookup and
+        # callback invocation. On the asyncio event-loop this whole section is
+        # atomic with respect to request cleanup and callback registration.
+        message_id = self._handler.get_message_id(
+            self._sc, result.handler_state, value
+        )
+        cb = result._callbacks.get(message_id)
+        if cb is None:
+            ep.on_unknown_message_id(sid, message_id)
             span_event(
-                result._span, "result_consumed",
+                result._span, "unknown_message_id",
                 string_attr("message_id", message_id),
             )
+            return
+        remove = cb(self._sc, result.handler_state, value, result.data)
+        if remove:
+            if result._callbacks.pop(message_id, None) is None:
+                ep.on_duplicate_message_id(sid, message_id)
+                span_event(
+                    result._span, "duplicate_message_id",
+                    string_attr("message_id", message_id),
+                )
+        span_event(
+            result._span, "result_consumed",
+            string_attr("message_id", message_id),
+        )
 
 
 def make_net_http_endpoint_consumer[HandlerState, T, R, E](

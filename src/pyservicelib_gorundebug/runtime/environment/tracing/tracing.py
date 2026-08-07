@@ -43,6 +43,9 @@ class SpanContext:
     is_valid: bool = False
 
 
+NOOP_SPAN_CONTEXT = SpanContext()
+
+
 # ── StatusCode ────────────────────────────────────────────────────────────────
 
 class StatusCode:
@@ -86,7 +89,7 @@ class _NoopSpan(Span):
     def record_error(self, err: Exception) -> None: pass
     def set_status(self, code: int, description: str) -> None: pass
     def add_event(self, name: str, *attrs: Attribute) -> None: pass
-    def span_context(self) -> SpanContext: return SpanContext()
+    def span_context(self) -> SpanContext: return NOOP_SPAN_CONTEXT
 
     # A noop span is immutable and can safely act as its own context manager.
     # This avoids allocating a contextlib generator on every unsampled stream
@@ -179,17 +182,52 @@ def start_stream_span(tracer: Optional[Tracer], operation: str, stream: Any) -> 
     return tracer.start(operation, string_attr("stream", stream.name))
 
 
+def start_endpoint_span(
+    tracer: Optional[Tracer],
+    operation: str,
+    stream_name: str,
+    endpoint_name: str,
+    attr1_key: Optional[str] = None,
+    attr1_value: str = "",
+    attr2_key: Optional[str] = None,
+    attr2_value: str = "",
+) -> Tuple[Any, Span]:
+    """Start a transport span without allocating attributes when unsampled."""
+    if tracer is None or not sampling_enabled():
+        return None, NOOP_SPAN
+    if attr2_key is not None:
+        return tracer.start(
+            operation,
+            string_attr("stream", stream_name),
+            string_attr("endpoint", endpoint_name),
+            string_attr(attr1_key or "", attr1_value),
+            string_attr(attr2_key, attr2_value),
+        )
+    if attr1_key is not None:
+        return tracer.start(
+            operation,
+            string_attr("stream", stream_name),
+            string_attr("endpoint", endpoint_name),
+            string_attr(attr1_key, attr1_value),
+        )
+    return tracer.start(
+        operation,
+        string_attr("stream", stream_name),
+        string_attr("endpoint", endpoint_name),
+    )
+
+
 def span_event(span: Optional[Span], name: str, *attrs: Attribute) -> None:
-    if span is not None:
+    if span is not None and span is not NOOP_SPAN:
         span.add_event(name, *attrs)
 
 
 def span_error(span: Optional[Span], err: Exception) -> None:
-    if span is not None:
+    if span is not None and span is not NOOP_SPAN:
         span.record_error(err)
         span.set_status(StatusCode.ERROR, str(err))
 
 
 def span_attrs(span: Optional[Span], *attrs: Attribute) -> None:
-    if span is not None:
+    if span is not None and span is not NOOP_SPAN:
         span.set_attributes(*attrs)
