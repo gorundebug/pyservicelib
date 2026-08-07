@@ -1,0 +1,8 @@
+# Python cache file
+dist
+*.egg-info
+__pycache__
+*.pyc
+*.pyo
+.benchmarks
+.DS_Store
