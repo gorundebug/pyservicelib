@@ -57,7 +57,11 @@ class DataConnector(BaseModel):
     password: Optional[StrictStr] = Field(default=None, description="Kafka SASL password. Supply at runtime through the generated environment override.")
     use_dedicated_listener: Optional[StrictBool] = Field(default=None, description="When true, this HTTP connector starts its own dedicated listener. When false, it shares the service's default HTTP server. Applies to HTTP source connectors. ", alias="useDedicatedListener")
     module: Optional[StrictStr] = Field(default=None, description="Contract module containing generated gRPC protobuf types for this connector. Used to resolve the correct generated bindings for each target language. Applies to gRPC connectors. ")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module"]
+    namespace: Optional[StrictStr] = Field(default=None, description="Temporal namespace. Applies to Temporal connectors.")
+    identity: Optional[StrictStr] = Field(default=None, description="Temporal client and Worker identity. Applies to Temporal connectors.")
+    max_concurrent_activities: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Activity slots owned by this Temporal connector's Worker.", alias="maxConcurrentActivities")
+    max_concurrent_workflows: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Workflow slots owned by this Temporal connector's Worker.", alias="maxConcurrentWorkflows")
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "maxConcurrentActivities", "maxConcurrentWorkflows"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -134,7 +138,11 @@ class DataConnector(BaseModel):
             "username": obj.get("username"),
             "password": obj.get("password"),
             "useDedicatedListener": obj.get("useDedicatedListener"),
-            "module": obj.get("module")
+            "module": obj.get("module"),
+            "namespace": obj.get("namespace"),
+            "identity": obj.get("identity"),
+            "maxConcurrentActivities": obj.get("maxConcurrentActivities"),
+            "maxConcurrentWorkflows": obj.get("maxConcurrentWorkflows")
         })
         return _obj
 

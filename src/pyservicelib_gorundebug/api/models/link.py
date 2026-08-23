@@ -34,7 +34,8 @@ class Link(BaseModel):
     var_async: Optional[StrictBool] = Field(default=None, description="Value returned by the caller's `IsAsync`/`isAsync` method when `callSemantics` is `FunctionCall`. Ignored for all other call semantics. ", alias="async")
     pool_name: Optional[StrictStr] = Field(default=None, description="Name of the worker pool to use when `callSemantics` is `TaskPool` or `PriorityTaskPool`. Must match a pool defined in `StreamApp.pools`. ", alias="poolName", json_schema_extra={"examples": ["default"]})
     priority: Optional[StrictInt] = Field(default=None, description="Message priority for `PriorityTaskPool` delivery. Higher values are processed first. Ignored for other call semantics. ")
-    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "async", "poolName", "priority"]
+    id_data_connector: Optional[StrictInt] = Field(default=None, description="Temporal data connector used when `callSemantics` is `DurableCall`. Ignored for every other call semantics. ", alias="idDataConnector")
+    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "async", "poolName", "priority", "idDataConnector"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -92,7 +93,8 @@ class Link(BaseModel):
             "callSemantics": obj.get("callSemantics"),
             "async": obj.get("async"),
             "poolName": obj.get("poolName"),
-            "priority": obj.get("priority")
+            "priority": obj.get("priority"),
+            "idDataConnector": obj.get("idDataConnector")
         })
         return _obj
 

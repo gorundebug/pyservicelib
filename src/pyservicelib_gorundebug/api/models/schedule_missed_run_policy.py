@@ -18,24 +18,20 @@ from enum import Enum
 from typing_extensions import Self
 
 
-class CallSemantics(int, Enum):
+class ScheduleMissedRunPolicy(str, Enum):
     """
-    Delivery semantics for a stream link — controls how messages are passed between nodes. - `Inherited` (1): use the service's `defaultCallSemantics` - `FunctionCall` (2): synchronous in-goroutine call; lowest latency, no buffering - `TaskPool` (3): enqueue to a named FIFO worker pool; decouples producer from consumer - `PriorityTaskPool` (4): enqueue to a named priority worker pool; higher-priority messages are processed first - `ParallelCall` (5): spawn a new goroutine for each message; fully parallel, no pool overhead - `DurableCall` (6): execute the link as an independently identified Temporal Workflow/Activity operation
+    Portable policy for a firing delayed while the scheduler process is running.
     """
 
     """
     allowed enum values
     """
-    Undefined = 0
-    Inherited = 1
-    FunctionCall = 2
-    TaskPool = 3
-    PriorityTaskPool = 4
-    ParallelCall = 5
-    DurableCall = 6
+    SKIP = 'Skip'
+    FIREONCE = 'FireOnce'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
-        """Create an instance of CallSemantics from a JSON string"""
+        """Create an instance of ScheduleMissedRunPolicy from a JSON string"""
         return cls(json.loads(json_str))
+
 

@@ -45,6 +45,14 @@ class DataConnectorImplementation(str, Enum):
     NodeHTTP = 'node/http'
     GrpcJS = 'grpc/grpc-js'
     ConfluentKafkaJavaScript = 'confluent/kafka-javascript'
+    GoGocron = 'go/gocron'
+    PythonAPScheduler = 'python/apscheduler'
+    RustCroner = 'rust/croner'
+    NodeCroner = 'node/croner'
+    CppLibcron = 'cpp/libcron'
+    TemporalGo = 'temporal/go'
+    TemporalPython = 'temporal/python'
+    TemporalTypeScript = 'temporal/typescript'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

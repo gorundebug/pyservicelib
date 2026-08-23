@@ -20,7 +20,7 @@ from typing_extensions import Self
 
 class DataConnectorType(int, Enum):
     """
-    Type of external system the data connector connects to. - `HTTP` (1): HTTP server or client - `gRPC` (2): gRPC server or client - `Kafka` (3): Kafka cluster - `Custom` (4): in-process local connector for testing or internal pipelines 
+    Type of external system the data connector connects to. - `HTTP` (1): HTTP server or client - `gRPC` (2): gRPC server or client - `Kafka` (3): Kafka cluster - `Custom` (4): in-process local connector for testing or internal pipelines - `Cron` (5): process-local cron scheduler - `Temporal` (6): Temporal Service connection, Workers, Schedules, and durable jobs
     """
 
     """
@@ -31,10 +31,11 @@ class DataConnectorType(int, Enum):
     gRPC = 2
     Kafka = 3
     Custom = 4
+    Cron = 5
+    Temporal = 6
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
         """Create an instance of DataConnectorType from a JSON string"""
         return cls(json.loads(json_str))
-
 

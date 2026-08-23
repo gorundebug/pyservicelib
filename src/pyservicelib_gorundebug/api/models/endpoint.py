@@ -22,6 +22,8 @@ from typing import Any, ClassVar, Dict, List, Optional
 from typing_extensions import Annotated
 from ..models.grpc_method_type import GrpcMethodType
 from ..models.http_method_type import HTTPMethodType
+from ..models.schedule_missed_run_policy import ScheduleMissedRunPolicy
+from ..models.schedule_overlap_policy import ScheduleOverlapPolicy
 from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
@@ -33,7 +35,7 @@ class Endpoint(BaseModel):
     id: StrictInt = Field(description="Unique identifier for this endpoint within the topology.", json_schema_extra={"examples": [1]})
     name: StrictStr = Field(description="Human-readable endpoint name shown in the visual designer.", json_schema_extra={"examples": ["IngestEndpoint"]})
     id_data_connector: StrictInt = Field(description="ID of the data connector this endpoint belongs to.", alias="idDataConnector", json_schema_extra={"examples": [1]})
-    enabled: Optional[StrictBool] = Field(default=None, description="Controls whether a Kafka endpoint starts its transport integration. When omitted or false, the endpoint remains in the execution graph but its Kafka consumer transport is not started. ")
+    enabled: Optional[StrictBool] = Field(default=None, description="Controls whether an endpoint starts its transport integration. When omitted or false, the endpoint remains in the execution graph but its external transport or scheduler is not started. ")
     http_method_type: Optional[HTTPMethodType] = Field(default=None, alias="httpMethodType")
     path: Optional[StrictStr] = Field(default=None, description="URL path for HTTP endpoints (e.g. `/api/v1/orders`). Applies to HTTP connectors.")
     function_name: Optional[StrictStr] = Field(default=None, description="Name of the generated Go handler struct for this endpoint.", alias="functionName")
@@ -49,7 +51,17 @@ class Endpoint(BaseModel):
     consumer_group: Optional[StrictStr] = Field(default=None, description="Kafka consumer group ID. Applies to Kafka source endpoints.", alias="consumerGroup")
     grpc_method_type: Optional[GrpcMethodType] = Field(default=None, alias="grpcMethodType")
     method_name: Optional[StrictStr] = Field(default=None, description="gRPC method name as defined in the proto file. Applies to gRPC endpoints.", alias="methodName")
-    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName"]
+    schedule: Optional[StrictStr] = Field(default=None, description="Cron expression for a local Cron endpoint or an optional Temporal Schedule.")
+    schedule_id: Optional[StrictStr] = Field(default=None, description="Immutable Temporal Schedule ID. Required when a Temporal endpoint has a schedule.", alias="scheduleId")
+    timezone: Optional[StrictStr] = Field(default=None, description="IANA timezone used to evaluate the schedule.")
+    overlap_policy: Optional[ScheduleOverlapPolicy] = Field(default=None, alias="overlapPolicy")
+    missed_run_policy: Optional[ScheduleMissedRunPolicy] = Field(default=None, alias="missedRunPolicy")
+    task_queue: Optional[StrictStr] = Field(default=None, description="Temporal Task Queue used by this durable endpoint.", alias="taskQueue")
+    workflow_execution_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Workflow execution timeout in milliseconds; zero means SDK default.", alias="workflowExecutionTimeout")
+    activity_start_to_close_timeout: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Temporal Activity start-to-close timeout in milliseconds.", alias="activityStartToCloseTimeout")
+    activity_heartbeat_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Activity heartbeat timeout in milliseconds; zero disables it.", alias="activityHeartbeatTimeout")
+    maximum_attempts: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Temporal Activity attempts including the initial attempt.", alias="maximumAttempts")
+    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -120,7 +132,17 @@ class Endpoint(BaseModel):
             "replicationFactor": obj.get("replicationFactor"),
             "consumerGroup": obj.get("consumerGroup"),
             "grpcMethodType": obj.get("grpcMethodType"),
-            "methodName": obj.get("methodName")
+            "methodName": obj.get("methodName"),
+            "schedule": obj.get("schedule"),
+            "scheduleId": obj.get("scheduleId"),
+            "timezone": obj.get("timezone"),
+            "overlapPolicy": obj.get("overlapPolicy"),
+            "missedRunPolicy": obj.get("missedRunPolicy"),
+            "taskQueue": obj.get("taskQueue"),
+            "workflowExecutionTimeout": obj.get("workflowExecutionTimeout"),
+            "activityStartToCloseTimeout": obj.get("activityStartToCloseTimeout"),
+            "activityHeartbeatTimeout": obj.get("activityHeartbeatTimeout"),
+            "maximumAttempts": obj.get("maximumAttempts")
         })
         return _obj
 
