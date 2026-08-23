@@ -4,11 +4,12 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 
+import asyncio
 from datetime import datetime, timezone
 from typing import cast
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+from apscheduler.triggers.base import BaseTrigger  # type: ignore[import-untyped]
 
 from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
@@ -34,56 +35,140 @@ from ...runtime.schedule import (
 
 
 class _CronDataSource(InputDataSource):
-    _scheduler: AsyncIOScheduler | None
+    _started: bool
 
     def __init__(self, connector_id: int, env: ServiceExecutionEnvironment):
         super().__init__(connector_id, env)
-        self._scheduler = None
+        self._started = False
 
     async def start(self, ctx: Context) -> None:
         del ctx
-        if self._scheduler is not None:
+        if self._started:
             return
-        scheduler = AsyncIOScheduler()
-        for endpoint in self.endpoints:
-            cast(_CronEndpoint, endpoint).register(scheduler)
-        scheduler.start()
-        self._scheduler = scheduler
+        self._started = True
+        try:
+            for endpoint in self.endpoints:
+                cast(_CronEndpoint, endpoint).start()
+        except BaseException:
+            await self.stop(Context())
+            raise
 
     async def stop(self, ctx: Context) -> None:
         del ctx
-        scheduler, self._scheduler = self._scheduler, None
-        if scheduler is not None:
-            scheduler.shutdown(wait=False)
+        if not self._started:
+            return
+        self._started = False
+        await asyncio.gather(
+            *(cast(_CronEndpoint, endpoint).stop() for endpoint in self.endpoints)
+        )
+
+
+class _PortableCronTrigger(BaseTrigger):
+    """Filters APScheduler candidates to the portable DST contract.
+
+    Cron parsing and next-fire calculation remain entirely in APScheduler. The
+    adapter only rejects a candidate that does not round-trip through UTC (a
+    nonexistent local wall time) or represents the second fold of an ambiguous
+    wall time.
+    """
+
+    def __init__(self, expression: str, timezone_name: str):
+        self._delegate = CronTrigger.from_crontab(
+            expression, timezone=timezone_name
+        )
+
+    def get_next_fire_time(
+        self, previous_fire_time: datetime | None, now: datetime
+    ) -> datetime | None:
+        candidate = self._delegate.get_next_fire_time(previous_fire_time, now)
+        while candidate is not None and not self._portable(candidate):
+            candidate = self._delegate.get_next_fire_time(candidate, candidate)
+        return candidate
+
+    @staticmethod
+    def _portable(candidate: datetime) -> bool:
+        round_trip = candidate.astimezone(timezone.utc).astimezone(
+            candidate.tzinfo
+        )
+        wall = candidate.replace(tzinfo=None)
+        round_trip_wall = round_trip.replace(tzinfo=None)
+        return wall == round_trip_wall and candidate.fold == 0
 
 
 class _CronEndpoint(DataSourceEndpoint):
     _consumer: "_CronEndpointConsumer | None"
+    _runner: asyncio.Task[None] | None
+    _active: set[asyncio.Task[None]]
 
     def __init__(self, datasource: _CronDataSource, endpoint_id: int):
         super().__init__(datasource, endpoint_id)
         self._consumer = None
+        self._runner = None
+        self._active = set()
 
-    def register(self, scheduler: AsyncIOScheduler) -> None:
+    def start(self) -> None:
         cfg = self.config
         if not bool(getattr(cfg, "enabled", False)):
             return
         schedule = str(getattr(cfg, "schedule"))
         timezone_name = str(getattr(cfg, "timezone"))
-        overlap = getattr(cfg, "overlap_policy")
-        missed = getattr(cfg, "missed_run_policy")
-        scheduler.add_job(
-            self._fire,
-            CronTrigger.from_crontab(schedule, timezone=timezone_name),
-            id=str(self.id),
-            name=self.name,
-            replace_existing=False,
-            max_instances=(1 if overlap == ScheduleOverlapPolicy.SKIP else 1000),
-            coalesce=(missed == ScheduleMissedRunPolicy.FIREONCE),
-            misfire_grace_time=(None if missed == ScheduleMissedRunPolicy.FIREONCE else 1),
+        trigger = _PortableCronTrigger(schedule, timezone_name)
+        self._runner = asyncio.create_task(
+            self._run(trigger), name=f"cron:{self.datasource.name}:{self.name}"
         )
 
-    async def _fire(self) -> None:
+    async def stop(self) -> None:
+        tasks = ([self._runner] if self._runner is not None else []) + list(
+            self._active
+        )
+        self._runner = None
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._active.clear()
+
+    async def _run(self, trigger: _PortableCronTrigger) -> None:
+        previous: datetime | None = None
+        next_fire = trigger.get_next_fire_time(
+            previous, datetime.now(timezone.utc)
+        )
+        while next_fire is not None:
+            delay = max(
+                0.0,
+                (next_fire.astimezone(timezone.utc) - datetime.now(timezone.utc))
+                .total_seconds(),
+            )
+            await asyncio.sleep(delay)
+            now = datetime.now(timezone.utc)
+            due: list[datetime] = []
+            while next_fire is not None and next_fire.astimezone(timezone.utc) <= now:
+                due.append(next_fire)
+                previous = next_fire
+                next_fire = trigger.get_next_fire_time(previous, now)
+            if len(due) == 1:
+                self._dispatch(due[0])
+            elif (
+                due
+                and getattr(self.config, "missed_run_policy")
+                == ScheduleMissedRunPolicy.FIREONCE
+            ):
+                self._dispatch(due[-1])
+
+    def _dispatch(self, scheduled_at: datetime) -> None:
+        if (
+            self._active
+            and getattr(self.config, "overlap_policy")
+            == ScheduleOverlapPolicy.SKIP
+        ):
+            return
+        task = asyncio.create_task(
+            self._fire(scheduled_at), name=f"cron-fire:{self.name}"
+        )
+        self._active.add(task)
+        task.add_done_callback(self._active.discard)
+
+    async def _fire(self, scheduled_at: datetime) -> None:
         if self._consumer is None:
             return
         fired_at = datetime.now(timezone.utc)
@@ -94,7 +179,7 @@ class _CronEndpoint(DataSourceEndpoint):
             await self._consumer.consume(new_schedule_trigger(
                 self.id,
                 self.name,
-                fired_at,
+                scheduled_at.astimezone(timezone.utc),
                 fired_at,
                 ScheduleBackend.LOCAL,
             ))
