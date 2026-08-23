@@ -49,7 +49,6 @@ class DataConnectorImplementation(str, Enum):
     PythonAPScheduler = 'python/apscheduler'
     RustCroner = 'rust/croner'
     NodeCroner = 'node/croner'
-    CppLibcron = 'cpp/libcron'
     TemporalGo = 'temporal/go'
     TemporalPython = 'temporal/python'
     TemporalTypeScript = 'temporal/typescript'
@@ -58,5 +57,4 @@ class DataConnectorImplementation(str, Enum):
     def from_json(cls, json_str: str) -> Self:
         """Create an instance of DataConnectorImplementation from a JSON string"""
         return cls(json.loads(json_str))
-
 
