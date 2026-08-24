@@ -10,9 +10,11 @@ from pyservicelib_gorundebug.api.models.schedule_overlap_policy import (
 from pyservicelib_gorundebug.runtime.config import (
     CronDataConnectorConfig,
     CronEndpointConfig,
+    LinkConfig,
     TemporalDataConnectorConfig,
     TemporalEndpointConfig,
 )
+from pyservicelib_gorundebug.api.models.call_semantics import CallSemantics
 
 
 def test_cron_config_preserves_portable_schedule_contract() -> None:
@@ -105,3 +107,26 @@ def test_temporal_config_rejects_non_operational_values() -> None:
         assert "start-to-close" in str(error)
     else:
         raise AssertionError("missing activity timeout must be rejected")
+
+
+def test_durable_link_config_preserves_temporal_delivery_contract() -> None:
+    link = LinkConfig.from_dict(
+        {
+            "from": 7,
+            "to": 8,
+            "callSemantics": CallSemantics.DurableCall,
+            "idDataConnector": 3,
+            "taskQueue": "durable-links",
+            "workflowExecutionTimeout": 60_000,
+            "activityStartToCloseTimeout": 30_000,
+            "activityHeartbeatTimeout": 5_000,
+            "maximumAttempts": 3,
+        }
+    )
+
+    assert link is not None
+    assert link.task_queue == "durable-links"
+    assert link.workflow_execution_timeout == 60_000
+    assert link.activity_start_to_close_timeout == 30_000
+    assert link.activity_heartbeat_timeout == 5_000
+    assert link.maximum_attempts == 3

@@ -59,9 +59,15 @@ class DataConnector(BaseModel):
     module: Optional[StrictStr] = Field(default=None, description="Contract module containing generated gRPC protobuf types for this connector. Used to resolve the correct generated bindings for each target language. Applies to gRPC connectors. ")
     namespace: Optional[StrictStr] = Field(default=None, description="Temporal namespace. Applies to Temporal connectors.")
     identity: Optional[StrictStr] = Field(default=None, description="Temporal client and Worker identity. Applies to Temporal connectors.")
+    api_key: Optional[StrictStr] = Field(default=None, description="Temporal API key. Supply at runtime through an environment-backed override.", alias="apiKey")
+    tls_enabled: Optional[StrictBool] = Field(default=None, description="Enables TLS for a Temporal connector.", alias="tlsEnabled")
+    tls_server_name: Optional[StrictStr] = Field(default=None, description="Expected TLS server name for a Temporal connector.", alias="tlsServerName")
+    tls_ca_file: Optional[StrictStr] = Field(default=None, description="Path to a PEM CA bundle mounted into the service container.", alias="tlsCaFile")
+    tls_cert_file: Optional[StrictStr] = Field(default=None, description="Path to a PEM client certificate for Temporal mTLS.", alias="tlsCertFile")
+    tls_key_file: Optional[StrictStr] = Field(default=None, description="Path to the PEM private key paired with tlsCertFile.", alias="tlsKeyFile")
     max_concurrent_activities: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Activity slots owned by this Temporal connector's Worker.", alias="maxConcurrentActivities")
     max_concurrent_workflows: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Workflow slots owned by this Temporal connector's Worker.", alias="maxConcurrentWorkflows")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "maxConcurrentActivities", "maxConcurrentWorkflows"]
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "apiKey", "tlsEnabled", "tlsServerName", "tlsCaFile", "tlsCertFile", "tlsKeyFile", "maxConcurrentActivities", "maxConcurrentWorkflows"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -141,6 +147,12 @@ class DataConnector(BaseModel):
             "module": obj.get("module"),
             "namespace": obj.get("namespace"),
             "identity": obj.get("identity"),
+            "apiKey": obj.get("apiKey"),
+            "tlsEnabled": obj.get("tlsEnabled"),
+            "tlsServerName": obj.get("tlsServerName"),
+            "tlsCaFile": obj.get("tlsCaFile"),
+            "tlsCertFile": obj.get("tlsCertFile"),
+            "tlsKeyFile": obj.get("tlsKeyFile"),
             "maxConcurrentActivities": obj.get("maxConcurrentActivities"),
             "maxConcurrentWorkflows": obj.get("maxConcurrentWorkflows")
         })
