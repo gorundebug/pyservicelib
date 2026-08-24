@@ -540,6 +540,7 @@ for link between streams from={source.id} to={consumer.stream.id}")
 
         elif call_semantics == CallSemantics.DurableCall:
             from .context import (
+                request_cancelled,
                 request_deadline,
                 request_priority,
                 request_stream_id,
@@ -580,14 +581,20 @@ for link between streams from={source.id} to={consumer.stream.id}")
                 stream_token = request_stream_id.set(envelope.stream_id or None)
                 priority_token = request_priority.set(envelope.priority)
                 deadline_token = request_deadline.set(deadline)
+                cancelled = asyncio.Event()
+                cancelled_token = request_cancelled.set(cancelled)
                 scope_token = _durable_invocation_scope.set(
                     _DurableInvocationScope(envelope.call_id, {})
                 )
                 try:
                     with sampling_scope(envelope.sampling_enabled):
                         await consumer.consume(value)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
                 finally:
                     _durable_invocation_scope.reset(scope_token)
+                    request_cancelled.reset(cancelled_token)
                     request_deadline.reset(deadline_token)
                     request_priority.reset(priority_token)
                     request_stream_id.reset(stream_token)

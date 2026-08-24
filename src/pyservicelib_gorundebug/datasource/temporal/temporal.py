@@ -21,6 +21,7 @@ from ...runtime.common import (
 )
 from ...runtime.context import (
     Context,
+    request_cancelled,
     request_deadline,
     request_priority,
     request_stream_id,
@@ -96,6 +97,8 @@ class _TemporalEndpointConsumer[T, R, E](
         stream_token = request_stream_id.set(envelope.stream_id or None)
         priority_token = request_priority.set(envelope.priority)
         deadline_token = request_deadline.set(deadline)
+        cancelled = asyncio.Event()
+        cancelled_token = request_cancelled.set(cancelled)
         started = self.endpoint.on_request_start()
         error: Optional[Exception] = None
         future: Optional[asyncio.Future[R]] = None
@@ -118,6 +121,9 @@ class _TemporalEndpointConsumer[T, R, E](
                 if result_stream is None:
                     raise RuntimeError("Temporal endpoint result stream disappeared")
                 return EndpointResult(bytes(result_stream.serde.serialize(result)))
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
         except Exception as exc:
             error = exc
             raise
@@ -126,6 +132,7 @@ class _TemporalEndpointConsumer[T, R, E](
                 self._pending.pop(envelope.stream_id, None)
                 self.endpoint.on_pending_remove(envelope.stream_id)
             self.endpoint.on_request_end(started, error)
+            request_cancelled.reset(cancelled_token)
             request_deadline.reset(deadline_token)
             request_priority.reset(priority_token)
             request_stream_id.reset(stream_token)
