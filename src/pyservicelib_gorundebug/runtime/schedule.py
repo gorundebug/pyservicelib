@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from hashlib import sha256
+from typing import Protocol
+
+from .common import Collect
 
 
 class ScheduleBackend(StrEnum):
@@ -24,6 +27,14 @@ class ScheduleTrigger:
     scheduled_at: datetime
     fired_at: datetime
     backend: ScheduleBackend
+
+
+class ScheduleEndpointFunction[T](Protocol):
+    """User conversion boundary shared by local and Temporal schedules."""
+
+    async def on_trigger(
+        self, trigger: ScheduleTrigger, out: Collect[T]
+    ) -> None: ...
 
 
 def _utc(value: datetime) -> datetime:

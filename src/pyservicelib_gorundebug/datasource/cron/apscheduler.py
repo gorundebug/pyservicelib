@@ -15,6 +15,8 @@ from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy
 from ...runtime.common import (
+    Collect,
+    CollectFunc,
     Consumer,
     RuntimeEndpointConsumer,
     ServiceExecutionEnvironment,
@@ -30,6 +32,7 @@ from ...runtime.datasource import (
 from ...runtime.environment.log.log import err_field, str_field
 from ...runtime.schedule import (
     ScheduleBackend,
+    ScheduleEndpointFunction,
     ScheduleTrigger,
     new_schedule_trigger,
 )
@@ -174,7 +177,7 @@ class _CronEndpoint(DataSourceEndpoint):
         started = self.on_request_start()
         error: Exception | None = None
         try:
-            await self._consumer.consume(new_schedule_trigger(
+            await self._consumer.on_trigger(new_schedule_trigger(
                 self.id,
                 self.name,
                 scheduled_at.astimezone(timezone.utc),
@@ -188,15 +191,32 @@ class _CronEndpoint(DataSourceEndpoint):
             self.on_request_end(started, error)
 
 
-class _CronEndpointConsumer[R, E](DataSourceEndpointConsumer[ScheduleTrigger, R, E]):
+class _CronEndpointConsumer[T, R, E](DataSourceEndpointConsumer[T, R, E]):
+    _function: ScheduleEndpointFunction[T]
+    _out: Collect[T]
+
+    def __init__(
+        self,
+        endpoint: DataSourceEndpoint,
+        input_stream: TypedInputStream[T, R, E],
+        function: ScheduleEndpointFunction[T],
+    ) -> None:
+        super().__init__(endpoint, input_stream)
+        self._function = function
+        self._out = CollectFunc(self.consume)
+
     @property
     def id(self) -> int:
         return self.endpoint.id
 
+    async def on_trigger(self, trigger: ScheduleTrigger) -> None:
+        await self._function.on_trigger(trigger, self._out)
 
-def APSchedulerEndpointConsumer[R, E](
-    input_stream: TypedInputStream[ScheduleTrigger, R, E],
-) -> Consumer[ScheduleTrigger]:
+
+def APSchedulerEndpointConsumer[T, R, E](
+    input_stream: TypedInputStream[T, R, E],
+    function: ScheduleEndpointFunction[T],
+) -> Consumer[T]:
     env = input_stream.environment
     endpoint_cfg = env.config.get_endpoint_config_by_id(input_stream.endpoint_id)
     connector_cfg = env.config.get_data_connector_by_id(endpoint_cfg.id_data_connector)
@@ -215,7 +235,7 @@ def APSchedulerEndpointConsumer[R, E](
     if datasource.get_endpoint(endpoint_cfg.id) is not None:
         raise ValueError(f"cron endpoint {endpoint_cfg.name!r} already exists")
     endpoint = _CronEndpoint(datasource, endpoint_cfg.id)
-    consumer = _CronEndpointConsumer(endpoint, input_stream)
+    consumer = _CronEndpointConsumer(endpoint, input_stream, function)
     endpoint._consumer = consumer
     endpoint.add_endpoint_consumer(consumer)
     datasource.add_endpoint(endpoint)

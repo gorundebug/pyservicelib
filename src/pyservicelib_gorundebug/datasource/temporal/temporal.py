@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import ExitStack, nullcontext
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ...runtime.common import (
+    CollectFunc,
     Consumer,
     DataSource,
     RuntimeEndpointConsumer,
@@ -35,7 +36,12 @@ from ...runtime.environment.tracing import (
     span_error,
     start_endpoint_span,
 )
-from ...runtime.schedule import ScheduleBackend, ScheduleTrigger, new_schedule_trigger
+from ...runtime.schedule import (
+    ScheduleBackend,
+    ScheduleEndpointFunction,
+    ScheduleTrigger,
+    new_schedule_trigger,
+)
 from ...runtime.temporal import Connector, EndpointEnvelope, EndpointResult, make_connector
 
 
@@ -48,14 +54,14 @@ class _TemporalDataSource(InputDataSource):
 
 
 class _ResultConsumer[R](Consumer[R]):
-    def __init__(self, owner: "_TemporalEndpointConsumer[Any, R, Any]") -> None:
+    def __init__(self, owner: "_TemporalEndpointConsumer[Any, Any, R, Any]") -> None:
         self._owner = owner
 
     async def consume(self, value: R) -> None:
         self._owner.consume_result(value)
 
 
-class _TemporalEndpointConsumer[T, R, E](
+class _TemporalEndpointConsumer[Input, T, R, E](
     DataSourceEndpointConsumer[T, R, E], RuntimeEndpointConsumer
 ):
     def __init__(
@@ -63,11 +69,13 @@ class _TemporalEndpointConsumer[T, R, E](
         endpoint: DataSourceEndpoint,
         stream: TypedInputStream[T, R, E],
         connector: Connector,
-        decode: Callable[[EndpointEnvelope], T],
+        decode: Callable[[EndpointEnvelope], Input],
+        invoke: Callable[[Input], Awaitable[None]],
     ) -> None:
         super().__init__(endpoint, stream)
         self._connector = connector
         self._decode = decode
+        self._invoke = invoke
         tracing = stream.environment.tracing
         self._tracing: Optional[Tracing] = tracing
         self._tracer: Optional[Tracer] = (
@@ -143,7 +151,7 @@ class _TemporalEndpointConsumer[T, R, E](
                             future = asyncio.get_running_loop().create_future()
                             self._pending[envelope.stream_id] = future
                             self.endpoint.on_pending_add(envelope.stream_id)
-                        await self.stream.consume(value)
+                        await self._invoke(value)
                         if future is None:
                             return EndpointResult()
                         result = await future
@@ -187,9 +195,10 @@ def _get_or_create_datasource(
     return datasource, connector
 
 
-def _make_endpoint_consumer[T, R, E](
+def _make_endpoint_consumer[Input, T, R, E](
     stream: TypedInputStream[T, R, E],
-    decode: Callable[[EndpointEnvelope], T],
+    decode: Callable[[EndpointEnvelope], Input],
+    invoke: Callable[[Input], Awaitable[None]],
 ) -> Consumer[T]:
     environment = stream.environment
     cfg = environment.config.get_endpoint_config_by_id(stream.endpoint_id)
@@ -200,7 +209,9 @@ def _make_endpoint_consumer[T, R, E](
         raise ValueError(f"Temporal source endpoint {cfg.name!r} already exists")
     endpoint = DataSourceEndpoint(datasource, cfg.id)
     datasource.add_endpoint(endpoint)
-    consumer = _TemporalEndpointConsumer(endpoint, stream, connector, decode)
+    consumer = _TemporalEndpointConsumer(
+        endpoint, stream, connector, decode, invoke
+    )
     endpoint.add_endpoint_consumer(consumer)
     connector.register_endpoint(cfg.id, consumer.activate)
     environment.runtime.register_endpoint_consumer(consumer)
@@ -215,13 +226,15 @@ def make_direct_endpoint_consumer[T, R, E](
     return _make_endpoint_consumer(
         stream,
         lambda envelope: stream.serde.deserialize(envelope.payload),
+        stream.consume,
     )
 
 
-def make_schedule_endpoint_consumer[R, E](
-    stream: TypedInputStream[ScheduleTrigger, R, E],
-) -> Consumer[ScheduleTrigger]:
-    """Register a Temporal Schedule that emits the shared ScheduleTrigger."""
+def make_schedule_endpoint_consumer[T, R, E](
+    stream: TypedInputStream[T, R, E],
+    function: ScheduleEndpointFunction[T],
+) -> Consumer[T]:
+    """Bind a Temporal Schedule function to an ordinary typed input."""
 
     def decode(envelope: EndpointEnvelope) -> ScheduleTrigger:
         if (
@@ -247,4 +260,9 @@ def make_schedule_endpoint_consumer[R, E](
             ScheduleBackend.TEMPORAL,
         )
 
-    return _make_endpoint_consumer(stream, decode)
+    out: CollectFunc[T] = CollectFunc(stream.consume)
+
+    async def invoke(trigger: ScheduleTrigger) -> None:
+        await function.on_trigger(trigger, out)
+
+    return _make_endpoint_consumer(stream, decode, invoke)
