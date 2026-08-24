@@ -13,7 +13,9 @@ changes the target node's business function.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -37,6 +39,7 @@ from temporalio.common import (
     WorkflowIDReusePolicy,
 )
 from temporalio.service import TLSConfig
+from temporalio.runtime import PrometheusConfig, Runtime, TelemetryConfig
 from temporalio.worker import Worker
 
 from ...api.models.data_connector_implementation import DataConnectorImplementation
@@ -57,6 +60,32 @@ _MEMO_CALL_ID = "servicegen.callId"
 _SCHEDULE_WORKFLOW_ID_SUFFIX = re.compile(
     r"-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$"
 )
+_SDK_METRICS_BIND_ADDRESS_ENVIRONMENT = "TEMPORAL_SDK_METRICS_BIND_ADDRESS"
+_SDK_RUNTIME_LOCK = threading.Lock()
+_SDK_RUNTIME: Runtime | None = None
+_SDK_RUNTIME_ADDRESS: str | None = None
+
+
+def _sdk_runtime() -> Runtime | None:
+    """Return one process-wide Temporal runtime with official SDK metrics."""
+
+    address = os.environ.get(_SDK_METRICS_BIND_ADDRESS_ENVIRONMENT, "").strip()
+    if not address:
+        return None
+    global _SDK_RUNTIME, _SDK_RUNTIME_ADDRESS
+    with _SDK_RUNTIME_LOCK:
+        if _SDK_RUNTIME is not None:
+            if _SDK_RUNTIME_ADDRESS != address:
+                raise RuntimeError(
+                    "Temporal SDK metrics already listen on "
+                    f"{_SDK_RUNTIME_ADDRESS!r}, cannot also use {address!r}"
+                )
+            return _SDK_RUNTIME
+        _SDK_RUNTIME = Runtime(
+            telemetry=TelemetryConfig(metrics=PrometheusConfig(bind_address=address))
+        )
+        _SDK_RUNTIME_ADDRESS = address
+        return _SDK_RUNTIME
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +339,7 @@ class Connector(DurableTransport):
             identity=getattr(cfg, "identity", None) or None,
             api_key=getattr(cfg, "api_key", None) or None,
             tls=tls,
+            runtime=_sdk_runtime(),
         )
         self._client = await (
             asyncio.wait_for(connect, timeout=ctx.time_left)
