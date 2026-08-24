@@ -82,7 +82,12 @@ def _sdk_runtime() -> Runtime | None:
                 )
             return _SDK_RUNTIME
         _SDK_RUNTIME = Runtime(
-            telemetry=TelemetryConfig(metrics=PrometheusConfig(bind_address=address))
+            telemetry=TelemetryConfig(
+                metrics=PrometheusConfig(
+                    bind_address=address,
+                    durations_as_seconds=True,
+                )
+            )
         )
         _SDK_RUNTIME_ADDRESS = address
         return _SDK_RUNTIME
