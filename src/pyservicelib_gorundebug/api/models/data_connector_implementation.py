@@ -20,7 +20,7 @@ from typing_extensions import Self
 
 class DataConnectorImplementation(str, Enum):
     """
-    The specific library used to implement a data connector. - `net/http`: Go standard library HTTP - `function`: in-process custom connector (no network) - `IBM/Sarama`: Sarama Kafka client - `google/grpc`: official gRPC-Go library - `userver/http`: userver HTTP - `userver/grpc`: userver gRPC - `userver/kafka`: userver Kafka - `boost/beast-http`: Boost.Beast HTTP - `asio/grpc`: asio-grpc - `librdkafka`: librdkafka C++ client - `aiohttp`: Python aiohttp - `aiokafka`: Python aiokafka - `rust/axum`: Rust axum HTTP - `rust/tonic`: Rust tonic gRPC - `rust/rdkafka`: Rust rdkafka Kafka client - `node/http`: Node.js core HTTP transport - `grpc/grpc-js`: official pure-JavaScript gRPC transport - `confluent/kafka-javascript`: Confluent Kafka JavaScript client 
+    The specific library used to implement a data connector. - `net/http`: Go standard library HTTP - `function`: in-process custom connector (no network) - `IBM/Sarama`: Sarama Kafka client - `google/grpc`: official gRPC-Go library - `userver/http`: userver HTTP - `userver/grpc`: userver gRPC - `userver/kafka`: userver Kafka - `boost/beast-http`: Boost.Beast HTTP - `asio/grpc`: asio-grpc - `librdkafka`: librdkafka C++ client - `aiohttp`: Python aiohttp - `aiokafka`: Python aiokafka - `rust/axum`: Rust axum HTTP - `rust/tonic`: Rust tonic gRPC - `rust/rdkafka`: Rust rdkafka Kafka client - `node/http`: Node.js core HTTP transport - `grpc/grpc-js`: official pure-JavaScript gRPC transport - `confluent/kafka-javascript`: Confluent Kafka JavaScript client - `cpp/libcron`: libcron-backed UTC cron scheduler for C++ runtimes
     """
 
     """
@@ -49,6 +49,7 @@ class DataConnectorImplementation(str, Enum):
     PythonAPScheduler = 'python/apscheduler'
     RustCroner = 'rust/croner'
     NodeCroner = 'node/croner'
+    CppLibcron = 'cpp/libcron'
     TemporalGo = 'temporal/go'
     TemporalPython = 'temporal/python'
     TemporalTypeScript = 'temporal/typescript'

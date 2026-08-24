@@ -53,7 +53,7 @@ class Endpoint(BaseModel):
     method_name: Optional[StrictStr] = Field(default=None, description="gRPC method name as defined in the proto file. Applies to gRPC endpoints.", alias="methodName")
     schedule: Optional[StrictStr] = Field(default=None, description="Cron expression for a local Cron endpoint or an optional Temporal Schedule.")
     schedule_id: Optional[StrictStr] = Field(default=None, description="Immutable Temporal Schedule ID. Required when a Temporal endpoint has a schedule.", alias="scheduleId")
-    timezone: Optional[StrictStr] = Field(default=None, description="IANA timezone used to evaluate the schedule.")
+    timezone: Optional[StrictStr] = Field(default=None, description="Timezone used to evaluate the schedule. The portable contract accepts only UTC.")
     overlap_policy: Optional[ScheduleOverlapPolicy] = Field(default=None, alias="overlapPolicy")
     missed_run_policy: Optional[ScheduleMissedRunPolicy] = Field(default=None, alias="missedRunPolicy")
     task_queue: Optional[StrictStr] = Field(default=None, description="Temporal Task Queue used by this durable endpoint.", alias="taskQueue")
