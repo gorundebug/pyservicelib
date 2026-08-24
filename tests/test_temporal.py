@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from pyservicelib_gorundebug.runtime.temporal.connector import (
     _DurableWorkflowRequest,
     _LinkRegistration,
     _make_link_activity,
+    _scheduled_time_nanos,
     _validate_workflow_ownership,
 )
 
@@ -61,6 +63,17 @@ def _envelope(*, to_id: int = 4) -> DurableEnvelope:
         deadline_unix_nano=0,
         sampling_enabled=False,
         payload=b"value",
+    )
+
+
+def test_scheduled_time_uses_temporal_schedule_workflow_id_suffix() -> None:
+    fallback = datetime(2026, 8, 24, 12, 35, 1, tzinfo=timezone.utc)
+    assert _scheduled_time_nanos(
+        "servicegen/schedule/1/3-2026-08-24T12:30:00.123456789Z",
+        fallback,
+    ) == 1_787_574_600_123_456_789
+    assert _scheduled_time_nanos("manual-workflow", fallback) == int(
+        fallback.timestamp() * 1_000_000_000
     )
 
 

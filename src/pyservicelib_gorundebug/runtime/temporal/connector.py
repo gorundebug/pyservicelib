@@ -13,9 +13,10 @@ changes the target node's business function.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -53,6 +54,9 @@ ENDPOINT_WORKFLOW_TYPE = "servicegen.temporal-endpoint.v1"
 _MEMO_MANAGED_BY = "servicegen.managedBy"
 _MEMO_OWNER = "servicegen.owner"
 _MEMO_CALL_ID = "servicegen.callId"
+_SCHEDULE_WORKFLOW_ID_SUFFIX = re.compile(
+    r"-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,12 +130,13 @@ class _TemporalEndpointWorkflow:
         envelope = request.envelope
         if envelope.scheduled:
             info = workflow.info()
-            scheduled_at = info.workflow_start_time.astimezone(timezone.utc)
             envelope = replace(
                 envelope,
                 execution_id=info.workflow_id,
                 stream_id=info.workflow_id,
-                scheduled_at_unix_nano=int(scheduled_at.timestamp() * 1_000_000_000),
+                scheduled_at_unix_nano=_scheduled_time_nanos(
+                    info.workflow_id, info.workflow_start_time
+                ),
             )
         return await workflow.execute_activity(
             request.activity_type,
@@ -148,6 +153,17 @@ class _TemporalEndpointWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
             priority=Priority(priority_key=request.priority),
         )
+
+
+def _scheduled_time_nanos(workflow_id: str, fallback: datetime) -> int:
+    match = _SCHEDULE_WORKFLOW_ID_SUFFIX.search(workflow_id)
+    if match is not None:
+        seconds = datetime.strptime(
+            match.group(1), "%Y-%m-%dT%H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        fraction = (match.group(2) or "").ljust(9, "0")
+        return int(seconds.timestamp()) * 1_000_000_000 + int(fraction or "0")
+    return int(fallback.astimezone(timezone.utc).timestamp() * 1_000_000_000)
 
 
 @dataclass(frozen=True, slots=True)
