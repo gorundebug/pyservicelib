@@ -28,7 +28,12 @@ from ...runtime.context import (
     stream_id_from_context,
 )
 from ...runtime.datasink import DataSinkEndpoint, OutputDataSink
-from ...runtime.environment.tracing import sampling_enabled
+from ...runtime.environment.tracing import (
+    Tracer,
+    sampling_enabled,
+    span_error,
+    start_endpoint_span,
+)
 from ...runtime.temporal import Connector, EndpointEnvelope, make_connector
 from ...runtime.serde import TypedStreamSerde
 
@@ -48,15 +53,23 @@ class _TemporalSinkConsumer[T, R, E](
         self,
         endpoint: DataSinkEndpoint,
         connector: Connector,
+        stream_name: str,
         input_serde: TypedStreamSerde[T],
         result_serde: Optional[TypedStreamSerde[R]],
         emit_result: Optional[Callable[[R], Awaitable[None]]],
     ) -> None:
         self._endpoint = endpoint
         self._connector = connector
+        self._stream_name = stream_name
         self._input_serde = input_serde
         self._result_serde = result_serde
         self._emit_result = emit_result
+        tracing = endpoint.datasink.environment.tracing
+        self._tracer: Optional[Tracer] = (
+            tracing.tracer(endpoint.datasink.environment.service_config.name)
+            if tracing is not None
+            else None
+        )
 
     @property
     def endpoint(self) -> DataSinkEndpoint:
@@ -69,37 +82,45 @@ class _TemporalSinkConsumer[T, R, E](
     async def consume(self, value: T) -> None:
         started = self.endpoint.on_request_start()
         error: Optional[Exception] = None
+        _, span = start_endpoint_span(
+            self._tracer,
+            "temporal.output",
+            self._stream_name,
+            self.endpoint.name,
+        )
         try:
-            execution_id = stream_id_from_context() or new_stream_id()
-            stream_id = stream_id_from_context() or execution_id
-            priority = priority_from_context()
-            deadline = request_deadline.get()
-            deadline_nanos = 0
-            if deadline is not None:
-                if deadline.tzinfo is None:
-                    deadline = deadline.replace(tzinfo=timezone.utc)
-                deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
-            result = await self._connector.submit_endpoint(
-                self.endpoint.id,
-                EndpointEnvelope(
-                    version=1,
-                    endpoint_id=self.endpoint.id,
-                    execution_id=execution_id,
-                    stream_id=stream_id,
-                    priority=priority if priority is not None else 0,
-                    deadline_unix_nano=deadline_nanos,
-                    sampling_enabled=sampling_enabled(),
-                    payload=bytes(self._input_serde.serialize(value)),
-                ),
-                self._result_serde is not None,
-            )
-            if self._result_serde is not None:
-                result_value = self._result_serde.deserialize(result.payload)
-                if self._emit_result is None:
-                    raise RuntimeError("Temporal result consumer is not configured")
-                await self._emit_result(result_value)
+            with span.scoped():
+                execution_id = stream_id_from_context() or new_stream_id()
+                stream_id = stream_id_from_context() or execution_id
+                priority = priority_from_context()
+                deadline = request_deadline.get()
+                deadline_nanos = 0
+                if deadline is not None:
+                    if deadline.tzinfo is None:
+                        deadline = deadline.replace(tzinfo=timezone.utc)
+                    deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
+                result = await self._connector.submit_endpoint(
+                    self.endpoint.id,
+                    EndpointEnvelope(
+                        version=1,
+                        endpoint_id=self.endpoint.id,
+                        execution_id=execution_id,
+                        stream_id=stream_id,
+                        priority=priority if priority is not None else 0,
+                        deadline_unix_nano=deadline_nanos,
+                        sampling_enabled=sampling_enabled(),
+                        payload=bytes(self._input_serde.serialize(value)),
+                    ),
+                    self._result_serde is not None,
+                )
+                if self._result_serde is not None:
+                    result_value = self._result_serde.deserialize(result.payload)
+                    if self._emit_result is None:
+                        raise RuntimeError("Temporal result consumer is not configured")
+                    await self._emit_result(result_value)
         except Exception as exc:
             error = exc
+            span_error(span, exc)
             raise
         finally:
             self.endpoint.on_request_end(started, error)
@@ -140,7 +161,7 @@ def make_direct_endpoint_consumer[T, E](
 
     endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
     consumer = _TemporalSinkConsumer[T, object, E](
-        endpoint, connector, stream.serde, None, None
+        endpoint, connector, stream.name, stream.serde, None, None
     )
     endpoint.add_endpoint_consumer(consumer)
     stream.set_sink_consumer(consumer)
@@ -157,6 +178,7 @@ def make_direct_endpoint_consumer_with_result[T, R, E](
     consumer = _TemporalSinkConsumer[T, R, E](
         endpoint,
         connector,
+        stream.name,
         stream.input_serde,
         stream.serde,
         stream.consume_result,

@@ -27,7 +27,12 @@ from ...runtime.context import (
     request_stream_id,
 )
 from ...runtime.datasource import DataSourceEndpoint, DataSourceEndpointConsumer, InputDataSource
-from ...runtime.environment.tracing import sampling_scope
+from ...runtime.environment.tracing import (
+    Tracer,
+    sampling_scope,
+    span_error,
+    start_endpoint_span,
+)
 from ...runtime.schedule import ScheduleBackend, ScheduleTrigger, new_schedule_trigger
 from ...runtime.temporal import Connector, EndpointEnvelope, EndpointResult, make_connector
 
@@ -61,6 +66,12 @@ class _TemporalEndpointConsumer[T, R, E](
         super().__init__(endpoint, stream)
         self._connector = connector
         self._decode = decode
+        tracing = stream.environment.tracing
+        self._tracer: Optional[Tracer] = (
+            tracing.tracer(stream.environment.service_config.name)
+            if tracing is not None
+            else None
+        )
         self._pending: dict[str, asyncio.Future[R]] = {}
         self._result_stream = stream.get_result_stream()
         if self._result_stream is not None:
@@ -103,24 +114,37 @@ class _TemporalEndpointConsumer[T, R, E](
         error: Optional[Exception] = None
         future: Optional[asyncio.Future[R]] = None
         try:
-            if self._result_stream is not None:
-                if envelope.stream_id in self._pending:
-                    raise RuntimeError(
-                        f"Temporal endpoint {self.endpoint.name!r} already has "
-                        f"active execution {envelope.stream_id!r}"
-                    )
-                future = asyncio.get_running_loop().create_future()
-                self._pending[envelope.stream_id] = future
-                self.endpoint.on_pending_add(envelope.stream_id)
             with sampling_scope(envelope.sampling_enabled):
-                await self.stream.consume(value)
-                if future is None:
-                    return EndpointResult()
-                result = await future
-                result_stream = self._result_stream
-                if result_stream is None:
-                    raise RuntimeError("Temporal endpoint result stream disappeared")
-                return EndpointResult(bytes(result_stream.serde.serialize(result)))
+                _, span = start_endpoint_span(
+                    self._tracer,
+                    "temporal.input",
+                    self.stream.name,
+                    self.endpoint.name,
+                )
+                with span.scoped():
+                    try:
+                        if self._result_stream is not None:
+                            if envelope.stream_id in self._pending:
+                                raise RuntimeError(
+                                    f"Temporal endpoint {self.endpoint.name!r} already "
+                                    f"has active execution {envelope.stream_id!r}"
+                                )
+                            future = asyncio.get_running_loop().create_future()
+                            self._pending[envelope.stream_id] = future
+                            self.endpoint.on_pending_add(envelope.stream_id)
+                        await self.stream.consume(value)
+                        if future is None:
+                            return EndpointResult()
+                        result = await future
+                        result_stream = self._result_stream
+                        if result_stream is None:
+                            raise RuntimeError("Temporal endpoint result stream disappeared")
+                        return EndpointResult(
+                            bytes(result_stream.serde.serialize(result))
+                        )
+                    except Exception as exc:
+                        span_error(span, exc)
+                        raise
         except asyncio.CancelledError:
             cancelled.set()
             raise
