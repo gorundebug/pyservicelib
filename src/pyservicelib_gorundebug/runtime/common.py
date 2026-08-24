@@ -5,9 +5,11 @@
 #   file for details.
 
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
+from datetime import datetime, timedelta, timezone
+import hashlib
+from typing import Optional, Callable, Any, Awaitable, get_origin, Hashable, Protocol
 from typing import cast, Iterable
 
 from ..api.models.call_semantics import CallSemantics
@@ -22,6 +24,7 @@ from .environment.tracing import (
     Attribute,
     Tracer,
     sampling_enabled,
+    sampling_scope,
     span_error,
     start_span,
     string_attr,
@@ -268,6 +271,149 @@ class ParallelCaller[T](Caller[T]):
         return True
 
 
+@dataclass(frozen=True, slots=True)
+class DurableEnvelope:
+    """Portable transport envelope for one DurableCall link activation."""
+
+    version: int
+    from_id: int
+    to_id: int
+    call_id: str
+    stream_id: str
+    priority: int
+    deadline_unix_nano: int
+    sampling_enabled: bool
+    payload: bytes
+
+
+class DurableTransport(ABC):
+    """External durable caller runtime; target graph nodes remain unchanged."""
+
+    @property
+    @abstractmethod
+    def id(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+    @abstractmethod
+    def register_link(
+        self,
+        link_id: "LinkId",
+        handler: Callable[[DurableEnvelope], Awaitable[None]],
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def submit_link(self, link_id: "LinkId", envelope: DurableEnvelope) -> None:
+        pass
+
+    @abstractmethod
+    async def start(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
+    async def stop(self, ctx: Context) -> None:
+        pass
+
+
+@dataclass(slots=True)
+class _DurableInvocationScope:
+    parent_id: str
+    counts: dict[bytes, int]
+
+
+_durable_invocation_scope: ContextVar[Optional[_DurableInvocationScope]] = ContextVar(
+    "_durable_invocation_scope", default=None
+)
+
+
+def _next_durable_call_id(link_id: "LinkId", payload: bytes) -> str:
+    from .context import new_stream_id
+
+    scope = _durable_invocation_scope.get()
+    if scope is None:
+        return new_stream_id()
+    key = b"\0".join(
+        (
+            str(link_id.from_id).encode(),
+            str(link_id.to_id).encode(),
+            hashlib.sha256(payload).digest(),
+        )
+    )
+    occurrence = scope.counts.get(key, 0) + 1
+    scope.counts[key] = occurrence
+    return hashlib.sha256(
+        b"\0".join((scope.parent_id.encode(), key, str(occurrence).encode()))
+    ).hexdigest()
+
+
+class DurableCaller[T](Caller[T]):
+    def __init__(
+        self,
+        transport: DurableTransport,
+        link_id: "LinkId",
+        source: "TypedStream[T]",
+        statistics: CallerStatistics,
+        tracer: Optional[Tracer] = None,
+        messages_counter: Optional[Int64Counter] = None,
+    ):
+        super().__init__(source, statistics, tracer, messages_counter)
+        self._transport = transport
+        self._link_id = link_id
+
+    async def consume(self, value: T) -> None:
+        from .context import (
+            new_stream_id,
+            priority_from_context,
+            request_deadline,
+            request_stream_id,
+            stream_id_from_context,
+        )
+
+        self._statistics.inc()
+        if self._record_messages:
+            self._messages_counter.inc()
+        payload = bytes(self._source.serde.serialize(value))
+        stream_id = stream_id_from_context()
+        stream_token = None
+        if stream_id is None:
+            stream_id = new_stream_id()
+            stream_token = request_stream_id.set(stream_id)
+        deadline = request_deadline.get()
+        deadline_nanos = 0
+        if deadline is not None:
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
+        priority = priority_from_context()
+        try:
+            await self._transport.submit_link(
+                self._link_id,
+                DurableEnvelope(
+                    version=1,
+                    from_id=self._link_id.from_id,
+                    to_id=self._link_id.to_id,
+                    call_id=_next_durable_call_id(self._link_id, payload),
+                    stream_id=stream_id,
+                    priority=priority if priority is not None else 0,
+                    deadline_unix_nano=deadline_nanos,
+                    sampling_enabled=sampling_enabled(),
+                    payload=payload,
+                ),
+            )
+        finally:
+            if stream_token is not None:
+                request_stream_id.reset(stream_token)
+
+    @property
+    def is_async(self) -> bool:
+        return True
+
+
 class Collect[T](ABC):
 
     @abstractmethod
@@ -391,6 +537,70 @@ for link between streams from={source.id} to={consumer.stream.id}")
         elif call_semantics == CallSemantics.ParallelCall:
             return ParallelCaller[T](source=source, statistics=statistics, tracer=tracer,
                                      messages_counter=messages_counter)
+
+        elif call_semantics == CallSemantics.DurableCall:
+            from .context import (
+                request_deadline,
+                request_priority,
+                request_stream_id,
+            )
+
+            if link is None or link.id_data_connector is None:
+                raise ValueError(
+                    f"DurableCall requires a Temporal connector for streams "
+                    f"from={source.id} to={consumer.stream.id}"
+                )
+            transport = env.get_durable_transport(link.id_data_connector)
+            if transport is None:
+                raise ValueError(
+                    f"durable transport for Temporal connector "
+                    f"id={link.id_data_connector} is not registered"
+                )
+            link_id = LinkId(from_id=source.id, to_id=consumer.stream.id)
+            serde = source.serde
+
+            async def activate_target(envelope: DurableEnvelope) -> None:
+                if (
+                    envelope.version != 1
+                    or envelope.from_id != link_id.from_id
+                    or envelope.to_id != link_id.to_id
+                    or not envelope.call_id
+                ):
+                    raise ValueError(
+                        f"invalid durable envelope for link "
+                        f"{link_id.from_id}->{link_id.to_id}"
+                    )
+                value = serde.deserialize(envelope.payload)
+                deadline = None
+                if envelope.deadline_unix_nano > 0:
+                    deadline = datetime.fromtimestamp(
+                        envelope.deadline_unix_nano / 1_000_000_000,
+                        tz=timezone.utc,
+                    )
+                stream_token = request_stream_id.set(envelope.stream_id or None)
+                priority_token = request_priority.set(envelope.priority)
+                deadline_token = request_deadline.set(deadline)
+                scope_token = _durable_invocation_scope.set(
+                    _DurableInvocationScope(envelope.call_id, {})
+                )
+                try:
+                    with sampling_scope(envelope.sampling_enabled):
+                        await consumer.consume(value)
+                finally:
+                    _durable_invocation_scope.reset(scope_token)
+                    request_deadline.reset(deadline_token)
+                    request_priority.reset(priority_token)
+                    request_stream_id.reset(stream_token)
+
+            transport.register_link(link_id, activate_target)
+            return DurableCaller[T](
+                transport=transport,
+                link_id=link_id,
+                source=source,
+                statistics=statistics,
+                tracer=tracer,
+                messages_counter=messages_counter,
+            )
 
         raise ValueError(f"Invalid call semantics: {call_semantics}")
 
@@ -933,6 +1143,11 @@ class TypedSinkStreamWithResult[T, R, E](TypedTransformConsumedStream[T, R]):
 
     @property
     @abstractmethod
+    def input_serde(self) -> TypedStreamSerde[T]:
+        pass
+
+    @property
+    @abstractmethod
     def endpoint_id(self) -> int:
         pass
 
@@ -1038,6 +1253,14 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
     def get_datasink(self, id_connector: int) -> Optional[DataSink]:
         pass
 
+    @abstractmethod
+    def add_durable_transport(self, transport: DurableTransport) -> None:
+        pass
+
+    @abstractmethod
+    def get_durable_transport(self, id_connector: int) -> Optional[DurableTransport]:
+        pass
+
     @property
     @abstractmethod
     def metrics(self) -> Metrics:
@@ -1054,6 +1277,10 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
 
     @abstractmethod
     async def delay(self, duration: timedelta, task: Callable[..., Any], *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def create_task(self, fn: Callable[..., Any], *args, **kwargs) -> Any:
         pass
 
     def has_custom_http_server(self) -> bool:

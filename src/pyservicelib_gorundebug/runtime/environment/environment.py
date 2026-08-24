@@ -19,6 +19,13 @@ class Lifecycle(Protocol):
     async def stop(self, ctx: Context) -> None: ...
 
 
+@runtime_checkable
+class AdmissionLifecycle(Lifecycle, Protocol):
+    """A component whose inbound admission stops before graph draining."""
+
+    async def stop_admission(self, ctx: Context) -> None: ...
+
+
 class ServiceEnvironment(ABC):
 
     @property

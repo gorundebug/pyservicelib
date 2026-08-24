@@ -13,7 +13,7 @@ from ..runtime.common import (
 from .error import ErrorStream
 from ..runtime.config.stream_types import SinkStreamConfig
 from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
-from ..runtime.serde.serde import StreamSerde, StubSerde
+from ..runtime.serde.serde import StreamSerde, StubSerde, TypedStreamSerde
 
 
 class SinkStream[T, E](TypedSinkStream[T, E]):
@@ -119,6 +119,10 @@ class SinkStreamWithResult[T, R, E](TypedSinkStreamWithResult[T, R, E]):
     async def consume_result(self, value: R) -> None:
         if self._caller is not None:
             await self._caller.consume(value)
+
+    @property
+    def input_serde(self) -> TypedStreamSerde[T]:
+        return self._source.serde
 
     @property
     def error_stream(self) -> TypedConsumedStream[E]:

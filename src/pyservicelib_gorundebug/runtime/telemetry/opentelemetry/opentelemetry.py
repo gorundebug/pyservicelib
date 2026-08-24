@@ -366,7 +366,7 @@ class _OtelMetrics(Metrics):
                     name,
                     description=help,
                     callbacks=[
-                        lambda _opts, _gauge=gauge: list(
+                        lambda _opts, _gauge=gauge: list(  # type: ignore[misc]
                             _gauge._iter_observations()
                         )
                     ],

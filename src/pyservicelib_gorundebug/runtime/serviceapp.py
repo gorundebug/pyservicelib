@@ -11,7 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional, Set, cast
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 import yaml
 from aiohttp import web
 from watchfiles import Change, awatch
@@ -21,6 +21,7 @@ from .common import (
     ConsumeStatistics,
     DataSink,
     DataSource,
+    DurableTransport,
     RuntimeEndpointConsumer,
     RuntimeLinkInfo,
     ServiceExecutionEnvironment,
@@ -41,7 +42,7 @@ from .config import (
     replace_placeholders,
 )
 from .context import Context
-from .environment import Lifecycle, ServiceDependency
+from .environment import AdmissionLifecycle, Lifecycle, ServiceDependency
 from .environment.log import Logger, LogsEngine, err_field, str_field
 from .environment.metrics import MetricsEngine
 from .environment.metrics.metrics import Int64Counter, Metrics
@@ -155,6 +156,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _endpoint_consumers: dict[int, RuntimeEndpointConsumer]
     _dep: Optional[ServiceDependency]
     _components: list[Lifecycle]
+    _durable_transports: dict[int, DurableTransport]
     _aiohttp_app: Optional[web.Application]
     _aiohttp_runner: Optional[web.AppRunner]
 
@@ -172,6 +174,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._endpoint_consumers = {}
         self._tracing_engine = None
         self._components = []
+        self._durable_transports = {}
         self._aiohttp_app = None
         self._aiohttp_runner = None
 
@@ -258,6 +261,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     CallSemantics.TaskPool,
                     CallSemantics.PriorityTaskPool,
                     CallSemantics.ParallelCall,
+                    CallSemantics.DurableCall,
                 ]:
                     raise ValueError(
                         f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}"
@@ -545,10 +549,20 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             phase1.append((f"task_pool:{name}", pool.stop(ctx)))
         for name, pool in self._priority_task_pools.items():  # type: ignore[assignment]
             phase1.append((f"priority_task_pool:{name}", pool.stop(ctx)))
+        deferred_components: list[AdmissionLifecycle] = []
         for component in self._components:
-            phase1.append(
-                (f"component:{type(component).__name__}", component.stop(ctx))
-            )
+            if isinstance(component, AdmissionLifecycle):
+                phase1.append(
+                    (
+                        f"component_admission:{type(component).__name__}",
+                        component.stop_admission(ctx),
+                    )
+                )
+                deferred_components.append(component)
+            else:
+                phase1.append(
+                    (f"component:{type(component).__name__}", component.stop(ctx))
+                )
         for ds in self._dataSources.values():
             phase1.append((f"datasource:{ds.name}", ds.stop(ctx)))
         if self._aiohttp_runner is not None:
@@ -565,6 +579,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         phase2: list[ShutdownOperation] = [
             (f"datasink:{ds.name}", ds.stop(ctx)) for ds in self._dataSinks.values()
         ]
+        phase2.extend(
+            (f"component:{type(component).__name__}", component.stop(ctx))
+            for component in deferred_components
+        )
         await run_shutdown_operations(self._log, ctx, phase2)
 
         telemetry: list[ShutdownOperation] = [
@@ -590,6 +608,15 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     def get_datasink(self, id_connector: int) -> Optional[DataSink]:
         return self._dataSinks.get(id_connector)
+
+    def add_durable_transport(self, transport: DurableTransport) -> None:
+        if transport.id in self._durable_transports:
+            raise ValueError(f"durable transport id={transport.id} is already registered")
+        self._durable_transports[transport.id] = transport
+        self.add_component(transport)
+
+    def get_durable_transport(self, id_connector: int) -> Optional[DurableTransport]:
+        return self._durable_transports.get(id_connector)
 
     @property
     def metrics(self) -> Metrics:

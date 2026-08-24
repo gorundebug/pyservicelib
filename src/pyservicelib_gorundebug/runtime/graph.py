@@ -86,13 +86,13 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
             if cs == CallSemantics.FunctionCall and is_outgoing:
                 link_data["async"] = bool(link_config.var_async)
             elif cs in (CallSemantics.TaskPool, CallSemantics.PriorityTaskPool):
-                pool_name = (
+                selected_pool_name = (
                     link_config.pool_name
                     if is_outgoing
                     else link_config.income_pool_name
                 )
-                if pool_name is not None:
-                    link_data["poolName"] = pool_name
+                if selected_pool_name is not None:
+                    link_data["poolName"] = selected_pool_name
                 if cs == CallSemantics.PriorityTaskPool:
                     priority = (
                         link_config.priority

@@ -277,7 +277,8 @@ def _make_edge(
     link_id_key = LinkId(from_id=source_id, to_id=to_id)
     stat = app._consume_statistics.get(link_id_key)
     if include_calls and (count is not None or stat is not None):
-        label += f"\ncalls: {count if count is not None else stat.count}"
+        calls = count if count is not None else (stat.count if stat is not None else 0)
+        label += f"\ncalls: {calls}"
     stream = app._streams.get(to_id)
     if stream is not None:
         cfg = stream.config

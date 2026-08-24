@@ -1,0 +1,107 @@
+from types import SimpleNamespace
+
+import pytest
+from temporalio.converter import DataConverter
+
+from pyservicelib_gorundebug.api.models.data_connector_implementation import (
+    DataConnectorImplementation,
+)
+from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
+from pyservicelib_gorundebug.runtime.common import DurableEnvelope
+from pyservicelib_gorundebug.runtime.config import LinkId
+from pyservicelib_gorundebug.runtime.temporal.connector import (
+    Connector,
+    _DurableWorkflowRequest,
+    _LinkRegistration,
+    _make_link_activity,
+)
+
+
+class _Config:
+    def __init__(self) -> None:
+        self.connector = SimpleNamespace(
+            id=7,
+            name="temporal",
+            implementation=DataConnectorImplementation.TemporalPython,
+        )
+        self.endpoint = SimpleNamespace(id=11, id_data_connector=7)
+        self.streams = [
+            SimpleNamespace(
+                id=31,
+                id_service=2,
+                id_endpoint=11,
+                type=TransformationType.Input,
+            )
+        ]
+
+    def get_data_connector_by_id(self, connector_id: int):
+        assert connector_id == 7
+        return self.connector
+
+    def get_endpoint_config_by_id(self, endpoint_id: int):
+        assert endpoint_id == 11
+        return self.endpoint
+
+
+class _Environment:
+    def __init__(self) -> None:
+        self.config = _Config()
+        self.service_config = SimpleNamespace(id=1)
+
+
+def _envelope(*, to_id: int = 4) -> DurableEnvelope:
+    return DurableEnvelope(
+        version=1,
+        from_id=3,
+        to_id=to_id,
+        call_id="call-1",
+        stream_id="stream-1",
+        priority=0,
+        deadline_unix_nano=0,
+        sampling_enabled=False,
+        payload=b"value",
+    )
+
+
+@pytest.mark.asyncio
+async def test_temporal_activity_only_activates_registered_target() -> None:
+    received: list[DurableEnvelope] = []
+
+    async def handler(envelope: DurableEnvelope) -> None:
+        received.append(envelope)
+
+    function = _make_link_activity(
+        _LinkRegistration(LinkId(3, 4), "servicegen.test", handler)
+    )
+    envelope = _envelope()
+    await function(envelope)
+
+    assert received == [envelope]
+    with pytest.raises(ValueError, match="invalid durable envelope"):
+        await function(_envelope(to_id=9))
+
+
+@pytest.mark.asyncio
+async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> None:
+    request = _DurableWorkflowRequest(
+        activity_type="servicegen.test",
+        activity_start_to_close_millis=1_000,
+        activity_heartbeat_millis=0,
+        maximum_attempts=3,
+        priority=3,
+        envelope=_envelope(),
+    )
+    converter = DataConverter.default
+    payloads = await converter.encode([request])
+    decoded = await converter.decode(payloads, [_DurableWorkflowRequest])
+
+    assert decoded == [request]
+
+
+def test_remote_endpoint_activity_identity_uses_input_service() -> None:
+    connector = Connector(7, _Environment())  # type: ignore[arg-type]
+
+    connector.register_endpoint_submission(11)
+
+    assert connector._endpoints[11].activity_type == "servicegen.endpoint.2.11.v1"
+    assert connector._endpoints[11].handler is None
