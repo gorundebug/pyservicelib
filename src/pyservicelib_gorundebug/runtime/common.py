@@ -367,6 +367,7 @@ class DurableCaller[T](Caller[T]):
         super().__init__(source, statistics, tracer, messages_counter)
         self._transport = transport
         self._link_id = link_id
+        self._trace_attrs += (string_attr("type", "durable"),)
 
     async def consume(self, value: T) -> None:
         from .context import (
@@ -380,42 +381,52 @@ class DurableCaller[T](Caller[T]):
         self._statistics.inc()
         if self._record_messages:
             self._messages_counter.inc()
-        payload = bytes(self._source.serde.serialize(value))
-        stream_id = stream_id_from_context()
+        span = None
         stream_token = None
-        if stream_id is None:
-            stream_id = new_stream_id()
-            stream_token = request_stream_id.set(stream_id)
-        deadline = request_deadline.get()
-        deadline_nanos = 0
-        if deadline is not None:
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=timezone.utc)
-            deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
-        priority = priority_from_context()
-        trace_carrier: dict[str, str] = {}
-        tracing = self._source.environment.tracing
-        if tracing is not None:
-            tracing.inject(trace_carrier)
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_span(self._tracer, "stream.call", *self._trace_attrs)
         try:
-            await self._transport.submit_link(
-                self._link_id,
-                DurableEnvelope(
-                    version=1,
-                    from_id=self._link_id.from_id,
-                    to_id=self._link_id.to_id,
-                    call_id=_next_durable_call_id(self._link_id, payload),
-                    stream_id=stream_id,
-                    priority=priority if priority is not None else 0,
-                    deadline_unix_nano=deadline_nanos,
-                    sampling_enabled=sampling_enabled(),
-                    payload=payload,
-                    trace_carrier=trace_carrier,
-                ),
-            )
+            with span.scoped() if span is not None else nullcontext():
+                payload = bytes(self._source.serde.serialize(value))
+                stream_id = stream_id_from_context()
+                if stream_id is None:
+                    stream_id = new_stream_id()
+                    stream_token = request_stream_id.set(stream_id)
+                deadline = request_deadline.get()
+                deadline_nanos = 0
+                if deadline is not None:
+                    if deadline.tzinfo is None:
+                        deadline = deadline.replace(tzinfo=timezone.utc)
+                    deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
+                priority = priority_from_context()
+                trace_carrier: dict[str, str] = {}
+                tracing = self._source.environment.tracing
+                if tracing is not None:
+                    tracing.inject(trace_carrier)
+                await self._transport.submit_link(
+                    self._link_id,
+                    DurableEnvelope(
+                        version=1,
+                        from_id=self._link_id.from_id,
+                        to_id=self._link_id.to_id,
+                        call_id=_next_durable_call_id(self._link_id, payload),
+                        stream_id=stream_id,
+                        priority=priority if priority is not None else 0,
+                        deadline_unix_nano=deadline_nanos,
+                        sampling_enabled=sampling_enabled(),
+                        payload=payload,
+                        trace_carrier=trace_carrier,
+                    ),
+                )
+        except Exception as error:
+            if span is not None:
+                span_error(span, error)
+            raise
         finally:
             if stream_token is not None:
                 request_stream_id.reset(stream_token)
+            if span is not None:
+                span.end()
 
     @property
     def is_async(self) -> bool:

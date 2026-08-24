@@ -166,6 +166,7 @@ class _TemporalEndpointConsumer[T, R, E](
             if future is not None:
                 self._pending.pop(envelope.stream_id, None)
                 self.endpoint.on_pending_remove(envelope.stream_id)
+            span.end()
             self.endpoint.on_request_end(started, error)
             request_cancelled.reset(cancelled_token)
             request_deadline.reset(deadline_token)

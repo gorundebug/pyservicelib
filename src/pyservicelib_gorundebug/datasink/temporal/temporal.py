@@ -126,6 +126,7 @@ class _TemporalSinkConsumer[T, R, E](
             span_error(span, exc)
             raise
         finally:
+            span.end()
             self.endpoint.on_request_end(started, error)
 
     def _trace_carrier(self) -> dict[str, str]:
