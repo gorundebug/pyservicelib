@@ -26,7 +26,7 @@ def test_cron_config_preserves_portable_schedule_contract() -> None:
         connector.id,
         enabled=True,
         schedule="*/5 * * * *",
-        timezone="Europe/Moscow",
+        timezone="UTC",
         overlap_policy=ScheduleOverlapPolicy.ALLOW,
         missed_run_policy=ScheduleMissedRunPolicy.FIREONCE,
     )
@@ -43,10 +43,19 @@ def test_cron_config_preserves_portable_schedule_contract() -> None:
         "idDataConnector": 1,
         "enabled": True,
         "schedule": "*/5 * * * *",
-        "timezone": "Europe/Moscow",
+        "timezone": "UTC",
         "overlapPolicy": "Allow",
         "missedRunPolicy": "FireOnce",
     }
+
+
+def test_schedule_config_rejects_non_utc_timezone() -> None:
+    try:
+        CronEndpointConfig(1, "tick", 2, schedule="* * * * *", timezone="Europe/Moscow")
+    except ValueError as error:
+        assert "timezone must be UTC" in str(error)
+    else:
+        raise AssertionError("non-UTC timezone was accepted")
 
 
 def test_temporal_config_preserves_connection_and_job_contract() -> None:

@@ -414,6 +414,8 @@ class CronEndpointConfig(EndpointConfig):
         missed_run_policy: ScheduleMissedRunPolicy = ScheduleMissedRunPolicy.SKIP,
         properties: Optional[dict[str, Any]] = None,
     ):
+        if timezone != "UTC":
+            raise ValueError("scheduled endpoint timezone must be UTC")
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector

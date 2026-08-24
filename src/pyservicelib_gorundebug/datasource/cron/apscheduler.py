@@ -65,15 +65,11 @@ class _CronDataSource(InputDataSource):
 
 
 class _PortableCronTrigger(BaseTrigger):
-    """Filters APScheduler candidates to the portable DST contract.
-
-    Cron parsing and next-fire calculation remain entirely in APScheduler. The
-    adapter only rejects a candidate that does not round-trip through UTC (a
-    nonexistent local wall time) or represents the second fold of an ambiguous
-    wall time.
-    """
+    """Delegates the portable UTC-only cron contract to APScheduler."""
 
     def __init__(self, expression: str, timezone_name: str):
+        if timezone_name != "UTC":
+            raise ValueError("scheduled endpoint timezone must be UTC")
         self._delegate = CronTrigger.from_crontab(
             expression, timezone=timezone_name
         )
@@ -81,19 +77,7 @@ class _PortableCronTrigger(BaseTrigger):
     def get_next_fire_time(
         self, previous_fire_time: datetime | None, now: datetime
     ) -> datetime | None:
-        candidate = self._delegate.get_next_fire_time(previous_fire_time, now)
-        while candidate is not None and not self._portable(candidate):
-            candidate = self._delegate.get_next_fire_time(candidate, candidate)
-        return candidate
-
-    @staticmethod
-    def _portable(candidate: datetime) -> bool:
-        round_trip = candidate.astimezone(timezone.utc).astimezone(
-            candidate.tzinfo
-        )
-        wall = candidate.replace(tzinfo=None)
-        round_trip_wall = round_trip.replace(tzinfo=None)
-        return wall == round_trip_wall and candidate.fold == 0
+        return self._delegate.get_next_fire_time(previous_fire_time, now)
 
 
 class _CronEndpoint(DataSourceEndpoint):
