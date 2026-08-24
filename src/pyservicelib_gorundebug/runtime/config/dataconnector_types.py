@@ -318,3 +318,166 @@ class CustomDataConnectorConfig(DataConnectorConfig):
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
+
+
+class CronDataConnectorConfig(DataConnectorConfig):
+
+    def __init__(self, id: int, name: str,
+                 implementation: DataConnectorImplementation,
+                 properties: Optional[dict[str, Any]] = None):
+        self._id = id
+        self._name = name
+        self._implementation = implementation
+        self._properties = properties or {}
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def type(self) -> DataConnectorType:
+        return DataConnectorType.Cron
+
+    @property
+    def implementation(self) -> DataConnectorImplementation:
+        return self._implementation
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+        }
+
+    def get_property(self, name: str) -> Any:
+        return self._properties.get(name)
+
+
+class TemporalDataConnectorConfig(DataConnectorConfig):
+
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        implementation: DataConnectorImplementation,
+        address: str,
+        namespace: str,
+        identity: str = "",
+        api_key: str = "",
+        tls_enabled: bool = False,
+        tls_server_name: str = "",
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        max_concurrent_activities: int = 1,
+        max_concurrent_workflows: int = 1,
+        properties: Optional[dict[str, Any]] = None,
+    ):
+        if not address:
+            raise ValueError("Temporal address must not be empty")
+        if not namespace:
+            raise ValueError("Temporal namespace must not be empty")
+        if max_concurrent_activities < 1 or max_concurrent_workflows < 1:
+            raise ValueError("Temporal concurrency limits must be positive")
+        self._id = id
+        self._name = name
+        self._implementation = implementation
+        self._address = address
+        self._namespace = namespace
+        self._identity = identity
+        self._api_key = api_key
+        self._tls_enabled = tls_enabled
+        self._tls_server_name = tls_server_name
+        self._tls_ca_file = tls_ca_file
+        self._tls_cert_file = tls_cert_file
+        self._tls_key_file = tls_key_file
+        self._max_concurrent_activities = max_concurrent_activities
+        self._max_concurrent_workflows = max_concurrent_workflows
+        self._properties = properties or {}
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def type(self) -> DataConnectorType:
+        return DataConnectorType.Temporal
+
+    @property
+    def implementation(self) -> DataConnectorImplementation:
+        return self._implementation
+
+    @property
+    def address(self) -> str:
+        return self._address
+
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def identity(self) -> str:
+        return self._identity
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key
+
+    @property
+    def tls_enabled(self) -> bool:
+        return self._tls_enabled
+
+    @property
+    def tls_server_name(self) -> str:
+        return self._tls_server_name
+
+    @property
+    def tls_ca_file(self) -> str:
+        return self._tls_ca_file
+
+    @property
+    def tls_cert_file(self) -> str:
+        return self._tls_cert_file
+
+    @property
+    def tls_key_file(self) -> str:
+        return self._tls_key_file
+
+    @property
+    def max_concurrent_activities(self) -> int:
+        return self._max_concurrent_activities
+
+    @property
+    def max_concurrent_workflows(self) -> int:
+        return self._max_concurrent_workflows
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self._id,
+            "name": self._name,
+            "type": self.type.value,
+            "implementation": self._implementation.value,
+            "address": self._address,
+            "namespace": self._namespace,
+            "identity": self._identity,
+            "apiKey": self._api_key,
+            "tlsEnabled": self._tls_enabled,
+            "tlsServerName": self._tls_server_name,
+            "tlsCaFile": self._tls_ca_file,
+            "tlsCertFile": self._tls_cert_file,
+            "tlsKeyFile": self._tls_key_file,
+            "maxConcurrentActivities": self._max_concurrent_activities,
+            "maxConcurrentWorkflows": self._max_concurrent_workflows,
+        }
+
+    def get_property(self, name: str) -> Any:
+        return self._properties.get(name)

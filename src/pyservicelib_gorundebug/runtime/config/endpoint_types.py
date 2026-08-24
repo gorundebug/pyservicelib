@@ -8,6 +8,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Any
 from ...api.models.http_method_type import HTTPMethodType
 from ...api.models.grpc_method_type import GrpcMethodType
+from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
+from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy
 
 
 class EndpointConfig(ABC):
@@ -396,3 +398,154 @@ class CustomEndpointConfig(EndpointConfig):
 
     def get_property(self, name: str) -> Any:
         return self._properties.get(name)
+
+
+class CronEndpointConfig(EndpointConfig):
+
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        enabled: bool = False,
+        schedule: str = "",
+        timezone: str = "UTC",
+        overlap_policy: ScheduleOverlapPolicy = ScheduleOverlapPolicy.SKIP,
+        missed_run_policy: ScheduleMissedRunPolicy = ScheduleMissedRunPolicy.SKIP,
+        properties: Optional[dict[str, Any]] = None,
+    ):
+        self._id = id
+        self._name = name
+        self._id_data_connector = id_data_connector
+        self._enabled = enabled
+        self._schedule = schedule
+        self._timezone = timezone
+        self._overlap_policy = overlap_policy
+        self._missed_run_policy = missed_run_policy
+        self._properties = properties or {}
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def id_data_connector(self) -> int:
+        return self._id_data_connector
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def schedule(self) -> str:
+        return self._schedule
+
+    @property
+    def timezone(self) -> str:
+        return self._timezone
+
+    @property
+    def overlap_policy(self) -> ScheduleOverlapPolicy:
+        return self._overlap_policy
+
+    @property
+    def missed_run_policy(self) -> ScheduleMissedRunPolicy:
+        return self._missed_run_policy
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self._id,
+            "name": self._name,
+            "idDataConnector": self._id_data_connector,
+            "enabled": self._enabled,
+            "schedule": self._schedule,
+            "timezone": self._timezone,
+            "overlapPolicy": self._overlap_policy.value,
+            "missedRunPolicy": self._missed_run_policy.value,
+        }
+
+    def get_property(self, name: str) -> Any:
+        return self._properties.get(name)
+
+
+class TemporalEndpointConfig(CronEndpointConfig):
+
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        enabled: bool = False,
+        task_queue: str = "",
+        schedule: str = "",
+        schedule_id: str = "",
+        timezone: str = "UTC",
+        overlap_policy: ScheduleOverlapPolicy = ScheduleOverlapPolicy.SKIP,
+        missed_run_policy: ScheduleMissedRunPolicy = ScheduleMissedRunPolicy.SKIP,
+        workflow_execution_timeout: int = 0,
+        activity_start_to_close_timeout: int = 0,
+        activity_heartbeat_timeout: int = 0,
+        maximum_attempts: int = 1,
+        properties: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(
+            id=id,
+            name=name,
+            id_data_connector=id_data_connector,
+            enabled=enabled,
+            schedule=schedule,
+            timezone=timezone,
+            overlap_policy=overlap_policy,
+            missed_run_policy=missed_run_policy,
+            properties=properties,
+        )
+        if activity_start_to_close_timeout < 1:
+            raise ValueError("Temporal activity start-to-close timeout must be positive")
+        if maximum_attempts < 1:
+            raise ValueError("Temporal maximum attempts must be positive")
+        self._task_queue = task_queue
+        self._schedule_id = schedule_id
+        self._workflow_execution_timeout = workflow_execution_timeout
+        self._activity_start_to_close_timeout = activity_start_to_close_timeout
+        self._activity_heartbeat_timeout = activity_heartbeat_timeout
+        self._maximum_attempts = maximum_attempts
+
+    @property
+    def task_queue(self) -> str:
+        return self._task_queue
+
+    @property
+    def schedule_id(self) -> str:
+        return self._schedule_id
+
+    @property
+    def workflow_execution_timeout(self) -> int:
+        return self._workflow_execution_timeout
+
+    @property
+    def activity_start_to_close_timeout(self) -> int:
+        return self._activity_start_to_close_timeout
+
+    @property
+    def activity_heartbeat_timeout(self) -> int:
+        return self._activity_heartbeat_timeout
+
+    @property
+    def maximum_attempts(self) -> int:
+        return self._maximum_attempts
+
+    def to_dict(self) -> dict[str, Any]:
+        result = super().to_dict()
+        result.update({
+            "taskQueue": self._task_queue,
+            "scheduleId": self._schedule_id,
+            "workflowExecutionTimeout": self._workflow_execution_timeout,
+            "activityStartToCloseTimeout": self._activity_start_to_close_timeout,
+            "activityHeartbeatTimeout": self._activity_heartbeat_timeout,
+            "maximumAttempts": self._maximum_attempts,
+        })
+        return result

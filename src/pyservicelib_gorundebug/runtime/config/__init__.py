@@ -34,6 +34,8 @@ from .dataconnector_types import (
     HttpDataConnectorConfig,
     GrpcDataConnectorConfig,
     KafkaDataConnectorConfig,
+    CronDataConnectorConfig,
+    TemporalDataConnectorConfig,
     CustomDataConnectorConfig,
     data_connector_protocol,
 )
@@ -42,6 +44,8 @@ from .endpoint_types import (
     HttpEndpointConfig,
     GrpcEndpointConfig,
     KafkaEndpointConfig,
+    CronEndpointConfig,
+    TemporalEndpointConfig,
     CustomEndpointConfig,
 )
 from .config_to_api import (
