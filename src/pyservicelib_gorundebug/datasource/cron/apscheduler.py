@@ -27,6 +27,7 @@ from ...runtime.datasource import (
     DataSourceEndpointConsumer,
     InputDataSource,
 )
+from ...runtime.environment.log.log import err_field, str_field
 from ...runtime.schedule import (
     ScheduleBackend,
     ScheduleTrigger,
@@ -116,6 +117,7 @@ class _CronEndpoint(DataSourceEndpoint):
         self._runner = asyncio.create_task(
             self._run(trigger), name=f"cron:{self.datasource.name}:{self.name}"
         )
+        self._runner.add_done_callback(self._task_done)
 
     async def stop(self) -> None:
         tasks = ([self._runner] if self._runner is not None else []) + list(
@@ -166,7 +168,19 @@ class _CronEndpoint(DataSourceEndpoint):
             self._fire(scheduled_at), name=f"cron-fire:{self.name}"
         )
         self._active.add(task)
-        task.add_done_callback(self._active.discard)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self._active.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.datasource.environment.log.error(
+                "cron endpoint task failed",
+                str_field("endpoint", self.name),
+                err_field(error),
+            )
 
     async def _fire(self, scheduled_at: datetime) -> None:
         if self._consumer is None:
