@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -73,6 +73,7 @@ class EndpointEnvelope:
     scheduled_at_unix_nano: int = 0
     fired_at_unix_nano: int = 0
     payload: bytes = b""
+    trace_carrier: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

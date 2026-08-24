@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack, nullcontext
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -29,6 +30,7 @@ from ...runtime.context import (
 from ...runtime.datasource import DataSourceEndpoint, DataSourceEndpointConsumer, InputDataSource
 from ...runtime.environment.tracing import (
     Tracer,
+    Tracing,
     sampling_scope,
     span_error,
     start_endpoint_span,
@@ -67,6 +69,7 @@ class _TemporalEndpointConsumer[T, R, E](
         self._connector = connector
         self._decode = decode
         tracing = stream.environment.tracing
+        self._tracing: Optional[Tracing] = tracing
         self._tracer: Optional[Tracer] = (
             tracing.tracer(stream.environment.service_config.name)
             if tracing is not None
@@ -114,7 +117,15 @@ class _TemporalEndpointConsumer[T, R, E](
         error: Optional[Exception] = None
         future: Optional[asyncio.Future[R]] = None
         try:
-            with sampling_scope(envelope.sampling_enabled):
+            with ExitStack() as scopes:
+                remote_sampled = scopes.enter_context(
+                    self._tracing.extract(envelope.trace_carrier)
+                    if self._tracing is not None and envelope.trace_carrier
+                    else nullcontext(False)
+                )
+                scopes.enter_context(
+                    sampling_scope(envelope.sampling_enabled or remote_sampled)
+                )
                 _, span = start_endpoint_span(
                     self._tracer,
                     "temporal.input",

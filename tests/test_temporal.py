@@ -63,6 +63,9 @@ def _envelope(*, to_id: int = 4) -> DurableEnvelope:
         deadline_unix_nano=0,
         sampling_enabled=False,
         payload=b"value",
+        trace_carrier={
+            "traceparent": "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
+        },
     )
 
 

@@ -6,8 +6,9 @@
 
 from abc import ABC, abstractmethod
 import asyncio
+from contextlib import nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 from typing import Optional, Callable, Any, Awaitable, get_origin, Hashable, Protocol
@@ -285,6 +286,7 @@ class DurableEnvelope:
     deadline_unix_nano: int
     sampling_enabled: bool
     payload: bytes
+    trace_carrier: dict[str, str] = field(default_factory=dict)
 
 
 class DurableTransport(ABC):
@@ -391,6 +393,10 @@ class DurableCaller[T](Caller[T]):
                 deadline = deadline.replace(tzinfo=timezone.utc)
             deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
         priority = priority_from_context()
+        trace_carrier: dict[str, str] = {}
+        tracing = self._source.environment.tracing
+        if tracing is not None:
+            tracing.inject(trace_carrier)
         try:
             await self._transport.submit_link(
                 self._link_id,
@@ -404,6 +410,7 @@ class DurableCaller[T](Caller[T]):
                     deadline_unix_nano=deadline_nanos,
                     sampling_enabled=sampling_enabled(),
                     payload=payload,
+                    trace_carrier=trace_carrier,
                 ),
             )
         finally:
@@ -587,9 +594,16 @@ for link between streams from={source.id} to={consumer.stream.id}")
                 scope_token = _durable_invocation_scope.set(
                     _DurableInvocationScope(envelope.call_id, {})
                 )
+                tracing = source.environment.tracing
+                trace_scope = (
+                    tracing.extract(envelope.trace_carrier)
+                    if tracing is not None and envelope.trace_carrier
+                    else nullcontext(False)
+                )
                 try:
-                    with sampling_scope(envelope.sampling_enabled):
-                        await consumer.consume(value)
+                    with trace_scope as remote_sampled:
+                        with sampling_scope(envelope.sampling_enabled or remote_sampled):
+                            await consumer.consume(value)
                 except asyncio.CancelledError:
                     cancelled.set()
                     raise
