@@ -299,6 +299,11 @@ class Connector(DurableTransport):
             if ctx.time_left is not None
             else connect
         )
+        # A Worker may receive an existing backlog as soon as its polling task
+        # starts.  Outbound submissions from that Activity must therefore be
+        # admitted before Worker polling begins, not after schedule
+        # reconciliation has completed.
+        self._started = True
         queues = self._build_queue_registrations()
         try:
             for task_queue, registration in queues.items():
@@ -332,10 +337,10 @@ class Connector(DurableTransport):
                 ):
                     await self._ensure_schedule(endpoint_cfg)
         except BaseException:
+            self._started = False
             await self._shutdown_workers()
             self._client = None
             raise
-        self._started = True
 
     async def stop(self, ctx: Context) -> None:
         del ctx
@@ -529,7 +534,7 @@ class Connector(DurableTransport):
             )
         except ScheduleAlreadyRunningError:
             description = await client.get_schedule_handle(schedule_id).describe()
-            _validate_memo(description.memo(), owner, schedule_id)
+            _validate_memo(await description.memo(), owner, schedule_id)
             existing = description.schedule.action
             if (
                 not isinstance(existing, ScheduleActionStartWorkflow)
@@ -663,7 +668,7 @@ async def _validate_workflow_ownership(
             f"Temporal workflow {description.id!r} ownership collision: "
             f"workflow type {description.workflow_type!r}, expected {expected_type!r}"
         )
-    _validate_memo(description.memo(), expected_owner, expected_call_id)
+    _validate_memo(await description.memo(), expected_owner, expected_call_id)
 
 
 def make_connector(

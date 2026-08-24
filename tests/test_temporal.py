@@ -14,6 +14,7 @@ from pyservicelib_gorundebug.runtime.temporal.connector import (
     _DurableWorkflowRequest,
     _LinkRegistration,
     _make_link_activity,
+    _validate_workflow_ownership,
 )
 
 
@@ -105,3 +106,25 @@ def test_remote_endpoint_activity_identity_uses_input_service() -> None:
 
     assert connector._endpoints[11].activity_type == "servicegen.endpoint.2.11.v1"
     assert connector._endpoints[11].handler is None
+
+
+@pytest.mark.asyncio
+async def test_workflow_ownership_awaits_decoded_memo() -> None:
+    class _Description:
+        id = "workflow-1"
+        workflow_type = "servicegen.test"
+
+        async def memo(self) -> dict[str, str]:
+            return {
+                "servicegen.managedBy": "servicegen",
+                "servicegen.owner": "owner-1",
+                "servicegen.callId": "call-1",
+            }
+
+    class _Handle:
+        async def describe(self) -> _Description:
+            return _Description()
+
+    await _validate_workflow_ownership(
+        _Handle(), "servicegen.test", "owner-1", "call-1"
+    )
