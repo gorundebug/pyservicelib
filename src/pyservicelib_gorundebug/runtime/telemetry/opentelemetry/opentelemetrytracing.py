@@ -11,11 +11,11 @@ from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.sdk.trace.sampling import (
     ALWAYS_ON, ALWAYS_OFF, ParentBased, SamplingResult, Decision, Sampler,
 )
+from temporalio.contrib.opentelemetry import create_tracer_provider
 
 from ...environment.tracing.tracing import (
     Attribute, SpanContext, StatusCode,
@@ -103,7 +103,7 @@ class _Tracer(Tracer):
 class _Tracing(Tracing):
     __slots__ = ('_provider',)
 
-    def __init__(self, provider: TracerProvider):
+    def __init__(self, provider: Any):
         self._provider = provider
 
     def tracer(self, name: str) -> Tracer:
@@ -141,7 +141,7 @@ class _ContextSampler(Sampler):
 
 class OtelTracingEngine(TracingEngine):
 
-    def __init__(self, provider: TracerProvider):
+    def __init__(self, provider: Any):
         self._provider = provider
         self._tracing = _Tracing(provider)
 
@@ -153,10 +153,14 @@ class OtelTracingEngine(TracingEngine):
         self._provider.shutdown()
 
 
-def _build_provider(exporter, service_name: str, context_sampler: bool, sync: bool) -> TracerProvider:
+def _build_provider(exporter, service_name: str, context_sampler: bool, sync: bool) -> Any:
     sampler = ParentBased(_ContextSampler()) if context_sampler else ALWAYS_ON
     resource = Resource({'service.name': service_name})
-    provider = TracerProvider(sampler=sampler, resource=resource)
+    # The official Temporal provider uses deterministic span identifiers while
+    # Workflow code is replaying and behaves like the regular SDK provider in
+    # process/Activity code.  Keeping a single provider preserves the ordinary
+    # ServiceLib trace tree without introducing a second telemetry stack.
+    provider = create_tracer_provider(sampler=sampler, resource=resource)
     if sync:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
     else:

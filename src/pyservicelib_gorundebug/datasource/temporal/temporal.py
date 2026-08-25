@@ -205,6 +205,7 @@ def _make_endpoint_consumer[Input, T, R, E](
     stream: TypedInputStream[T, R, E],
     decode: Callable[[EndpointEnvelope], Input],
     invoke: Callable[[Input], Awaitable[None]],
+    workflow_class: type[Any] | None = None,
 ) -> Consumer[T]:
     environment = stream.environment
     cfg = environment.config.get_endpoint_config_by_id(stream.endpoint_id)
@@ -223,6 +224,7 @@ def _make_endpoint_consumer[Input, T, R, E](
         cfg.id,
         consumer.activate,
         lambda value: bytes(stream.serde.serialize(cast(T, value))),
+        workflow_class,
     )
     environment.runtime.register_endpoint_consumer(consumer)
     return consumer
@@ -230,6 +232,7 @@ def _make_endpoint_consumer[Input, T, R, E](
 
 def make_direct_endpoint_consumer[T, R, E](
     stream: TypedInputStream[T, R, E],
+    workflow_class: type[Any] | None = None,
 ) -> Consumer[T]:
     """Register a direct Activity-to-existing-input adapter."""
 
@@ -237,12 +240,14 @@ def make_direct_endpoint_consumer[T, R, E](
         stream,
         lambda envelope: stream.serde.deserialize(envelope.payload),
         stream.consume,
+        workflow_class,
     )
 
 
 def make_schedule_endpoint_consumer[T, R, E](
     stream: TypedInputStream[T, R, E],
     function: ScheduleEndpointFunction[T],
+    workflow_class: type[Any] | None = None,
 ) -> Consumer[T]:
     """Bind scheduled and on-demand activation to one typed endpoint."""
 
@@ -283,4 +288,4 @@ def make_schedule_endpoint_consumer[T, R, E](
             return
         await stream.consume(cast(T, payload))
 
-    return _make_endpoint_consumer(stream, decode, invoke)
+    return _make_endpoint_consumer(stream, decode, invoke, workflow_class)

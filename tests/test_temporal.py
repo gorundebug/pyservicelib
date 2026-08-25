@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
@@ -40,13 +41,19 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     _direct_workflow_type,
     _endpoint_workflow_id,
     _make_endpoint_activity,
-    _make_endpoint_workflow,
+    _opentelemetry_plugins,
+    execute_direct_endpoint_workflow,
     _schedule_workflow_id,
     _scheduled_time_nanos,
     _submit_endpoint_from_workflow,
     _temporal_cron_expression,
     _validate_workflow_ownership,
 )
+from pyservicelib_gorundebug.datasource.temporal.workflow_environment import (
+    _WorkflowPriorityTaskPool,
+    _WorkflowTaskPool,
+)
+from pyservicelib_gorundebug.runtime.context.context import Context
 from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
     TEMPORAL_HEADER_DEADLINE_UNIX_NANO,
     TEMPORAL_HEADER_PRIORITY,
@@ -67,6 +74,84 @@ def test_workflow_identity_uses_connector_endpoint_and_business_message_id() -> 
     ) == "temporal_main/endpoint/durable_job/order%2F42%3Aitem%207"
 
 
+def test_temporal_otel_plugin_is_enabled_only_for_replay_safe_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.connector.otel_trace.get_tracer_provider",
+        lambda: object(),
+    )
+    assert _opentelemetry_plugins() == []
+
+    class _ReplaySafeProvider:
+        @staticmethod
+        def id_generator() -> object:
+            return object()
+
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.connector.otel_trace.get_tracer_provider",
+        lambda: _ReplaySafeProvider(),
+    )
+    assert len(_opentelemetry_plugins()) == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_task_pool_is_bounded_and_waits_for_all_work() -> None:
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    completed: list[int] = []
+    failures: list[BaseException] = []
+    pool = _WorkflowTaskPool("workflow", 1, 1, failures.append)
+    await pool.start(Context())
+
+    async def first() -> None:
+        entered.set()
+        await gate.wait()
+        completed.append(1)
+
+    await pool.add_task(first)
+    await entered.wait()
+    await pool.add_task(lambda: _append_async(completed, 2))
+    with pytest.raises(asyncio.QueueFull):
+        await pool.add_task(lambda: _append_async(completed, 3))
+    gate.set()
+    await pool.wait_idle()
+    await pool.stop(Context())
+
+    assert completed == [1, 2]
+    assert failures == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_priority_pool_preserves_priority_then_fifo() -> None:
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    completed: list[int] = []
+    failures: list[BaseException] = []
+    pool = _WorkflowPriorityTaskPool("priority", 1, 8, failures.append)
+    await pool.start(Context())
+
+    async def blocker() -> None:
+        entered.set()
+        await gate.wait()
+
+    await pool.add_task(0, blocker)
+    await entered.wait()
+    await pool.add_task(7, lambda: _append_async(completed, 7))
+    await pool.add_task(2, lambda: _append_async(completed, 2))
+    await pool.add_task(2, lambda: _append_async(completed, 3))
+    gate.set()
+    await pool.wait_idle()
+    await pool.stop(Context())
+
+    assert completed == [2, 3, 7]
+    assert failures == []
+
+
+async def _append_async(target: list[int], value: int) -> None:
+    target.append(value)
+
+
 @pytest.mark.asyncio
 async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
@@ -77,7 +162,7 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
         waited.append(duration)
 
     monkeypatch.setattr(
-        "pyservicelib_gorundebug.datasource.temporal.connector.workflow.sleep",
+        "pyservicelib_gorundebug.datasource.temporal.workflow.workflow.sleep",
         sleep,
     )
 
@@ -88,14 +173,6 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
         return EndpointResult(payload=envelope.payload + b"-done")
 
     workflow_type = _direct_workflow_type("Temporal", "Workflow Job")
-    workflow_class = _make_endpoint_workflow(
-        _EndpointRegistration(
-            12,
-            "temporal.endpoint.workflow_job.v1",
-            handler,
-            workflow_type,
-        )
-    )
     request = _DirectEndpointWorkflowRequest(
         "temporal",
         EndpointEnvelope(
@@ -105,7 +182,13 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
     )
     converted_request = asdict(request)
     converted_request["envelope"]["payload"] = list(b"job")
-    result = await workflow_class().run(converted_request)
+    result = await execute_direct_endpoint_workflow(
+        converted_request,
+        endpoint_id=12,
+        workflow_type=workflow_type,
+        handler=handler,
+        encode_input=lambda value: bytes(value),
+    )
     assert result.payload == b"job-done"
     assert waited == [timedelta(hours=1)]
     assert _schedule_workflow_id("Temporal Connector", "Workflow Job") == (
@@ -129,7 +212,7 @@ async def test_workflow_temporal_sinks_await_sequential_and_fanout_results(
         return EndpointResult(envelope.payload + suffixes[activity_type])
 
     monkeypatch.setattr(
-        "pyservicelib_gorundebug.datasource.temporal.connector.workflow.execute_activity",
+        "pyservicelib_gorundebug.datasource.temporal.workflow.workflow.execute_activity",
         execute_activity,
     )
     submission = _WorkflowSubmission(

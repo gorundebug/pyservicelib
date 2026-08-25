@@ -14,17 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import threading
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
-from urllib.parse import quote
 
-from temporalio import activity, workflow
+from opentelemetry import trace as otel_trace
+from temporalio import activity
+from temporalio.contrib.opentelemetry import OpenTelemetryPlugin
 from temporalio.client import (
     Client,
     Schedule,
@@ -36,7 +35,6 @@ from temporalio.client import (
 )
 from temporalio.common import (
     Priority,
-    RetryPolicy,
     WorkflowIDConflictPolicy,
     WorkflowIDReusePolicy,
 )
@@ -54,86 +52,46 @@ from ...runtime.context import Context
 from ...runtime.durable_context import (
     DurableCallContext,
     DurableCallDiagnostics,
-    TemporalContinueAsNewRequest,
     run_durable_call_activity,
-    run_durable_call_workflow,
 )
 from ...runtime.environment.log import err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
 from .context_propagation import TemporalContextPropagationInterceptor
+from .workflow import (
+    ENDPOINT_WORKFLOW_TYPE,
+    WORKFLOW_SUBMISSION,
+    DirectEndpointWorkflowRequest,
+    EndpointEncoder,
+    EndpointEnvelope,
+    EndpointHandler,
+    EndpointResult,
+    EndpointWorkflowRequest,
+    TemporalEndpointWorkflow,
+    WorkflowEndpointConfig,
+    WorkflowSubmission,
+    _direct_workflow_type,
+    _endpoint_workflow_id,
+    _identity_name,
+    _schedule_workflow_id,
+    _scheduled_time_nanos,
+    execute_direct_endpoint_workflow,
+    submit_endpoint_from_workflow,
+)
 
 
-ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
 _MEMO_MANAGED_BY = "servicelib.managedBy"
 _MEMO_OWNER = "servicelib.owner"
 _MEMO_CALL_ID = "servicelib.callId"
-_SCHEDULE_WORKFLOW_ID_SUFFIX = re.compile(
-    r"-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$"
-)
 _SDK_METRICS_BIND_ADDRESS_ENVIRONMENT = "TEMPORAL_SDK_METRICS_BIND_ADDRESS"
 _SDK_RUNTIME_LOCK = threading.Lock()
 _SDK_RUNTIME: Runtime | None = None
 _SDK_RUNTIME_ADDRESS: str | None = None
 
 
-def _opaque_identity_component(value: str) -> str:
-    return quote(value, safe="-._~")
-
-
-# Intentionally identical to servicegen.splitWords + ToSnakeCase.
-def _identity_name(value: str) -> str:
-    words: list[str] = []
-    current: list[str] = []
-    characters = list(value)
-    for index, character in enumerate(characters):
-        if character.isspace() or character in "_-/.":
-            if current:
-                words.append("".join(current))
-                current.clear()
-            continue
-        if not character.isalpha() and not character.isdigit():
-            continue
-        if current and character.isupper():
-            previous = current[-1]
-            if not previous.isupper() or (
-                index + 1 < len(characters) and characters[index + 1].islower()
-            ):
-                words.append("".join(current))
-                current.clear()
-        current.append(character)
-    if current:
-        words.append("".join(current))
-    return "_".join(word.lower() for word in words)
-
-
-def _endpoint_workflow_id(
-    connector_name: str, endpoint_name: str, message_id: str
-) -> str:
-    return (
-        f"{_identity_name(connector_name)}/endpoint/"
-        f"{_identity_name(endpoint_name)}/"
-        f"{_opaque_identity_component(message_id)}"
-    )
-
-
 def _endpoint_owner(connector_name: str, endpoint_name: str) -> str:
     return (
         f"{_identity_name(connector_name)}/endpoint/"
         f"{_identity_name(endpoint_name)}/v1"
-    )
-
-
-def _direct_workflow_type(connector_name: str, endpoint_name: str) -> str:
-    return (
-        f"{_identity_name(connector_name)}.endpoint."
-        f"{_identity_name(endpoint_name)}.workflow.v1"
-    )
-
-
-def _schedule_workflow_id(connector_name: str, endpoint_name: str) -> str:
-    return (
-        f"{_identity_name(connector_name)}/schedule/"
-        f"{_identity_name(endpoint_name)}"
     )
 
 
@@ -164,156 +122,28 @@ def _sdk_runtime() -> Runtime | None:
         return _SDK_RUNTIME
 
 
-@dataclass(frozen=True, slots=True)
-class EndpointEnvelope:
-    version: int
-    endpoint_id: int
-    message_id: str
-    stream_id: str
-    priority: int
-    deadline_unix_nano: int = 0
-    scheduled: bool = False
-    schedule_id: str = ""
-    scheduled_at_unix_nano: int = 0
-    fired_at_unix_nano: int = 0
-    payload: bytes = b""
+def _opentelemetry_plugins() -> list[OpenTelemetryPlugin]:
+    """Enable official Temporal tracing only for its replay-safe provider.
 
-
-@dataclass(frozen=True, slots=True)
-class EndpointResult:
-    payload: bytes = b""
-
-
-EndpointHandler = Callable[[EndpointEnvelope], Awaitable[EndpointResult]]
-EndpointEncoder = Callable[[Any], bytes]
-
-
-@dataclass(frozen=True, slots=True)
-class _EndpointWorkflowRequest:
-    activity_type: str
-    activity_start_to_close_millis: int
-    activity_heartbeat_millis: int
-    maximum_attempts: int
-    priority: int
-    envelope: EndpointEnvelope
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkflowEndpointConfig:
-    endpoint_id: int
-    name: str
-    task_queue: str
-    execution_type: TemporalExecutionType
-    activity_type: str
-    workflow_type: str
-    workflow_execution_millis: int
-    activity_start_to_close_millis: int
-    activity_heartbeat_millis: int
-    maximum_attempts: int
-
-
-@dataclass(frozen=True, slots=True)
-class _DirectEndpointWorkflowRequest:
-    connector_name: str
-    envelope: EndpointEnvelope
-    endpoints: tuple[_WorkflowEndpointConfig, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkflowSubmission:
-    connector_name: str
-    endpoints: dict[int, _WorkflowEndpointConfig]
-
-
-_WORKFLOW_SUBMISSION: ContextVar[_WorkflowSubmission | None] = ContextVar(
-    "servicelib_temporal_workflow_submission", default=None
-)
-
-
-def _endpoint_envelope(value: EndpointEnvelope | dict[str, Any]) -> EndpointEnvelope:
-    """Restore types at the boundary of a dynamically named Workflow.
-
-    Temporal cannot infer the input annotation when the Workflow is started by
-    its registered string name, so its default JSON converter returns a dict.
+    A service may deliberately run without tracing.  In that case OpenTelemetry
+    leaves a proxy provider installed and the Temporal plugin must not be
+    registered; logging and SDK/Workflow metrics remain available independently.
     """
 
-    if isinstance(value, EndpointEnvelope):
-        return value
-    data = dict(value)
-    payload = data.get("payload", b"")
-    if not isinstance(payload, bytes):
-        data["payload"] = bytes(payload)
-    return EndpointEnvelope(**data)
+    provider = otel_trace.get_tracer_provider()
+    if not callable(getattr(provider, "id_generator", None)):
+        return []
+    return [OpenTelemetryPlugin(add_temporal_spans=True)]
 
 
-def _workflow_endpoint_config(
-    value: _WorkflowEndpointConfig | dict[str, Any],
-) -> _WorkflowEndpointConfig:
-    if isinstance(value, _WorkflowEndpointConfig):
-        return value
-    data = dict(value)
-    execution_type = data.get("execution_type")
-    if not isinstance(execution_type, TemporalExecutionType):
-        data["execution_type"] = TemporalExecutionType(execution_type)
-    return _WorkflowEndpointConfig(**data)
-
-
-def _direct_workflow_request(
-    value: _DirectEndpointWorkflowRequest | dict[str, Any],
-) -> _DirectEndpointWorkflowRequest:
-    if isinstance(value, _DirectEndpointWorkflowRequest):
-        return value
-    return _DirectEndpointWorkflowRequest(
-        connector_name=str(value["connector_name"]),
-        envelope=_endpoint_envelope(value["envelope"]),
-        endpoints=tuple(
-            _workflow_endpoint_config(item) for item in value.get("endpoints", ())
-        ),
-    )
-
-
-@workflow.defn(name=ENDPOINT_WORKFLOW_TYPE, sandboxed=False)
-class _TemporalEndpointWorkflow:
-    @workflow.run
-    async def run(self, request: _EndpointWorkflowRequest) -> EndpointResult:
-        envelope = request.envelope
-        if envelope.scheduled:
-            info = workflow.info()
-            envelope = replace(
-                envelope,
-                message_id=info.workflow_id,
-                stream_id=info.workflow_id,
-                scheduled_at_unix_nano=_scheduled_time_nanos(
-                    info.workflow_id, info.workflow_start_time
-                ),
-            )
-        result = await workflow.execute_activity(
-            request.activity_type,
-            envelope,
-            result_type=EndpointResult,
-            start_to_close_timeout=timedelta(
-                milliseconds=request.activity_start_to_close_millis
-            ),
-            heartbeat_timeout=(
-                timedelta(milliseconds=request.activity_heartbeat_millis)
-                if request.activity_heartbeat_millis > 0
-                else None
-            ),
-            retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
-            priority=Priority(priority_key=request.priority),
-        )
-        return result
-
-
-def _scheduled_time_nanos(workflow_id: str, fallback: datetime) -> int:
-    match = _SCHEDULE_WORKFLOW_ID_SUFFIX.search(workflow_id)
-    if match is not None:
-        seconds = datetime.strptime(
-            match.group(1), "%Y-%m-%dT%H:%M:%S"
-        ).replace(tzinfo=timezone.utc)
-        fraction = (match.group(2) or "").ljust(9, "0")
-        return int(seconds.timestamp()) * 1_000_000_000 + int(fraction or "0")
-    return int(fallback.astimezone(timezone.utc).timestamp() * 1_000_000_000)
+# Private aliases remain temporarily for the existing internal test surface.
+_EndpointWorkflowRequest = EndpointWorkflowRequest
+_WorkflowEndpointConfig = WorkflowEndpointConfig
+_DirectEndpointWorkflowRequest = DirectEndpointWorkflowRequest
+_WorkflowSubmission = WorkflowSubmission
+_WORKFLOW_SUBMISSION = WORKFLOW_SUBMISSION
+_TemporalEndpointWorkflow = TemporalEndpointWorkflow
+_submit_endpoint_from_workflow = submit_endpoint_from_workflow
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +153,7 @@ class _EndpointRegistration:
     handler: Optional[EndpointHandler]
     workflow_type: str = ""
     encode_input: EndpointEncoder | None = None
+    workflow_class: type[Any] | None = None
 
 
 @dataclass(slots=True)
@@ -417,6 +248,7 @@ class Connector(ManagedDataConnector):
         endpoint_id: int,
         handler: EndpointHandler,
         encode_input: EndpointEncoder,
+        workflow_class: type[Any] | None = None,
     ) -> None:
         if self._started:
             raise RuntimeError("cannot register endpoint after Temporal connector start")
@@ -430,7 +262,10 @@ class Connector(ManagedDataConnector):
             )
         registration = existing or self._endpoint_registration(endpoint_id)
         self._endpoints[endpoint_id] = replace(
-            registration, handler=handler, encode_input=encode_input
+            registration,
+            handler=handler,
+            encode_input=encode_input,
+            workflow_class=workflow_class,
         )
 
     def register_endpoint_submission(self, endpoint_id: int) -> None:
@@ -455,13 +290,13 @@ class Connector(ManagedDataConnector):
             workflow_type=_direct_workflow_type(self._name, cfg.name),
         )
 
-    def _workflow_endpoint_snapshot(self) -> tuple[_WorkflowEndpointConfig, ...]:
-        result: list[_WorkflowEndpointConfig] = []
+    def _workflow_endpoint_snapshot(self) -> tuple[WorkflowEndpointConfig, ...]:
+        result: list[WorkflowEndpointConfig] = []
         for endpoint_id in sorted(self._endpoints):
             registration = self._endpoints[endpoint_id]
             cfg = self._endpoint_config(endpoint_id)
             result.append(
-                _WorkflowEndpointConfig(
+                WorkflowEndpointConfig(
                     endpoint_id=endpoint_id,
                     name=cfg.name,
                     task_queue=_required_string(cfg, "task_queue"),
@@ -484,6 +319,25 @@ class Connector(ManagedDataConnector):
             )
         return tuple(result)
 
+    def _runtime_config_snapshot(self) -> dict[str, Any]:
+        """Capture the immutable generated config consumed during replay.
+
+        The Workflow never re-reads process environment variables or the
+        reloadable process snapshot. Pydantic's JSON mode also guarantees that
+        only values supported by Temporal's payload converter cross the
+        boundary.
+        """
+
+        return cast(
+            dict[str, Any],
+            self._environment.config.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude={"runtime_config"},
+                exclude_none=True,
+            ),
+        )
+
     async def start(self, ctx: Context) -> None:
         if self._started:
             return
@@ -499,6 +353,7 @@ class Connector(ManagedDataConnector):
             api_key=getattr(cfg, "api_key", None) or None,
             tls=tls,
             runtime=_sdk_runtime(),
+            plugins=_opentelemetry_plugins(),
             interceptors=[context_interceptor],
         )
         self._client = await (
@@ -593,7 +448,13 @@ class Connector(ManagedDataConnector):
                 )
                 queue.endpoint_workflow = True
             elif cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
-                queue.workflows.append(_make_endpoint_workflow(endpoint_registration))
+                workflow_class = endpoint_registration.workflow_class
+                if workflow_class is None:
+                    raise RuntimeError(
+                        f"Temporal Workflow endpoint {cfg.name!r} has no "
+                        "generated statically importable Workflow class"
+                    )
+                queue.workflows.append(workflow_class)
             else:
                 raise ValueError(
                     f"Temporal endpoint {cfg.name!r} has unsupported execution type"
@@ -608,7 +469,7 @@ class Connector(ManagedDataConnector):
     ) -> EndpointResult:
         workflow_submission = _WORKFLOW_SUBMISSION.get()
         if workflow_submission is not None:
-            return await _submit_endpoint_from_workflow(
+            return await submit_endpoint_from_workflow(
                 workflow_submission, endpoint_id, envelope
             )
         registration = self._endpoints.get(endpoint_id)
@@ -629,15 +490,16 @@ class Connector(ManagedDataConnector):
             envelope,
         )
         workflow_type = ENDPOINT_WORKFLOW_TYPE
-        workflow_input: _EndpointWorkflowRequest | _DirectEndpointWorkflowRequest = (
+        workflow_input: _EndpointWorkflowRequest | DirectEndpointWorkflowRequest = (
             request
         )
         if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
             workflow_type = registration.workflow_type
-            workflow_input = _DirectEndpointWorkflowRequest(
+            workflow_input = DirectEndpointWorkflowRequest(
                 connector_name=self._name,
                 envelope=envelope,
                 endpoints=self._workflow_endpoint_snapshot(),
+                runtime_config=self._runtime_config_snapshot(),
             )
         workflow_id = _endpoint_workflow_id(
             self._name, cfg.name, envelope.message_id
@@ -686,15 +548,16 @@ class Connector(ManagedDataConnector):
             envelope,
         )
         workflow_type = ENDPOINT_WORKFLOW_TYPE
-        workflow_input: _EndpointWorkflowRequest | _DirectEndpointWorkflowRequest = (
+        workflow_input: _EndpointWorkflowRequest | DirectEndpointWorkflowRequest = (
             request
         )
         if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
             workflow_type = registration.workflow_type
-            workflow_input = _DirectEndpointWorkflowRequest(
+            workflow_input = DirectEndpointWorkflowRequest(
                 connector_name=self._name,
                 envelope=envelope,
                 endpoints=self._workflow_endpoint_snapshot(),
+                runtime_config=self._runtime_config_snapshot(),
             )
         overlap = ScheduleOverlapPolicy.ALLOW_ALL
         if getattr(cfg, "overlap_policy", None) == ApiOverlapPolicy.SKIP:
@@ -775,81 +638,6 @@ def workflow_time_nanos() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
 
 
-async def _submit_endpoint_from_workflow(
-    submission: _WorkflowSubmission,
-    endpoint_id: int,
-    envelope: EndpointEnvelope,
-) -> EndpointResult:
-    cfg = submission.endpoints.get(endpoint_id)
-    if cfg is None:
-        raise ValueError(
-            f"Temporal endpoint {endpoint_id} is absent from Workflow "
-            "configuration snapshot"
-        )
-    if not envelope.message_id or not envelope.stream_id:
-        raise ValueError(
-            f"Temporal Workflow submission to {cfg.name!r} requires stable identity"
-        )
-    envelope = replace(envelope, version=1, endpoint_id=endpoint_id)
-    retry_policy = RetryPolicy(maximum_attempts=cfg.maximum_attempts)
-    priority = Priority(
-        priority_key=normalize_temporal_priority(envelope.priority)
-    )
-    if cfg.execution_type is TemporalExecutionType.ACTIVITY:
-        return cast(
-            EndpointResult,
-            await workflow.execute_activity(
-                cfg.activity_type,
-                envelope,
-                result_type=EndpointResult,
-                task_queue=cfg.task_queue,
-                start_to_close_timeout=timedelta(
-                    milliseconds=cfg.activity_start_to_close_millis
-                ),
-                heartbeat_timeout=(
-                    timedelta(milliseconds=cfg.activity_heartbeat_millis)
-                    if cfg.activity_heartbeat_millis > 0
-                    else None
-                ),
-                retry_policy=retry_policy,
-                priority=priority,
-            ),
-        )
-    if cfg.execution_type is TemporalExecutionType.WORKFLOW:
-        request = _DirectEndpointWorkflowRequest(
-            connector_name=submission.connector_name,
-            envelope=envelope,
-            endpoints=tuple(
-                submission.endpoints[key]
-                for key in sorted(submission.endpoints)
-            ),
-        )
-        return cast(
-            EndpointResult,
-            await workflow.execute_child_workflow(
-                cfg.workflow_type,
-                request,
-                id=_endpoint_workflow_id(
-                    submission.connector_name, cfg.name, envelope.message_id
-                ),
-                task_queue=cfg.task_queue,
-                result_type=EndpointResult,
-                execution_timeout=(
-                    timedelta(milliseconds=cfg.workflow_execution_millis)
-                    if cfg.workflow_execution_millis > 0
-                    else None
-                ),
-                id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-                retry_policy=retry_policy,
-                priority=priority,
-            ),
-        )
-    raise ValueError(
-        f"Temporal endpoint {cfg.name!r} has unsupported execution type "
-        f"{cfg.execution_type!r}"
-    )
-
-
 def _make_endpoint_activity(
     registration: _EndpointRegistration,
     diagnostics: DurableCallDiagnostics | None = None,
@@ -878,98 +666,6 @@ def _make_endpoint_activity(
         return await run_durable_call_activity(durable, lambda: handler(fired))
 
     return activity.defn(name=registration.activity_type)(invoke_endpoint)
-
-
-def _make_endpoint_workflow(
-    registration: _EndpointRegistration,
-) -> type[Any]:
-    class_name = (
-        "TemporalEndpointWorkflow"
-        f"{registration.endpoint_id}{_identity_name(registration.workflow_type)}"
-    )
-
-    async def run(
-        _self: object,
-        request: _DirectEndpointWorkflowRequest | dict[str, Any],
-    ) -> EndpointResult:
-        request = _direct_workflow_request(request)
-        envelope = request.envelope
-        if envelope.version != 1 or envelope.endpoint_id != registration.endpoint_id:
-            raise ValueError(
-                f"invalid Temporal Workflow envelope for {registration.endpoint_id}"
-            )
-        if envelope.scheduled:
-            info = workflow.info()
-            envelope = replace(
-                envelope,
-                message_id=info.workflow_id,
-                stream_id=info.workflow_id,
-                scheduled_at_unix_nano=_scheduled_time_nanos(
-                    info.workflow_id, info.workflow_start_time
-                ),
-                fired_at_unix_nano=int(
-                    workflow.now().astimezone(timezone.utc).timestamp()
-                    * 1_000_000_000
-                ),
-            )
-        if not envelope.message_id or not envelope.stream_id:
-            raise ValueError(
-                f"invalid Temporal Workflow identity for {registration.endpoint_id}"
-            )
-        handler = registration.handler
-        if handler is None:
-            raise RuntimeError(
-                f"Temporal endpoint {registration.endpoint_id} has no "
-                "local Workflow handler"
-            )
-        durable = DurableCallContext(
-            envelope.message_id,
-            delay=workflow.sleep,
-            workflow=True,
-            recording_policy=lambda: not workflow.unsafe.is_replaying(),
-        )
-        submission_token = _WORKFLOW_SUBMISSION.set(
-            _WorkflowSubmission(
-                connector_name=request.connector_name,
-                endpoints={item.endpoint_id: item for item in request.endpoints},
-            )
-        )
-        try:
-            try:
-                return await run_durable_call_workflow(
-                    durable, lambda: handler(envelope)
-                )
-            finally:
-                _WORKFLOW_SUBMISSION.reset(submission_token)
-        except TemporalContinueAsNewRequest as continuation:
-            if registration.encode_input is None:
-                raise RuntimeError(
-                    f"Temporal endpoint {registration.endpoint_id} has no input encoder"
-                )
-            next_envelope = replace(
-                envelope,
-                scheduled=False,
-                schedule_id="",
-                scheduled_at_unix_nano=0,
-                fired_at_unix_nano=0,
-                payload=registration.encode_input(continuation.next_input),
-            )
-            workflow.continue_as_new(
-                replace(request, envelope=next_envelope),
-                workflow=cast(Any, registration.workflow_type),
-            )
-
-    run.__name__ = "run"
-    run.__qualname__ = f"{class_name}.run"
-    workflow_class = type(
-        class_name,
-        (),
-        {"__module__": __name__, "run": workflow.run(run)},
-    )
-    globals()[class_name] = workflow_class
-    return workflow.defn(
-        name=registration.workflow_type, sandboxed=False
-    )(workflow_class)
 
 
 def _optional_timeout(obj: Any, name: str) -> Optional[timedelta]:
