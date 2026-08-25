@@ -142,10 +142,13 @@ class DurableCallContext:
         )
         if cause is not None:
             error.__cause__ = cause
-        try:
-            self._complete(MISSING_OUTCOME, error)
-        except DurableCallAlreadyCompletedError:
-            pass
+        with self._lock:
+            if self._completed:
+                return
+            self._completed = True
+            self._outcome = error
+        self._report(MISSING_OUTCOME, error)
+        self._done.set()
 
     async def wait(self) -> None:
         await self._done.wait()

@@ -7,7 +7,6 @@ from temporalio.converter import DataConverter
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
 )
-from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.common import DurableEnvelope
 from pyservicelib_gorundebug.runtime.config import LinkId
 from pyservicelib_gorundebug.runtime.durable_context import durable_call_success
@@ -29,15 +28,7 @@ class _Config:
             name="temporal",
             implementation=DataConnectorImplementation.TemporalPython,
         )
-        self.endpoint = SimpleNamespace(id=11, id_data_connector=7)
-        self.streams = [
-            SimpleNamespace(
-                id=31,
-                id_service=2,
-                id_endpoint=11,
-                type=TransformationType.Input,
-            )
-        ]
+        self.endpoint = SimpleNamespace(id=11, name="durableJob", id_data_connector=7)
 
     def get_data_connector_by_id(self, connector_id: int):
         assert connector_id == 7
@@ -51,7 +42,7 @@ class _Config:
 class _Environment:
     def __init__(self) -> None:
         self.config = _Config()
-        self.service_config = SimpleNamespace(id=1)
+        self.service_config = SimpleNamespace(id=1, name="Automation Service")
         self.metrics = NoopMetrics()
         self.log = SimpleNamespace(warn=lambda *_: None, error=lambda *_: None)
 
@@ -76,7 +67,7 @@ def _envelope(*, to_id: int = 4) -> DurableEnvelope:
 def test_scheduled_time_uses_temporal_schedule_workflow_id_suffix() -> None:
     fallback = datetime(2026, 8, 24, 12, 35, 1, tzinfo=timezone.utc)
     assert _scheduled_time_nanos(
-        "servicegen/schedule/1/3-2026-08-24T12:30:00.123456789Z",
+        "temporal/schedule/durableJob-2026-08-24T12:30:00.123456789Z",
         fallback,
     ) == 1_787_574_600_123_456_789
     assert _scheduled_time_nanos("manual-workflow", fallback) == int(
@@ -93,7 +84,7 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
         durable_call_success()
 
     function = _make_link_activity(
-        _LinkRegistration(LinkId(3, 4), "servicegen.test", handler)
+        _LinkRegistration(LinkId(3, 4), "Automation Service.durable.3.4.v1", handler)
     )
     envelope = _envelope()
     await function(envelope)
@@ -106,7 +97,7 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
 @pytest.mark.asyncio
 async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> None:
     request = _DurableWorkflowRequest(
-        activity_type="servicegen.test",
+        activity_type="Automation Service.durable.3.4.v1",
         activity_start_to_close_millis=1_000,
         activity_heartbeat_millis=0,
         maximum_attempts=3,
@@ -120,12 +111,12 @@ async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> 
     assert decoded == [request]
 
 
-def test_remote_endpoint_activity_identity_uses_input_service() -> None:
+def test_remote_endpoint_activity_identity_uses_shared_connector_and_endpoint() -> None:
     connector = Connector(7, _Environment())  # type: ignore[arg-type]
 
     connector.register_endpoint_submission(11)
 
-    assert connector._endpoints[11].activity_type == "servicegen.endpoint.2.11.v1"
+    assert connector._endpoints[11].activity_type == "temporal.endpoint.durableJob.v1"
     assert connector._endpoints[11].handler is None
 
 
@@ -133,13 +124,13 @@ def test_remote_endpoint_activity_identity_uses_input_service() -> None:
 async def test_workflow_ownership_awaits_decoded_memo() -> None:
     class _Description:
         id = "workflow-1"
-        workflow_type = "servicegen.test"
+        workflow_type = "servicelib.test"
 
         async def memo(self) -> dict[str, str]:
             return {
-                "servicegen.managedBy": "servicegen",
-                "servicegen.owner": "owner-1",
-                "servicegen.callId": "call-1",
+                "servicelib.managedBy": "servicelib",
+                "servicelib.owner": "owner-1",
+                "servicelib.callId": "call-1",
             }
 
     class _Handle:
@@ -147,5 +138,5 @@ async def test_workflow_ownership_awaits_decoded_memo() -> None:
             return _Description()
 
     await _validate_workflow_ownership(
-        _Handle(), "servicegen.test", "owner-1", "call-1"
+        _Handle(), "servicelib.test", "owner-1", "call-1"
     )

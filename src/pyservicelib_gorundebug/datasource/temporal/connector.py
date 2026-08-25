@@ -45,7 +45,6 @@ from temporalio.worker import Worker
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy as ApiOverlapPolicy
-from ...api.models.transformation_type import TransformationType
 from ...runtime.common import DurableEnvelope, DurableTransport, ServiceExecutionEnvironment
 from ...runtime.config import EndpointConfig, LinkId
 from ...runtime.context import Context
@@ -58,11 +57,11 @@ from ...runtime.environment.log import err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
 
 
-DURABLE_WORKFLOW_TYPE = "servicegen.durable-link.v1"
-ENDPOINT_WORKFLOW_TYPE = "servicegen.temporal-endpoint.v1"
-_MEMO_MANAGED_BY = "servicegen.managedBy"
-_MEMO_OWNER = "servicegen.owner"
-_MEMO_CALL_ID = "servicegen.callId"
+DURABLE_WORKFLOW_TYPE = "servicelib.durable-link.v1"
+ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
+_MEMO_MANAGED_BY = "servicelib.managedBy"
+_MEMO_OWNER = "servicelib.owner"
+_MEMO_CALL_ID = "servicelib.callId"
 _SCHEDULE_WORKFLOW_ID_SUFFIX = re.compile(
     r"-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$"
 )
@@ -320,10 +319,10 @@ class Connector(DurableTransport):
                 f"link {link_id.from_id}->{link_id.to_id} does not belong to "
                 f"Temporal connector {self._name!r}"
             )
-        service_id = self._environment.service_config.id
+        service_name = self._environment.service_config.name
         self._links[link_id] = _LinkRegistration(
             link_id,
-            f"servicegen.durable.{service_id}.{link_id.from_id}.{link_id.to_id}.v1",
+            f"{service_name}.durable.{link_id.from_id}.{link_id.to_id}.v1",
             handler,
         )
 
@@ -353,21 +352,9 @@ class Connector(DurableTransport):
             raise ValueError(
                 f"endpoint {endpoint_id} does not belong to Temporal connector {self._name!r}"
             )
-        inputs = [
-            stream
-            for stream in self._environment.config.streams
-            if getattr(stream, "id_endpoint", None) == endpoint_id
-            and stream.type == TransformationType.Input
-        ]
-        if len(inputs) != 1:
-            raise ValueError(
-                f"Temporal endpoint {endpoint_id} must have exactly one input stream; "
-                f"found {len(inputs)}"
-            )
-        service_id = inputs[0].id_service
         return _EndpointRegistration(
             endpoint_id,
-            f"servicegen.endpoint.{service_id}.{endpoint_id}.v1",
+            f"{self._name}.endpoint.{cfg.name}.v1",
             None,
         )
 
@@ -511,13 +498,13 @@ class Connector(DurableTransport):
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
-        service_id = self._environment.service_config.id
+        service_name = self._environment.service_config.name
         workflow_id = (
-            f"servicegen/durable/{service_id}/{link_id.from_id}/"
+            f"{service_name}/durable/{link_id.from_id}/"
             f"{link_id.to_id}/{envelope.call_id}"
         )
         owner = (
-            f"servicegen/{service_id}/link/{link_id.from_id}/{link_id.to_id}/v1"
+            f"{service_name}/link/{link_id.from_id}/{link_id.to_id}/v1"
         )
         handle = await client.start_workflow(
             DURABLE_WORKFLOW_TYPE,
@@ -557,11 +544,8 @@ class Connector(DurableTransport):
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
-        service_id = self._environment.service_config.id
-        workflow_id = (
-            f"servicegen/endpoint/{service_id}/{endpoint_id}/{envelope.execution_id}"
-        )
-        owner = f"servicegen/{service_id}/endpoint/{endpoint_id}/v1"
+        workflow_id = f"{self._name}/endpoint/{cfg.name}/{envelope.execution_id}"
+        owner = f"{self._name}/endpoint/{cfg.name}/v1"
         handle = await client.start_workflow(
             ENDPOINT_WORKFLOW_TYPE,
             request,
@@ -585,8 +569,7 @@ class Connector(DurableTransport):
         endpoint_id = cfg.id
         registration = self._endpoints[endpoint_id]
         schedule_id = _required_string(cfg, "schedule_id")
-        service_id = self._environment.service_config.id
-        owner = f"servicegen/{service_id}/endpoint/{endpoint_id}/v1"
+        owner = f"{self._name}/endpoint/{cfg.name}/v1"
         request = _EndpointWorkflowRequest(
             registration.activity_type,
             _integer(cfg, "activity_start_to_close_timeout"),
@@ -612,7 +595,7 @@ class Connector(DurableTransport):
         action = ScheduleActionStartWorkflow(
             ENDPOINT_WORKFLOW_TYPE,
             request,
-            id=f"servicegen/schedule/{service_id}/{endpoint_id}",
+            id=f"{self._name}/schedule/{cfg.name}",
             task_queue=_required_string(cfg, "task_queue"),
             execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
             memo=_ownership_memo(owner, schedule_id),
@@ -761,7 +744,7 @@ def _optional_timeout(obj: Any, name: str) -> Optional[timedelta]:
 
 def _ownership_memo(owner: str, call_id: str) -> dict[str, str]:
     return {
-        _MEMO_MANAGED_BY: "servicegen",
+        _MEMO_MANAGED_BY: "servicelib",
         _MEMO_OWNER: owner,
         _MEMO_CALL_ID: call_id,
     }
