@@ -84,7 +84,15 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
         durable_call_success()
 
     function = _make_link_activity(
-        _LinkRegistration(LinkId(3, 4), "Automation Service.durable.3.4.v1", handler)
+        _LinkRegistration(
+            LinkId(3, 4),
+            "Automation Service",
+            "Consume Durable Job",
+            "Process Durable Job",
+            "Automation%20Service.durable.Consume%20Durable%20Job."
+            "Process%20Durable%20Job.v1",
+            handler,
+        )
     )
     envelope = _envelope()
     await function(envelope)
@@ -97,7 +105,10 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
 @pytest.mark.asyncio
 async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> None:
     request = _DurableWorkflowRequest(
-        activity_type="Automation Service.durable.3.4.v1",
+        activity_type=(
+            "Automation%20Service.durable.Consume%20Durable%20Job."
+            "Process%20Durable%20Job.v1"
+        ),
         activity_start_to_close_millis=1_000,
         activity_heartbeat_millis=0,
         maximum_attempts=3,

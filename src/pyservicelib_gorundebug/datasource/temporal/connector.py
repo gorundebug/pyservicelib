@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
+from urllib.parse import quote
 
 from temporalio import activity, workflow
 from temporalio.client import (
@@ -69,6 +70,10 @@ _SDK_METRICS_BIND_ADDRESS_ENVIRONMENT = "TEMPORAL_SDK_METRICS_BIND_ADDRESS"
 _SDK_RUNTIME_LOCK = threading.Lock()
 _SDK_RUNTIME: Runtime | None = None
 _SDK_RUNTIME_ADDRESS: str | None = None
+
+
+def _identity_component(value: str) -> str:
+    return quote(value, safe="-._~")
 
 
 def _sdk_runtime() -> Runtime | None:
@@ -209,6 +214,9 @@ def _scheduled_time_nanos(workflow_id: str, fallback: datetime) -> int:
 @dataclass(frozen=True, slots=True)
 class _LinkRegistration:
     link_id: LinkId
+    service_name: str
+    source_name: str
+    target_name: str
     activity_type: str
     handler: Callable[[DurableEnvelope], Awaitable[None]]
 
@@ -320,9 +328,16 @@ class Connector(DurableTransport):
                 f"Temporal connector {self._name!r}"
             )
         service_name = self._environment.service_config.name
+        source = self._environment.config.get_stream_config_by_id(link_id.from_id)
+        target = self._environment.config.get_stream_config_by_id(link_id.to_id)
         self._links[link_id] = _LinkRegistration(
             link_id,
-            f"{service_name}.durable.{link_id.from_id}.{link_id.to_id}.v1",
+            service_name,
+            source.name,
+            target.name,
+            f"{_identity_component(service_name)}.durable."
+            f"{_identity_component(source.name)}."
+            f"{_identity_component(target.name)}.v1",
             handler,
         )
 
@@ -354,7 +369,8 @@ class Connector(DurableTransport):
             )
         return _EndpointRegistration(
             endpoint_id,
-            f"{self._name}.endpoint.{cfg.name}.v1",
+            f"{_identity_component(self._name)}.endpoint."
+            f"{_identity_component(cfg.name)}.v1",
             None,
         )
 
@@ -498,13 +514,16 @@ class Connector(DurableTransport):
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
-        service_name = self._environment.service_config.name
         workflow_id = (
-            f"{service_name}/durable/{link_id.from_id}/"
-            f"{link_id.to_id}/{envelope.call_id}"
+            f"{_identity_component(registration.service_name)}/durable/"
+            f"{_identity_component(registration.source_name)}/"
+            f"{_identity_component(registration.target_name)}/"
+            f"{_identity_component(envelope.call_id)}"
         )
         owner = (
-            f"{service_name}/link/{link_id.from_id}/{link_id.to_id}/v1"
+            f"{_identity_component(registration.service_name)}/link/"
+            f"{_identity_component(registration.source_name)}/"
+            f"{_identity_component(registration.target_name)}/v1"
         )
         handle = await client.start_workflow(
             DURABLE_WORKFLOW_TYPE,
@@ -544,8 +563,15 @@ class Connector(DurableTransport):
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
-        workflow_id = f"{self._name}/endpoint/{cfg.name}/{envelope.execution_id}"
-        owner = f"{self._name}/endpoint/{cfg.name}/v1"
+        workflow_id = (
+            f"{_identity_component(self._name)}/endpoint/"
+            f"{_identity_component(cfg.name)}/"
+            f"{_identity_component(envelope.execution_id)}"
+        )
+        owner = (
+            f"{_identity_component(self._name)}/endpoint/"
+            f"{_identity_component(cfg.name)}/v1"
+        )
         handle = await client.start_workflow(
             ENDPOINT_WORKFLOW_TYPE,
             request,
@@ -569,7 +595,10 @@ class Connector(DurableTransport):
         endpoint_id = cfg.id
         registration = self._endpoints[endpoint_id]
         schedule_id = _required_string(cfg, "schedule_id")
-        owner = f"{self._name}/endpoint/{cfg.name}/v1"
+        owner = (
+            f"{_identity_component(self._name)}/endpoint/"
+            f"{_identity_component(cfg.name)}/v1"
+        )
         request = _EndpointWorkflowRequest(
             registration.activity_type,
             _integer(cfg, "activity_start_to_close_timeout"),
