@@ -72,8 +72,34 @@ _SDK_RUNTIME: Runtime | None = None
 _SDK_RUNTIME_ADDRESS: str | None = None
 
 
-def _identity_component(value: str) -> str:
+def _opaque_identity_component(value: str) -> str:
     return quote(value, safe="-._~")
+
+
+# Intentionally identical to servicegen.splitWords + ToSnakeCase.
+def _identity_name(value: str) -> str:
+    words: list[str] = []
+    current: list[str] = []
+    characters = list(value)
+    for index, character in enumerate(characters):
+        if character.isspace() or character in "_-/.":
+            if current:
+                words.append("".join(current))
+                current.clear()
+            continue
+        if not character.isalpha() and not character.isdigit():
+            continue
+        if current and character.isupper():
+            previous = current[-1]
+            if not previous.isupper() or (
+                index + 1 < len(characters) and characters[index + 1].islower()
+            ):
+                words.append("".join(current))
+                current.clear()
+        current.append(character)
+    if current:
+        words.append("".join(current))
+    return "_".join(word.lower() for word in words)
 
 
 def _sdk_runtime() -> Runtime | None:
@@ -335,9 +361,9 @@ class Connector(DurableTransport):
             service_name,
             source.name,
             target.name,
-            f"{_identity_component(service_name)}.durable."
-            f"{_identity_component(source.name)}."
-            f"{_identity_component(target.name)}.v1",
+            f"{_identity_name(service_name)}.durable."
+            f"{_identity_name(source.name)}."
+            f"{_identity_name(target.name)}.v1",
             handler,
         )
 
@@ -369,8 +395,8 @@ class Connector(DurableTransport):
             )
         return _EndpointRegistration(
             endpoint_id,
-            f"{_identity_component(self._name)}.endpoint."
-            f"{_identity_component(cfg.name)}.v1",
+            f"{_identity_name(self._name)}.endpoint."
+            f"{_identity_name(cfg.name)}.v1",
             None,
         )
 
@@ -515,15 +541,15 @@ class Connector(DurableTransport):
             envelope,
         )
         workflow_id = (
-            f"{_identity_component(registration.service_name)}/durable/"
-            f"{_identity_component(registration.source_name)}/"
-            f"{_identity_component(registration.target_name)}/"
-            f"{_identity_component(envelope.call_id)}"
+            f"{_identity_name(registration.service_name)}/durable/"
+            f"{_identity_name(registration.source_name)}/"
+            f"{_identity_name(registration.target_name)}/"
+            f"{_opaque_identity_component(envelope.call_id)}"
         )
         owner = (
-            f"{_identity_component(registration.service_name)}/link/"
-            f"{_identity_component(registration.source_name)}/"
-            f"{_identity_component(registration.target_name)}/v1"
+            f"{_identity_name(registration.service_name)}/link/"
+            f"{_identity_name(registration.source_name)}/"
+            f"{_identity_name(registration.target_name)}/v1"
         )
         handle = await client.start_workflow(
             DURABLE_WORKFLOW_TYPE,
@@ -564,13 +590,13 @@ class Connector(DurableTransport):
             envelope,
         )
         workflow_id = (
-            f"{_identity_component(self._name)}/endpoint/"
-            f"{_identity_component(cfg.name)}/"
-            f"{_identity_component(envelope.execution_id)}"
+            f"{_identity_name(self._name)}/endpoint/"
+            f"{_identity_name(cfg.name)}/"
+            f"{_opaque_identity_component(envelope.execution_id)}"
         )
         owner = (
-            f"{_identity_component(self._name)}/endpoint/"
-            f"{_identity_component(cfg.name)}/v1"
+            f"{_identity_name(self._name)}/endpoint/"
+            f"{_identity_name(cfg.name)}/v1"
         )
         handle = await client.start_workflow(
             ENDPOINT_WORKFLOW_TYPE,
@@ -596,8 +622,8 @@ class Connector(DurableTransport):
         registration = self._endpoints[endpoint_id]
         schedule_id = _required_string(cfg, "schedule_id")
         owner = (
-            f"{_identity_component(self._name)}/endpoint/"
-            f"{_identity_component(cfg.name)}/v1"
+            f"{_identity_name(self._name)}/endpoint/"
+            f"{_identity_name(cfg.name)}/v1"
         )
         request = _EndpointWorkflowRequest(
             registration.activity_type,

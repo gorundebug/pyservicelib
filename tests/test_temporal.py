@@ -89,8 +89,8 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
             "Automation Service",
             "Consume Durable Job",
             "Process Durable Job",
-            "Automation%20Service.durable.Consume%20Durable%20Job."
-            "Process%20Durable%20Job.v1",
+            "automation_service.durable.consume_durable_job."
+            "process_durable_job.v1",
             handler,
         )
     )
@@ -106,8 +106,8 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
 async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> None:
     request = _DurableWorkflowRequest(
         activity_type=(
-            "Automation%20Service.durable.Consume%20Durable%20Job."
-            "Process%20Durable%20Job.v1"
+            "automation_service.durable.consume_durable_job."
+            "process_durable_job.v1"
         ),
         activity_start_to_close_millis=1_000,
         activity_heartbeat_millis=0,
@@ -127,7 +127,7 @@ def test_remote_endpoint_activity_identity_uses_shared_connector_and_endpoint() 
 
     connector.register_endpoint_submission(11)
 
-    assert connector._endpoints[11].activity_type == "temporal.endpoint.durableJob.v1"
+    assert connector._endpoints[11].activity_type == "temporal.endpoint.durable_job.v1"
     assert connector._endpoints[11].handler is None
 
 
