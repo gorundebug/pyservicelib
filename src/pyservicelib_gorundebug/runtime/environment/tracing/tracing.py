@@ -166,6 +166,19 @@ def sampling_enabled() -> bool:
     return _sampling_var.get()
 
 
+def sampling_requested_by_carrier(carrier: Mapping[str, str]) -> bool:
+    """Return whether x-trace or a sampled W3C traceparent requests tracing."""
+    if carrier.get("x-trace"):
+        return True
+    parts = carrier.get("traceparent", "").split("-")
+    if len(parts) != 4 or len(parts[3]) != 2:
+        return False
+    try:
+        return bool(int(parts[3], 16) & 1)
+    except ValueError:
+        return False
+
+
 def data_source_endpoint_tracing_enabled(environment: Any, endpoint_id: int) -> bool:
     """Read the current reloadable source-endpoint tracing policy."""
     endpoint = environment.config.get_endpoint_config_by_id(endpoint_id)

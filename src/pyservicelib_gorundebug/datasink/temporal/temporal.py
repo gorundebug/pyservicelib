@@ -31,7 +31,6 @@ from ...runtime.datasink import DataSinkEndpoint, OutputDataSink
 from ...runtime.environment.tracing import (
     Tracer,
     Tracing,
-    sampling_enabled,
     span_error,
     start_endpoint_span,
 )
@@ -110,9 +109,7 @@ class _TemporalSinkConsumer[T, R, E](
                         stream_id=stream_id,
                         priority=priority if priority is not None else 0,
                         deadline_unix_nano=deadline_nanos,
-                        sampling_enabled=sampling_enabled(),
                         payload=bytes(self._input_serde.serialize(value)),
-                        trace_carrier=self._trace_carrier(),
                     ),
                     self._result_serde is not None,
                 )
@@ -128,13 +125,6 @@ class _TemporalSinkConsumer[T, R, E](
         finally:
             span.end()
             self.endpoint.on_request_end(started, error)
-
-    def _trace_carrier(self) -> dict[str, str]:
-        carrier: dict[str, str] = {}
-        if self._tracing is not None:
-            self._tracing.inject(carrier)
-        return carrier
-
 
 def _get_or_create_datasink(
     connector_id: int,

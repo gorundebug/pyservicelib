@@ -56,6 +56,7 @@ from ...runtime.durable_context import (
 )
 from ...runtime.environment.log import err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
+from .context_propagation import TemporalContextPropagationInterceptor
 
 
 DURABLE_WORKFLOW_TYPE = "servicelib.durable-link.v1"
@@ -137,13 +138,11 @@ class EndpointEnvelope:
     stream_id: str
     priority: int
     deadline_unix_nano: int = 0
-    sampling_enabled: bool = False
     scheduled: bool = False
     schedule_id: str = ""
     scheduled_at_unix_nano: int = 0
     fired_at_unix_nano: int = 0
     payload: bytes = b""
-    trace_carrier: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +404,9 @@ class Connector(DurableTransport):
             return
         cfg = self._config()
         tls = self._tls_config(cfg)
+        context_interceptor = TemporalContextPropagationInterceptor(
+            self._environment.tracing
+        )
         connect = Client.connect(
             _required_string(cfg, "address"),
             namespace=_required_string(cfg, "namespace"),
@@ -412,6 +414,7 @@ class Connector(DurableTransport):
             api_key=getattr(cfg, "api_key", None) or None,
             tls=tls,
             runtime=_sdk_runtime(),
+            interceptors=[context_interceptor],
         )
         self._client = await (
             asyncio.wait_for(connect, timeout=ctx.time_left)
@@ -442,6 +445,7 @@ class Connector(DurableTransport):
                     max_concurrent_workflow_tasks=(
                         _integer(cfg, "max_concurrent_workflows") or None
                     ),
+                    interceptors=[context_interceptor],
                 )
                 self._workers.append(worker)
                 self._worker_tasks.append(asyncio.create_task(worker.run()))

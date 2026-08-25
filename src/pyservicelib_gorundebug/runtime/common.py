@@ -284,9 +284,7 @@ class DurableEnvelope:
     stream_id: str
     priority: int
     deadline_unix_nano: int
-    sampling_enabled: bool
     payload: bytes
-    trace_carrier: dict[str, str] = field(default_factory=dict)
 
 
 class DurableTransport(ABC):
@@ -388,10 +386,6 @@ class DurableCaller[T](Caller[T]):
                         deadline = deadline.replace(tzinfo=timezone.utc)
                     deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
                 priority = priority_from_context()
-                trace_carrier: dict[str, str] = {}
-                tracing = self._source.environment.tracing
-                if tracing is not None:
-                    tracing.inject(trace_carrier)
                 await self._transport.submit_link(
                     self._link_id,
                     DurableEnvelope(
@@ -402,9 +396,7 @@ class DurableCaller[T](Caller[T]):
                         stream_id=stream_id,
                         priority=priority if priority is not None else 0,
                         deadline_unix_nano=deadline_nanos,
-                        sampling_enabled=sampling_enabled(),
                         payload=payload,
-                        trace_carrier=trace_carrier,
                     ),
                 )
         except Exception as error:
@@ -591,29 +583,21 @@ for link between streams from={source.id} to={consumer.stream.id}")
                 deadline_token = request_deadline.set(deadline)
                 cancelled = asyncio.Event()
                 cancelled_token = request_cancelled.set(cancelled)
-                tracing = source.environment.tracing
-                trace_scope = (
-                    tracing.extract(envelope.trace_carrier)
-                    if tracing is not None and envelope.trace_carrier
-                    else nullcontext(False)
-                )
                 try:
-                    with trace_scope as remote_sampled:
-                        with sampling_scope(envelope.sampling_enabled or remote_sampled):
-                            _, activity_span = start_span(
-                                tracer,
-                                "temporal.activity",
-                                string_attr("boundary", "durable_call"),
-                                string_attr("from", source.name),
-                                string_attr("to", consumer.stream.name),
-                            )
-                            durable_span = bind_durable_call_span(activity_span)
-                            try:
-                                with activity_span.scoped():
-                                    await consumer.consume(value)
-                            finally:
-                                if not durable_span:
-                                    activity_span.end()
+                    _, activity_span = start_span(
+                        tracer,
+                        "temporal.activity",
+                        string_attr("boundary", "durable_call"),
+                        string_attr("from", source.name),
+                        string_attr("to", consumer.stream.name),
+                    )
+                    durable_span = bind_durable_call_span(activity_span)
+                    try:
+                        with activity_span.scoped():
+                            await consumer.consume(value)
+                    finally:
+                        if not durable_span:
+                            activity_span.end()
                 except asyncio.CancelledError:
                     cancelled.set()
                     raise

@@ -1,8 +1,11 @@
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from temporalio.converter import DataConverter
+from temporalio.worker import ExecuteActivityInput
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
@@ -10,6 +13,16 @@ from pyservicelib_gorundebug.api.models.data_connector_implementation import (
 from pyservicelib_gorundebug.runtime.common import DurableEnvelope
 from pyservicelib_gorundebug.runtime.config import LinkId
 from pyservicelib_gorundebug.runtime.durable_context import durable_call_success
+from pyservicelib_gorundebug.runtime.context import (
+    request_deadline,
+    request_priority,
+    request_stream_id,
+)
+from pyservicelib_gorundebug.runtime.environment.tracing import (
+    Tracing,
+    sampling_enabled,
+    sampling_scope,
+)
 from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
@@ -18,6 +31,14 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     _make_link_activity,
     _scheduled_time_nanos,
     _validate_workflow_ownership,
+)
+from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
+    TEMPORAL_HEADER_DEADLINE_UNIX_NANO,
+    TEMPORAL_HEADER_PRIORITY,
+    TEMPORAL_HEADER_STREAM_ID,
+    _ActivityInbound,
+    _current_carrier,
+    _encode_carrier,
 )
 
 
@@ -56,11 +77,7 @@ def _envelope(*, to_id: int = 4) -> DurableEnvelope:
         stream_id="stream-1",
         priority=0,
         deadline_unix_nano=0,
-        sampling_enabled=False,
         payload=b"value",
-        trace_carrier={
-            "traceparent": "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
-        },
     )
 
 
@@ -120,6 +137,81 @@ async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> 
     decoded = await converter.decode(payloads, [_DurableWorkflowRequest])
 
     assert decoded == [request]
+
+
+def test_temporal_header_deadline_is_an_absolute_timezone_independent_instant() -> None:
+    deadline = datetime(2026, 8, 25, 15, 30, tzinfo=timezone(timedelta(hours=3)))
+    stream_token = request_stream_id.set("stream-header")
+    priority_token = request_priority.set(7)
+    deadline_token = request_deadline.set(deadline)
+    try:
+        with sampling_scope(True):
+            carrier = _current_carrier(None)
+    finally:
+        request_deadline.reset(deadline_token)
+        request_priority.reset(priority_token)
+        request_stream_id.reset(stream_token)
+
+    assert carrier[TEMPORAL_HEADER_STREAM_ID] == "stream-header"
+    assert carrier[TEMPORAL_HEADER_PRIORITY] == "7"
+    assert carrier[TEMPORAL_HEADER_DEADLINE_UNIX_NANO] == str(
+        int(datetime(2026, 8, 25, 12, 30, tzinfo=timezone.utc).timestamp() * 1e9)
+    )
+
+
+@pytest.mark.asyncio
+async def test_temporal_activity_interceptor_extracts_native_headers() -> None:
+    baggage: ContextVar[str] = ContextVar("temporal_test_baggage", default="")
+
+    class _Tracing(Tracing):
+        def tracer(self, name):  # type: ignore[no-untyped-def]
+            del name
+            return None
+
+        @contextmanager
+        def extract(self, carrier):  # type: ignore[no-untyped-def]
+            token = baggage.set(carrier.get("baggage", ""))
+            try:
+                yield True
+            finally:
+                baggage.reset(token)
+
+    class _Next:
+        async def execute_activity(self, input):  # type: ignore[no-untyped-def]
+            del input
+            assert request_stream_id.get() == "activity-stream"
+            assert request_priority.get() == 9
+            assert request_deadline.get() == datetime(
+                2026, 8, 25, 12, 30, tzinfo=timezone.utc
+            )
+            assert sampling_enabled()
+            assert baggage.get() == "tenant=example"
+            return "done"
+
+    carrier = {
+        "traceparent": (
+            "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
+        ),
+        "baggage": "tenant=example",
+        TEMPORAL_HEADER_STREAM_ID: "activity-stream",
+        TEMPORAL_HEADER_PRIORITY: "9",
+        TEMPORAL_HEADER_DEADLINE_UNIX_NANO: str(
+            int(datetime(2026, 8, 25, 12, 30, tzinfo=timezone.utc).timestamp() * 1e9)
+        ),
+    }
+    interceptor = _ActivityInbound(_Next(), _Tracing())  # type: ignore[arg-type]
+    result = await interceptor.execute_activity(
+        ExecuteActivityInput(
+            fn=lambda: None,
+            args=[],
+            executor=None,
+            headers=_encode_carrier(carrier),
+        )
+    )
+    assert result == "done"
+    assert request_stream_id.get() is None
+    assert request_priority.get() is None
+    assert request_deadline.get() is None
 
 
 def test_remote_endpoint_activity_identity_uses_shared_connector_and_endpoint() -> None:

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -130,20 +130,13 @@ class _TemporalEndpointConsumer[Input, T, R, E](
         durable_span = False
         try:
             with ExitStack() as scopes:
-                remote_sampled = scopes.enter_context(
-                    self._tracing.extract(envelope.trace_carrier)
-                    if self._tracing is not None and envelope.trace_carrier
-                    else nullcontext(False)
-                )
                 scopes.enter_context(
-                sampling_scope(
-                    sampling_enabled()
-                    or envelope.sampling_enabled
-                    or remote_sampled
-                    or data_source_endpoint_tracing_enabled(
-                        self.endpoint.environment, self.endpoint.id,
+                    sampling_scope(
+                        sampling_enabled()
+                        or data_source_endpoint_tracing_enabled(
+                            self.endpoint.environment, self.endpoint.id,
+                        )
                     )
-                )
                 )
                 _, span = start_endpoint_span(
                     self._tracer,
