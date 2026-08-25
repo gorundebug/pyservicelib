@@ -90,7 +90,7 @@ class DurableCallContext:
         with self._lock:
             span = self._span
         if span is not None:
-            attrs = [string_attr("event", event)]
+            attrs = []
             if error is not None:
                 attrs.append(string_attr("error", str(error)))
             span.add_event(f"temporal.activity.{event}", *attrs)

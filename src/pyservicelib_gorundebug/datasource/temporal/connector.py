@@ -347,6 +347,7 @@ class Connector(ManagedDataConnector):
     ) -> DurableCallDiagnostics:
         def report(event: str, error: BaseException | None) -> None:
             self._activity_events.with_({
+                "connector": self._name,
                 "boundary": boundary,
                 "target": target,
                 "event": event,
