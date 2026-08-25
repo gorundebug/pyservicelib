@@ -17,6 +17,7 @@ import os
 import re
 import threading
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -195,6 +196,38 @@ class _EndpointWorkflowRequest:
     maximum_attempts: int
     priority: int
     envelope: EndpointEnvelope
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowEndpointConfig:
+    endpoint_id: int
+    name: str
+    task_queue: str
+    execution_type: TemporalExecutionType
+    activity_type: str
+    workflow_type: str
+    workflow_execution_millis: int
+    activity_start_to_close_millis: int
+    activity_heartbeat_millis: int
+    maximum_attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectEndpointWorkflowRequest:
+    connector_name: str
+    envelope: EndpointEnvelope
+    endpoints: tuple[_WorkflowEndpointConfig, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowSubmission:
+    connector_name: str
+    endpoints: dict[int, _WorkflowEndpointConfig]
+
+
+_WORKFLOW_SUBMISSION: ContextVar[_WorkflowSubmission | None] = ContextVar(
+    "servicelib_temporal_workflow_submission", default=None
+)
 
 
 @workflow.defn(name=ENDPOINT_WORKFLOW_TYPE, sandboxed=False)
@@ -379,6 +412,35 @@ class Connector(ManagedDataConnector):
             workflow_type=_direct_workflow_type(self._name, cfg.name),
         )
 
+    def _workflow_endpoint_snapshot(self) -> tuple[_WorkflowEndpointConfig, ...]:
+        result: list[_WorkflowEndpointConfig] = []
+        for endpoint_id in sorted(self._endpoints):
+            registration = self._endpoints[endpoint_id]
+            cfg = self._endpoint_config(endpoint_id)
+            result.append(
+                _WorkflowEndpointConfig(
+                    endpoint_id=endpoint_id,
+                    name=cfg.name,
+                    task_queue=_required_string(cfg, "task_queue"),
+                    execution_type=cast(
+                        TemporalExecutionType, cfg.temporal_execution_type
+                    ),
+                    activity_type=registration.activity_type,
+                    workflow_type=registration.workflow_type,
+                    workflow_execution_millis=_integer(
+                        cfg, "workflow_execution_timeout"
+                    ),
+                    activity_start_to_close_millis=_integer(
+                        cfg, "activity_start_to_close_timeout"
+                    ),
+                    activity_heartbeat_millis=_integer(
+                        cfg, "activity_heartbeat_timeout"
+                    ),
+                    maximum_attempts=_integer(cfg, "maximum_attempts"),
+                )
+            )
+        return tuple(result)
+
     async def start(self, ctx: Context) -> None:
         if self._started:
             return
@@ -501,6 +563,11 @@ class Connector(ManagedDataConnector):
         envelope: EndpointEnvelope,
         wait_for_result: bool,
     ) -> EndpointResult:
+        workflow_submission = _WORKFLOW_SUBMISSION.get()
+        if workflow_submission is not None:
+            return await _submit_endpoint_from_workflow(
+                workflow_submission, endpoint_id, envelope
+            )
         registration = self._endpoints.get(endpoint_id)
         if not self._started:
             raise RuntimeError(f"Temporal connector {self._name!r} is not started")
@@ -519,10 +586,16 @@ class Connector(ManagedDataConnector):
             envelope,
         )
         workflow_type = ENDPOINT_WORKFLOW_TYPE
-        workflow_input: EndpointEnvelope | _EndpointWorkflowRequest = request
+        workflow_input: _EndpointWorkflowRequest | _DirectEndpointWorkflowRequest = (
+            request
+        )
         if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
             workflow_type = registration.workflow_type
-            workflow_input = envelope
+            workflow_input = _DirectEndpointWorkflowRequest(
+                connector_name=self._name,
+                envelope=envelope,
+                endpoints=self._workflow_endpoint_snapshot(),
+            )
         workflow_id = _endpoint_workflow_id(
             self._name, cfg.name, envelope.message_id
         )
@@ -569,10 +642,16 @@ class Connector(ManagedDataConnector):
             envelope,
         )
         workflow_type = ENDPOINT_WORKFLOW_TYPE
-        workflow_input: EndpointEnvelope | _EndpointWorkflowRequest = request
+        workflow_input: _EndpointWorkflowRequest | _DirectEndpointWorkflowRequest = (
+            request
+        )
         if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
             workflow_type = registration.workflow_type
-            workflow_input = envelope
+            workflow_input = _DirectEndpointWorkflowRequest(
+                connector_name=self._name,
+                envelope=envelope,
+                endpoints=self._workflow_endpoint_snapshot(),
+            )
         overlap = ScheduleOverlapPolicy.ALLOW_ALL
         if getattr(cfg, "overlap_policy", None) == ApiOverlapPolicy.SKIP:
             overlap = ScheduleOverlapPolicy.SKIP
@@ -652,6 +731,81 @@ def workflow_time_nanos() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
 
 
+async def _submit_endpoint_from_workflow(
+    submission: _WorkflowSubmission,
+    endpoint_id: int,
+    envelope: EndpointEnvelope,
+) -> EndpointResult:
+    cfg = submission.endpoints.get(endpoint_id)
+    if cfg is None:
+        raise ValueError(
+            f"Temporal endpoint {endpoint_id} is absent from Workflow "
+            "configuration snapshot"
+        )
+    if not envelope.message_id or not envelope.stream_id:
+        raise ValueError(
+            f"Temporal Workflow submission to {cfg.name!r} requires stable identity"
+        )
+    envelope = replace(envelope, version=1, endpoint_id=endpoint_id)
+    retry_policy = RetryPolicy(maximum_attempts=cfg.maximum_attempts)
+    priority = Priority(
+        priority_key=normalize_temporal_priority(envelope.priority)
+    )
+    if cfg.execution_type is TemporalExecutionType.ACTIVITY:
+        return cast(
+            EndpointResult,
+            await workflow.execute_activity(
+                cfg.activity_type,
+                envelope,
+                result_type=EndpointResult,
+                task_queue=cfg.task_queue,
+                start_to_close_timeout=timedelta(
+                    milliseconds=cfg.activity_start_to_close_millis
+                ),
+                heartbeat_timeout=(
+                    timedelta(milliseconds=cfg.activity_heartbeat_millis)
+                    if cfg.activity_heartbeat_millis > 0
+                    else None
+                ),
+                retry_policy=retry_policy,
+                priority=priority,
+            ),
+        )
+    if cfg.execution_type is TemporalExecutionType.WORKFLOW:
+        request = _DirectEndpointWorkflowRequest(
+            connector_name=submission.connector_name,
+            envelope=envelope,
+            endpoints=tuple(
+                submission.endpoints[key]
+                for key in sorted(submission.endpoints)
+            ),
+        )
+        return cast(
+            EndpointResult,
+            await workflow.execute_child_workflow(
+                cfg.workflow_type,
+                request,
+                id=_endpoint_workflow_id(
+                    submission.connector_name, cfg.name, envelope.message_id
+                ),
+                task_queue=cfg.task_queue,
+                result_type=EndpointResult,
+                execution_timeout=(
+                    timedelta(milliseconds=cfg.workflow_execution_millis)
+                    if cfg.workflow_execution_millis > 0
+                    else None
+                ),
+                id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                retry_policy=retry_policy,
+                priority=priority,
+            ),
+        )
+    raise ValueError(
+        f"Temporal endpoint {cfg.name!r} has unsupported execution type "
+        f"{cfg.execution_type!r}"
+    )
+
+
 def _make_endpoint_activity(
     registration: _EndpointRegistration,
     diagnostics: DurableCallDiagnostics | None = None,
@@ -690,7 +844,10 @@ def _make_endpoint_workflow(
         f"{registration.endpoint_id}{_identity_name(registration.workflow_type)}"
     )
 
-    async def run(_self: object, envelope: EndpointEnvelope) -> EndpointResult:
+    async def run(
+        _self: object, request: _DirectEndpointWorkflowRequest
+    ) -> EndpointResult:
+        envelope = request.envelope
         if envelope.version != 1 or envelope.endpoint_id != registration.endpoint_id:
             raise ValueError(
                 f"invalid Temporal Workflow envelope for {registration.endpoint_id}"
@@ -725,10 +882,19 @@ def _make_endpoint_workflow(
             workflow=True,
             recording_policy=lambda: not workflow.unsafe.is_replaying(),
         )
-        try:
-            return await run_durable_call_workflow(
-                durable, lambda: handler(envelope)
+        submission_token = _WORKFLOW_SUBMISSION.set(
+            _WorkflowSubmission(
+                connector_name=request.connector_name,
+                endpoints={item.endpoint_id: item for item in request.endpoints},
             )
+        )
+        try:
+            try:
+                return await run_durable_call_workflow(
+                    durable, lambda: handler(envelope)
+                )
+            finally:
+                _WORKFLOW_SUBMISSION.reset(submission_token)
         except TemporalContinueAsNewRequest as continuation:
             if registration.encode_input is None:
                 raise RuntimeError(
@@ -743,7 +909,8 @@ def _make_endpoint_workflow(
                 payload=registration.encode_input(continuation.next_input),
             )
             workflow.continue_as_new(
-                next_envelope, workflow=registration.workflow_type
+                replace(request, envelope=next_envelope),
+                workflow=cast(Any, registration.workflow_type),
             )
 
     run.__name__ = "run"

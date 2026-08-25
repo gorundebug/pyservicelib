@@ -9,6 +9,9 @@ from temporalio.worker import ExecuteActivityInput
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
 )
+from pyservicelib_gorundebug.api.models.temporal_execution_type import (
+    TemporalExecutionType,
+)
 from pyservicelib_gorundebug.runtime.context import (
     request_deadline,
     request_priority,
@@ -29,13 +32,17 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     EndpointEnvelope,
     EndpointResult,
+    _DirectEndpointWorkflowRequest,
     _EndpointRegistration,
+    _WorkflowEndpointConfig,
+    _WorkflowSubmission,
     _direct_workflow_type,
     _endpoint_workflow_id,
     _make_endpoint_activity,
     _make_endpoint_workflow,
     _schedule_workflow_id,
     _scheduled_time_nanos,
+    _submit_endpoint_from_workflow,
     _temporal_cron_expression,
     _validate_workflow_ownership,
 )
@@ -89,13 +96,87 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
         )
     )
     result = await workflow_class().run(
-        EndpointEnvelope(1, 12, "workflow-1", "request-1", 0, payload=b"job")
+        _DirectEndpointWorkflowRequest(
+            "temporal",
+            EndpointEnvelope(
+                1, 12, "workflow-1", "request-1", 0, payload=b"job"
+            ),
+            (),
+        )
     )
     assert result.payload == b"job-done"
     assert waited == [timedelta(hours=1)]
     assert _schedule_workflow_id("Temporal Connector", "Workflow Job") == (
         "temporal_connector/schedule/workflow_job"
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_temporal_sinks_await_sequential_and_fanout_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffixes = {
+        "temporal.endpoint.activity_a.v1": b"-a",
+        "temporal.endpoint.activity_b.v1": b"-b",
+        "temporal.endpoint.activity_c.v1": b"-c",
+    }
+
+    async def execute_activity(
+        activity_type: str, envelope: EndpointEnvelope, **_options: object
+    ) -> EndpointResult:
+        return EndpointResult(envelope.payload + suffixes[activity_type])
+
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.connector.workflow.execute_activity",
+        execute_activity,
+    )
+    submission = _WorkflowSubmission(
+        "temporal",
+        {
+            endpoint_id: _WorkflowEndpointConfig(
+                endpoint_id,
+                f"activity{suffix.upper()}",
+                "automation",
+                TemporalExecutionType.ACTIVITY,
+                f"temporal.endpoint.activity_{suffix}.v1",
+                "",
+                10_000,
+                1_000,
+                0,
+                1,
+            )
+            for endpoint_id, suffix in ((1, "a"), (2, "b"), (3, "c"))
+        },
+    )
+    first = await _submit_endpoint_from_workflow(
+        submission,
+        1,
+        EndpointEnvelope(1, 1, "fanout-a", "fanout", 0, payload=b"start"),
+    )
+    sequential = await _submit_endpoint_from_workflow(
+        submission,
+        2,
+        EndpointEnvelope(
+            1, 2, "sequence-b", "sequence", 0, payload=first.payload
+        ),
+    )
+    fanout = [
+        await _submit_endpoint_from_workflow(
+            submission,
+            endpoint_id,
+            EndpointEnvelope(
+                1,
+                endpoint_id,
+                f"fanout-{endpoint_id}",
+                "fanout",
+                0,
+                payload=first.payload,
+            ),
+        )
+        for endpoint_id in (2, 3)
+    ]
+    assert sequential.payload == b"start-a-b"
+    assert [result.payload for result in fanout] == [b"start-a-b", b"start-a-c"]
 
 
 class _Config:

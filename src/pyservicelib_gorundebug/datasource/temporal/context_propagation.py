@@ -25,6 +25,7 @@ from temporalio.worker import (
     ExecuteActivityInput,
     Interceptor as WorkerInterceptor,
     StartActivityInput,
+    StartChildWorkflowInput,
     WorkflowInboundInterceptor,
     WorkflowInterceptorClassInput,
     WorkflowOutboundInterceptor,
@@ -122,14 +123,28 @@ class _ClientOutbound(ClientOutboundInterceptor):
 
 
 class _WorkflowOutbound(WorkflowOutboundInterceptor):
-    def start_activity(self, input: StartActivityInput) -> Any:
-        root_headers = {
+    @staticmethod
+    def _root_headers() -> dict[str, Payload]:
+        return {
             key: payload
             for key, payload in workflow.info().headers.items()
             if key in TEMPORAL_CARRIER_KEYS
         }
+
+    def start_activity(self, input: StartActivityInput) -> Any:
         return self.next.start_activity(
-            replace(input, headers=_merge_headers(input.headers, root_headers))
+            replace(
+                input,
+                headers=_merge_headers(input.headers, self._root_headers()),
+            )
+        )
+
+    async def start_child_workflow(self, input: StartChildWorkflowInput) -> Any:
+        return await self.next.start_child_workflow(
+            replace(
+                input,
+                headers=_merge_headers(input.headers, self._root_headers()),
+            )
         )
 
 
