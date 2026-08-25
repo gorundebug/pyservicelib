@@ -17,6 +17,7 @@ from contextvars import ContextVar, Token
 from typing import Any, Final
 
 from .environment.tracing import Span, StatusCode, string_attr
+from .execution_policy import recording_policy_scope
 
 
 class DurableCallContextError(RuntimeError):
@@ -34,6 +35,7 @@ LATE_HEARTBEAT: Final = "late_heartbeat"
 
 type DurableCallDiagnostics = Callable[[str, BaseException | None], None]
 type DurableCallHeartbeatRecorder = Callable[[Any], None]
+type DurableCallDelay = Callable[[Any], Awaitable[None]]
 
 
 class DurableCallContext:
@@ -44,6 +46,9 @@ class DurableCallContext:
         "_lock",
         "_closed",
         "_heartbeat",
+        "_delay",
+        "_workflow",
+        "_recording_policy",
         "_diagnostics",
         "_span",
         "_span_ended",
@@ -54,11 +59,17 @@ class DurableCallContext:
         message_id: str,
         heartbeat: DurableCallHeartbeatRecorder | None = None,
         diagnostics: DurableCallDiagnostics | None = None,
+        delay: DurableCallDelay | None = None,
+        workflow: bool = False,
+        recording_policy: Callable[[], bool] | None = None,
     ) -> None:
         self.message_id = message_id
         self._lock = threading.Lock()
         self._closed = False
         self._heartbeat = heartbeat
+        self._delay = delay
+        self._workflow = workflow
+        self._recording_policy = recording_policy
         self._diagnostics = diagnostics
         self._span: Span | None = None
         self._span_ended = False
@@ -87,6 +98,8 @@ class DurableCallContext:
             self._diagnostics(event, error)
 
     def heartbeat(self, message: Any) -> None:
+        if self._workflow:
+            return
         with self._lock:
             if self._closed:
                 recorder = None
@@ -102,6 +115,12 @@ class DurableCallContext:
         if recorder is not None:
             recorder(message)
         self._report(HEARTBEAT, None)
+
+    async def delay(self, duration: Any) -> bool:
+        if self._delay is None:
+            return False
+        await self._delay(duration)
+        return True
 
     def close(self, outcome: BaseException | None) -> None:
         with self._lock:
@@ -162,3 +181,23 @@ async def run_durable_call_activity[ResultT](
         return result
     finally:
         _current_durable_call.reset(token)
+
+
+async def durable_call_delay(duration: Any) -> bool:
+    """Wait durably in a Workflow, or return False for the local backend."""
+
+    durable = current_durable_call_context()
+    return await durable.delay(duration) if durable is not None else False
+
+
+async def run_durable_call_workflow[ResultT](
+    durable: DurableCallContext,
+    invoke: Callable[[], Awaitable[ResultT]],
+) -> ResultT:
+    """Run one existing endpoint handler inside its Workflow scope."""
+
+    policy = durable._recording_policy
+    if policy is None:
+        return await run_durable_call_activity(durable, invoke)
+    with recording_policy_scope(policy):
+        return await run_durable_call_activity(durable, invoke)

@@ -120,3 +120,15 @@ def test_temporal_config_rejects_non_operational_values() -> None:
         assert "start-to-close" in str(error)
     else:
         raise AssertionError("missing activity timeout must be rejected")
+
+
+def test_temporal_workflow_config_does_not_require_activity_timeout() -> None:
+    endpoint = TemporalEndpointConfig(
+        2,
+        "workflow",
+        1,
+        TemporalExecutionType.WORKFLOW,
+        task_queue="workflows",
+        maximum_attempts=1,
+    )
+    assert endpoint.activity_start_to_close_timeout == 0

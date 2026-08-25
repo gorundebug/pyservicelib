@@ -163,7 +163,7 @@ def sampling_scope(enabled: bool) -> Iterator[None]:
 
 def sampling_enabled() -> bool:
     """Return True if the current coroutine context has tracing enabled."""
-    return _sampling_var.get()
+    return recording_enabled() and _sampling_var.get()
 
 
 def sampling_requested_by_carrier(carrier: Mapping[str, str]) -> bool:
@@ -250,3 +250,4 @@ def span_error(span: Optional[Span], err: Exception) -> None:
 def span_attrs(span: Optional[Span], *attrs: Attribute) -> None:
     if span is not None and span is not NOOP_SPAN:
         span.set_attributes(*attrs)
+from ...execution_policy import recording_enabled

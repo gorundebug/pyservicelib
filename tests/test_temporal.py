@@ -16,6 +16,7 @@ from pyservicelib_gorundebug.runtime.context import (
 )
 from pyservicelib_gorundebug.runtime.durable_context import (
     current_durable_call_context,
+    durable_call_delay,
     durable_call_heartbeat,
 )
 from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
@@ -29,8 +30,11 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     EndpointEnvelope,
     EndpointResult,
     _EndpointRegistration,
+    _direct_workflow_type,
     _endpoint_workflow_id,
     _make_endpoint_activity,
+    _make_endpoint_workflow,
+    _schedule_workflow_id,
     _scheduled_time_nanos,
     _temporal_cron_expression,
     _validate_workflow_ownership,
@@ -53,6 +57,45 @@ def test_workflow_identity_uses_connector_endpoint_and_business_message_id() -> 
     assert _endpoint_workflow_id(
         "Temporal Main", "Durable Job", "order/42:item 7"
     ) == "temporal_main/endpoint/durable_job/order%2F42%3Aitem%207"
+
+
+@pytest.mark.asyncio
+async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waited: list[timedelta] = []
+
+    async def sleep(duration: timedelta) -> None:
+        waited.append(duration)
+
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.connector.workflow.sleep",
+        sleep,
+    )
+
+    async def handler(envelope: EndpointEnvelope) -> EndpointResult:
+        assert current_durable_call_context() is not None
+        durable_call_heartbeat("ignored in Workflow")
+        assert await durable_call_delay(timedelta(hours=1))
+        return EndpointResult(payload=envelope.payload + b"-done")
+
+    workflow_type = _direct_workflow_type("Temporal", "Workflow Job")
+    workflow_class = _make_endpoint_workflow(
+        _EndpointRegistration(
+            12,
+            "temporal.endpoint.workflow_job.v1",
+            handler,
+            workflow_type,
+        )
+    )
+    result = await workflow_class().run(
+        EndpointEnvelope(1, 12, "workflow-1", "request-1", 0, payload=b"job")
+    )
+    assert result.payload == b"job-done"
+    assert waited == [timedelta(hours=1)]
+    assert _schedule_workflow_id("Temporal Connector", "Workflow Job") == (
+        "temporal_connector/schedule/workflow_job"
+    )
 
 
 class _Config:

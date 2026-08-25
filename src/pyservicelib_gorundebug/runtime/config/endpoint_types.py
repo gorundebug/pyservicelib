@@ -507,7 +507,10 @@ class TemporalEndpointConfig(CronEndpointConfig):
             missed_run_policy=missed_run_policy,
             properties=properties,
         )
-        if activity_start_to_close_timeout < 1:
+        if (
+            temporal_execution_type is TemporalExecutionType.ACTIVITY
+            and activity_start_to_close_timeout < 1
+        ):
             raise ValueError("Temporal activity start-to-close timeout must be positive")
         if maximum_attempts < 1:
             raise ValueError("Temporal maximum attempts must be positive")

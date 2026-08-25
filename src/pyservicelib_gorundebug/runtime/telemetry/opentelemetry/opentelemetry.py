@@ -26,6 +26,7 @@ from ...environment.metrics.metrics import (
     DEFAULT_MAX_CARDINALITY,
     NOOP_INT64_GAUGE, NOOP_FLOAT64_GAUGE,
 )
+from ...execution_policy import recording_enabled
 
 
 def _labels_key(labels: Labels) -> str:
@@ -46,9 +47,13 @@ class _Int64Counter(Int64Counter):
         self._attrs = attrs
 
     def inc(self) -> None:
+        if not recording_enabled():
+            return
         self._counter.add(1, self._attrs)
 
     def add(self, v: int) -> None:
+        if not recording_enabled():
+            return
         self._counter.add(v, self._attrs)
 
 
@@ -72,6 +77,8 @@ class _Float64Counter(Float64Counter):
         self._attrs = attrs
 
     def add(self, v: float) -> None:
+        if not recording_enabled():
+            return
         self._counter.add(v, self._attrs)
 
 
@@ -100,22 +107,32 @@ class _Int64Gauge(Int64Gauge):
             return self._val
 
     def set(self, v: int) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val = v
 
     def inc(self) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val += 1
 
     def dec(self) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val -= 1
 
     def add(self, delta: int) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val += delta
 
     def sub(self, delta: int) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val -= delta
 
@@ -173,22 +190,32 @@ class _Float64Gauge(Float64Gauge):
             return self._val
 
     def set(self, v: float) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val = v
 
     def inc(self) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val += 1.0
 
     def dec(self) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val -= 1.0
 
     def add(self, delta: float) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val += delta
 
     def sub(self, delta: float) -> None:
+        if not recording_enabled():
+            return
         with self._lock:
             self._val -= delta
 
@@ -241,6 +268,8 @@ class _Float64Histogram(Float64Histogram):
         self._attrs = attrs
 
     def observe(self, v: float) -> None:
+        if not recording_enabled():
+            return
         self._hist.record(v, self._attrs)
 
 
@@ -264,6 +293,8 @@ class _Int64Histogram(Int64Histogram):
         self._attrs = attrs
 
     def observe(self, v: int) -> None:
+        if not recording_enabled():
+            return
         self._hist.record(v, self._attrs)
 
 

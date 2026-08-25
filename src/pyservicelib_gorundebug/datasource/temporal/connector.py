@@ -46,6 +46,7 @@ from temporalio.worker import Worker
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy as ApiOverlapPolicy
+from ...api.models.temporal_execution_type import TemporalExecutionType
 from ...runtime.common import ManagedDataConnector, ServiceExecutionEnvironment
 from ...runtime.config import EndpointConfig
 from ...runtime.context import Context
@@ -53,6 +54,7 @@ from ...runtime.durable_context import (
     DurableCallContext,
     DurableCallDiagnostics,
     run_durable_call_activity,
+    run_durable_call_workflow,
 )
 from ...runtime.environment.log import err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
@@ -116,6 +118,20 @@ def _endpoint_owner(connector_name: str, endpoint_name: str) -> str:
     return (
         f"{_identity_name(connector_name)}/endpoint/"
         f"{_identity_name(endpoint_name)}/v1"
+    )
+
+
+def _direct_workflow_type(connector_name: str, endpoint_name: str) -> str:
+    return (
+        f"{_identity_name(connector_name)}.endpoint."
+        f"{_identity_name(endpoint_name)}.workflow.v1"
+    )
+
+
+def _schedule_workflow_id(connector_name: str, endpoint_name: str) -> str:
+    return (
+        f"{_identity_name(connector_name)}/schedule/"
+        f"{_identity_name(endpoint_name)}"
     )
 
 
@@ -228,11 +244,13 @@ class _EndpointRegistration:
     endpoint_id: int
     activity_type: str
     handler: Optional[EndpointHandler]
+    workflow_type: str = ""
 
 
 @dataclass(slots=True)
 class _QueueRegistration:
     activities: list[Callable[..., Awaitable[Any]]]
+    workflows: list[type[Any]]
     endpoint_workflow: bool = False
 
 
@@ -342,10 +360,13 @@ class Connector(ManagedDataConnector):
                 f"endpoint {endpoint_id} does not belong to Temporal connector {self._name!r}"
             )
         return _EndpointRegistration(
-            endpoint_id,
-            f"{_identity_name(self._name)}.endpoint."
-            f"{_identity_name(cfg.name)}.v1",
-            None,
+            endpoint_id=endpoint_id,
+            activity_type=(
+                f"{_identity_name(self._name)}.endpoint."
+                f"{_identity_name(cfg.name)}.v1"
+            ),
+            handler=None,
+            workflow_type=_direct_workflow_type(self._name, cfg.name),
         )
 
     async def start(self, ctx: Context) -> None:
@@ -378,7 +399,7 @@ class Connector(ManagedDataConnector):
         queues = self._build_queue_registrations()
         try:
             for task_queue, registration in queues.items():
-                workflows: list[type[Any]] = []
+                workflows = list(registration.workflows)
                 if registration.endpoint_workflow:
                     workflows.append(_TemporalEndpointWorkflow)
                 worker = Worker(
@@ -445,16 +466,23 @@ class Connector(ManagedDataConnector):
             if not _bool(cfg, "enabled"):
                 continue
             queue = queues.setdefault(
-                _required_string(cfg, "task_queue"), _QueueRegistration([])
+                _required_string(cfg, "task_queue"), _QueueRegistration([], [])
             )
 
-            queue.activities.append(
-                _make_endpoint_activity(
-                    endpoint_registration,
-                    self._durable_diagnostics("endpoint", str(endpoint_id)),
+            if cfg.temporal_execution_type is TemporalExecutionType.ACTIVITY:
+                queue.activities.append(
+                    _make_endpoint_activity(
+                        endpoint_registration,
+                        self._durable_diagnostics("endpoint", str(endpoint_id)),
+                    )
                 )
-            )
-            queue.endpoint_workflow = True
+                queue.endpoint_workflow = True
+            elif cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
+                queue.workflows.append(_make_endpoint_workflow(endpoint_registration))
+            else:
+                raise ValueError(
+                    f"Temporal endpoint {cfg.name!r} has unsupported execution type"
+                )
         return queues
 
     async def submit_endpoint(
@@ -480,13 +508,18 @@ class Connector(ManagedDataConnector):
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
+        workflow_type = ENDPOINT_WORKFLOW_TYPE
+        workflow_input: EndpointEnvelope | _EndpointWorkflowRequest = request
+        if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
+            workflow_type = registration.workflow_type
+            workflow_input = envelope
         workflow_id = _endpoint_workflow_id(
             self._name, cfg.name, envelope.message_id
         )
         owner = _endpoint_owner(self._name, cfg.name)
         handle = await client.start_workflow(
-            ENDPOINT_WORKFLOW_TYPE,
-            request,
+            workflow_type,
+            workflow_input,
             id=workflow_id,
             task_queue=_required_string(cfg, "task_queue"),
             execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
@@ -496,7 +529,7 @@ class Connector(ManagedDataConnector):
             priority=Priority(priority_key=request.priority),
         )
         await _validate_workflow_ownership(
-            handle, ENDPOINT_WORKFLOW_TYPE, owner, envelope.message_id
+            handle, workflow_type, owner, envelope.message_id
         )
         if not wait_for_result:
             return EndpointResult()
@@ -508,22 +541,28 @@ class Connector(ManagedDataConnector):
         registration = self._endpoints[endpoint_id]
         schedule_id = _required_string(cfg, "schedule_id")
         owner = _endpoint_owner(self._name, cfg.name)
+        envelope = EndpointEnvelope(
+            version=1,
+            endpoint_id=endpoint_id,
+            message_id="",
+            stream_id="",
+            priority=0,
+            scheduled=True,
+            schedule_id=schedule_id,
+        )
         request = _EndpointWorkflowRequest(
             registration.activity_type,
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
             normalize_temporal_priority(0),
-            EndpointEnvelope(
-                version=1,
-                endpoint_id=endpoint_id,
-                message_id="",
-                stream_id="",
-                priority=0,
-                scheduled=True,
-                schedule_id=schedule_id,
-            ),
+            envelope,
         )
+        workflow_type = ENDPOINT_WORKFLOW_TYPE
+        workflow_input: EndpointEnvelope | _EndpointWorkflowRequest = request
+        if cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
+            workflow_type = registration.workflow_type
+            workflow_input = envelope
         overlap = ScheduleOverlapPolicy.ALLOW_ALL
         if getattr(cfg, "overlap_policy", None) == ApiOverlapPolicy.SKIP:
             overlap = ScheduleOverlapPolicy.SKIP
@@ -531,9 +570,9 @@ class Connector(ManagedDataConnector):
         if getattr(cfg, "missed_run_policy", None) == ScheduleMissedRunPolicy.FIREONCE:
             catchup = timedelta(days=365)
         action = ScheduleActionStartWorkflow(
-            ENDPOINT_WORKFLOW_TYPE,
-            request,
-            id=f"{self._name}/schedule/{cfg.name}",
+            workflow_type,
+            workflow_input,
+            id=_schedule_workflow_id(self._name, cfg.name),
             task_queue=_required_string(cfg, "task_queue"),
             execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
             memo=_ownership_memo(owner, schedule_id),
@@ -560,7 +599,7 @@ class Connector(ManagedDataConnector):
             existing = description.schedule.action
             if (
                 not isinstance(existing, ScheduleActionStartWorkflow)
-                or existing.workflow != ENDPOINT_WORKFLOW_TYPE
+                or existing.workflow != workflow_type
                 or existing.task_queue != _required_string(cfg, "task_queue")
             ):
                 raise RuntimeError(
@@ -631,6 +670,64 @@ def _make_endpoint_activity(
         return await run_durable_call_activity(durable, lambda: handler(fired))
 
     return activity.defn(name=registration.activity_type)(invoke_endpoint)
+
+
+def _make_endpoint_workflow(
+    registration: _EndpointRegistration,
+) -> type[Any]:
+    class_name = (
+        "TemporalEndpointWorkflow"
+        f"{registration.endpoint_id}{_identity_name(registration.workflow_type)}"
+    )
+
+    async def run(_self: object, envelope: EndpointEnvelope) -> EndpointResult:
+        if envelope.version != 1 or envelope.endpoint_id != registration.endpoint_id:
+            raise ValueError(
+                f"invalid Temporal Workflow envelope for {registration.endpoint_id}"
+            )
+        if envelope.scheduled:
+            info = workflow.info()
+            envelope = replace(
+                envelope,
+                message_id=info.workflow_id,
+                stream_id=info.workflow_id,
+                scheduled_at_unix_nano=_scheduled_time_nanos(
+                    info.workflow_id, info.workflow_start_time
+                ),
+                fired_at_unix_nano=int(
+                    workflow.now().astimezone(timezone.utc).timestamp()
+                    * 1_000_000_000
+                ),
+            )
+        if not envelope.message_id or not envelope.stream_id:
+            raise ValueError(
+                f"invalid Temporal Workflow identity for {registration.endpoint_id}"
+            )
+        handler = registration.handler
+        if handler is None:
+            raise RuntimeError(
+                f"Temporal endpoint {registration.endpoint_id} has no "
+                "local Workflow handler"
+            )
+        durable = DurableCallContext(
+            envelope.message_id,
+            delay=workflow.sleep,
+            workflow=True,
+            recording_policy=lambda: not workflow.unsafe.is_replaying(),
+        )
+        return await run_durable_call_workflow(durable, lambda: handler(envelope))
+
+    run.__name__ = "run"
+    run.__qualname__ = f"{class_name}.run"
+    workflow_class = type(
+        class_name,
+        (),
+        {"__module__": __name__, "run": workflow.run(run)},
+    )
+    globals()[class_name] = workflow_class
+    return workflow.defn(
+        name=registration.workflow_type, sandboxed=False
+    )(workflow_class)
 
 
 def _optional_timeout(obj: Any, name: str) -> Optional[timedelta]:
