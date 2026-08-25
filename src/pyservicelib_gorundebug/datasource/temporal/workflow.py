@@ -43,6 +43,12 @@ from ...runtime.context import (
     request_stream_id,
 )
 from ...runtime.schedule import normalize_temporal_priority
+from ...runtime.environment.tracing import (
+    data_source_endpoint_tracing_enabled,
+    sampling_requested_by_carrier,
+    sampling_scope,
+)
+from .context_propagation import current_workflow_carrier
 
 
 ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
@@ -445,34 +451,39 @@ async def execute_workflow_graph_endpoint(
     priority_token = request_priority.set(envelope.priority)
     deadline_token = request_deadline.set(deadline)
     cancelled_token = request_cancelled.set(asyncio.Event())
-    await environment.start(Context())
-    execution_error: BaseException | None = None
-    try:
-        await activate(envelope)
-        if result is None:
-            return EndpointResult()
-        value = await result
-        if result_stream is None:
-            raise RuntimeError("Temporal Workflow result stream disappeared")
-        return EndpointResult(bytes(result_stream.serde.serialize(value)))
-    except BaseException as error:
-        execution_error = error
-        raise
-    finally:
+    carrier = current_workflow_carrier()
+    sampled = data_source_endpoint_tracing_enabled(
+        environment, stream.endpoint_id
+    ) or sampling_requested_by_carrier(carrier)
+    with sampling_scope(sampled):
+        await environment.start(Context())
+        execution_error: BaseException | None = None
         try:
-            await environment.finish()
-        except BaseException as cleanup_error:
-            if execution_error is None:
-                raise
-            raise BaseExceptionGroup(
-                "Temporal Workflow execution and graph cleanup both failed",
-                [execution_error, cleanup_error],
-            ) from cleanup_error
+            await activate(envelope)
+            if result is None:
+                return EndpointResult()
+            value = await result
+            if result_stream is None:
+                raise RuntimeError("Temporal Workflow result stream disappeared")
+            return EndpointResult(bytes(result_stream.serde.serialize(value)))
+        except BaseException as error:
+            execution_error = error
+            raise
         finally:
-            request_cancelled.reset(cancelled_token)
-            request_deadline.reset(deadline_token)
-            request_priority.reset(priority_token)
-            request_stream_id.reset(stream_token)
+            try:
+                await environment.finish()
+            except BaseException as cleanup_error:
+                if execution_error is None:
+                    raise
+                raise BaseExceptionGroup(
+                    "Temporal Workflow execution and graph cleanup both failed",
+                    [execution_error, cleanup_error],
+                ) from cleanup_error
+            finally:
+                request_cancelled.reset(cancelled_token)
+                request_deadline.reset(deadline_token)
+                request_priority.reset(priority_token)
+                request_stream_id.reset(stream_token)
 
 
 # Private aliases remain temporarily for the existing internal test surface.

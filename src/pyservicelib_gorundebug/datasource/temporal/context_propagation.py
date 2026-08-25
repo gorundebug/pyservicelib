@@ -100,6 +100,12 @@ def _decode_carrier(headers: Mapping[str, Payload]) -> dict[str, str]:
     return carrier
 
 
+def current_workflow_carrier() -> dict[str, str]:
+    """Decode the canonical carrier attached to the current Workflow start."""
+
+    return _decode_carrier(workflow.info().headers)
+
+
 def _merge_headers(
     existing: Mapping[str, Payload],
     carrier_headers: dict[str, Payload],

@@ -53,6 +53,9 @@ from pyservicelib_gorundebug.datasource.temporal.workflow_environment import (
     _WorkflowPriorityTaskPool,
     _WorkflowTaskPool,
 )
+from pyservicelib_gorundebug.datasource.temporal.workflow import (
+    execute_workflow_graph_endpoint,
+)
 from pyservicelib_gorundebug.runtime.context.context import Context
 from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
     TEMPORAL_HEADER_DEADLINE_UNIX_NANO,
@@ -155,6 +158,58 @@ async def _append_async(target: list[int], value: int) -> None:
 
 def _fixed_workflow_time() -> datetime:
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint_enabled", "carrier"),
+    ((True, {}), (False, {"x-trace": "1"})),
+)
+async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint_enabled: bool,
+    carrier: dict[str, str],
+) -> None:
+    class Environment:
+        def __init__(self) -> None:
+            endpoint = SimpleNamespace(tracing_enabled=endpoint_enabled)
+            self.config = SimpleNamespace(
+                get_endpoint_config_by_id=lambda endpoint_id: endpoint
+            )
+
+        async def start(self, _ctx: Context) -> None:
+            pass
+
+        async def finish(self) -> None:
+            pass
+
+    class Stream:
+        endpoint_id = 17
+
+        @staticmethod
+        def get_result_stream() -> None:
+            return None
+
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.workflow.current_workflow_carrier",
+        lambda: carrier,
+    )
+
+    activated = False
+
+    async def activate(_envelope: EndpointEnvelope) -> None:
+        nonlocal activated
+        activated = True
+        assert sampling_enabled()
+
+    result = await execute_workflow_graph_endpoint(
+        environment=Environment(),  # type: ignore[arg-type]
+        stream=Stream(),  # type: ignore[arg-type]
+        envelope=EndpointEnvelope(1, 17, "message", "stream", 0),
+        activate=activate,
+    )
+    assert activated
+    assert result == EndpointResult()
 
 
 @pytest.mark.asyncio
