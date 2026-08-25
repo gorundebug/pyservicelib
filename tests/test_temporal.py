@@ -96,12 +96,12 @@ def test_temporal_otel_plugin_is_enabled_only_for_replay_safe_provider(
 
 
 @pytest.mark.asyncio
-async def test_workflow_task_pool_is_bounded_and_waits_for_all_work() -> None:
+async def test_workflow_task_pool_is_unbounded_and_waits_for_all_work() -> None:
     gate = asyncio.Event()
     entered = asyncio.Event()
     completed: list[int] = []
     failures: list[BaseException] = []
-    pool = _WorkflowTaskPool("workflow", 1, 1, failures.append)
+    pool = _WorkflowTaskPool("workflow", 1, failures.append, now=_fixed_workflow_time)
     await pool.start(Context())
 
     async def first() -> None:
@@ -112,13 +112,12 @@ async def test_workflow_task_pool_is_bounded_and_waits_for_all_work() -> None:
     await pool.add_task(first)
     await entered.wait()
     await pool.add_task(lambda: _append_async(completed, 2))
-    with pytest.raises(asyncio.QueueFull):
-        await pool.add_task(lambda: _append_async(completed, 3))
+    await pool.add_task(lambda: _append_async(completed, 3))
     gate.set()
     await pool.wait_idle()
     await pool.stop(Context())
 
-    assert completed == [1, 2]
+    assert completed == [1, 2, 3]
     assert failures == []
 
 
@@ -128,7 +127,9 @@ async def test_workflow_priority_pool_preserves_priority_then_fifo() -> None:
     entered = asyncio.Event()
     completed: list[int] = []
     failures: list[BaseException] = []
-    pool = _WorkflowPriorityTaskPool("priority", 1, 8, failures.append)
+    pool = _WorkflowPriorityTaskPool(
+        "priority", 1, failures.append, now=_fixed_workflow_time
+    )
     await pool.start(Context())
 
     async def blocker() -> None:
@@ -150,6 +151,10 @@ async def test_workflow_priority_pool_preserves_priority_then_fifo() -> None:
 
 async def _append_async(target: list[int], value: int) -> None:
     target.append(value)
+
+
+def _fixed_workflow_time() -> datetime:
+    return datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

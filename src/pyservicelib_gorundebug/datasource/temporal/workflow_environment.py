@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextvars import copy_context
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Optional, cast
 
 from temporalio import workflow
@@ -47,7 +47,12 @@ from ...runtime.context import Context
 from ...runtime.context.request import request_context_error
 from ...runtime.environment import ServiceDependency
 from ...runtime.environment.log import Logger
-from ...runtime.environment.metrics import Metrics
+from ...runtime.environment.metrics import (
+    Float64Histogram,
+    Int64Counter,
+    Int64Gauge,
+    Metrics,
+)
 from ...runtime.environment.tracing import Tracing
 from ...runtime.pool import PoolCancelledError, PriorityTaskPool, TaskPool
 from ...runtime.serde import (
@@ -69,14 +74,17 @@ class _WorkflowPool:
         self,
         name: str,
         executors_count: int,
-        queue_capacity: int,
         on_error: Callable[[BaseException], None],
+        metrics: Metrics | None = None,
+        service: str = "",
+        priority: bool = False,
+        now: Callable[[], datetime] = workflow.now,
     ) -> None:
         self._name = name
         self._executors_count = max(1, executors_count)
         self._queue: asyncio.PriorityQueue[
             tuple[int, int, tuple[Callable[..., Awaitable[Any]], tuple[Any, ...], dict[str, Any], Any] | None]
-        ] = asyncio.PriorityQueue(maxsize=max(0, queue_capacity))
+        ] = asyncio.PriorityQueue()
         self._on_error = on_error
         self._executors: list[asyncio.Task[None]] = []
         self._sequence = 0
@@ -85,6 +93,10 @@ class _WorkflowPool:
         self._idle.set()
         self._started = False
         self._stopped = False
+        self._now = now
+        self._pool_metrics = _WorkflowPoolMetrics(
+            metrics, service, name, priority
+        )
 
     @property
     def name(self) -> str:
@@ -97,6 +109,8 @@ class _WorkflowPool:
         if self._stopped:
             raise RuntimeError(f"workflow task pool {self._name!r} is stopped")
         self._started = True
+        self._pool_metrics.executors_target.set(self._executors_count)
+        self._pool_metrics.executors_allocated.set(self._executors_count)
         self._executors = [
             asyncio.create_task(self._run()) for _ in range(self._executors_count)
         ]
@@ -112,6 +126,7 @@ class _WorkflowPool:
         if self._executors:
             await asyncio.gather(*self._executors)
         self._executors.clear()
+        self._pool_metrics.executors_allocated.set(0)
 
     async def _enqueue(
         self,
@@ -121,8 +136,10 @@ class _WorkflowPool:
         kwargs: dict[str, Any],
     ) -> None:
         if request_context_error() is not None:
+            self._pool_metrics.task_rejected.inc()
             raise PoolCancelledError()
         if not self._started or self._stopped:
+            self._pool_metrics.task_rejected.inc()
             raise RuntimeError(f"workflow task pool {self._name!r} is not running")
         self._pending += 1
         self._idle.clear()
@@ -130,6 +147,7 @@ class _WorkflowPool:
             self._queue.put_nowait(
                 (priority, self._next_sequence(), (fn, args, kwargs, copy_context()))
             )
+            self._pool_metrics.queue_length.inc()
         except BaseException:
             self._task_done()
             raise
@@ -150,6 +168,9 @@ class _WorkflowPool:
             try:
                 if item is None:
                     return
+                self._pool_metrics.queue_length.dec()
+                self._pool_metrics.executors_busy.inc()
+                started = self._now()
                 fn, args, kwargs, context = item
                 async def invoke() -> None:
                     await fn(*args, **kwargs)
@@ -162,6 +183,11 @@ class _WorkflowPool:
                 except BaseException as error:
                     self._on_error(error)
                 finally:
+                    self._pool_metrics.executors_busy.dec()
+                    self._pool_metrics.tasks_total.inc()
+                    self._pool_metrics.execution_duration.observe(
+                        (self._now() - started).total_seconds()
+                    )
                     self._task_done()
             finally:
                 self._queue.task_done()
@@ -193,6 +219,89 @@ class _WorkflowPriorityTaskPool(_WorkflowPool, PriorityTaskPool):
         **kwargs: Any,
     ) -> None:
         await self._enqueue(priority, fn, args, kwargs)
+
+
+class _NoopGauge(Int64Gauge):
+    def set(self, v: int) -> None:
+        del v
+
+    def inc(self) -> None:
+        pass
+
+    def dec(self) -> None:
+        pass
+
+    def add(self, delta: int) -> None:
+        del delta
+
+    def sub(self, delta: int) -> None:
+        del delta
+
+
+class _NoopCounter(Int64Counter):
+    def inc(self) -> None:
+        pass
+
+    def add(self, v: int) -> None:
+        del v
+
+
+class _NoopHistogram(Float64Histogram):
+    def observe(self, v: float) -> None:
+        del v
+
+
+class _WorkflowPoolMetrics:
+    queue_length: Int64Gauge
+    executors_target: Int64Gauge
+    executors_allocated: Int64Gauge
+    executors_busy: Int64Gauge
+    tasks_total: Int64Counter
+    execution_duration: Float64Histogram
+    task_rejected: Int64Counter
+
+    def __init__(
+        self,
+        metrics: Metrics | None,
+        service: str,
+        name: str,
+        priority: bool,
+    ) -> None:
+        if metrics is None:
+            self.queue_length = _NoopGauge()
+            self.executors_target = _NoopGauge()
+            self.executors_allocated = _NoopGauge()
+            self.executors_busy = _NoopGauge()
+            self.tasks_total = _NoopCounter()
+            self.execution_duration = _NoopHistogram()
+            self.task_rejected = _NoopCounter()
+            return
+        kind = "priority task pool" if priority else "task pool"
+        scope = metrics.scope(
+            "priority_task_pool" if priority else "task_pool",
+            {"service": service, "name": name},
+        )
+        self.queue_length = scope.gauge(
+            "queue_length", f"{kind.capitalize()} wait queue length", {}
+        )
+        self.executors_target = scope.gauge(
+            "executors_target", f"Desired number of {kind} executors", {}
+        )
+        self.executors_allocated = scope.gauge(
+            "executors_allocated", f"Number of live {kind} executors", {}
+        )
+        self.executors_busy = scope.gauge(
+            "executors_busy", f"Number of {kind} executors running callbacks", {}
+        )
+        self.tasks_total = scope.counter(
+            "tasks_total", f"Total number of tasks executed by {kind}", {}
+        )
+        self.execution_duration = scope.histogram(
+            "task_execution_duration_seconds", "Task execution duration in seconds", {}
+        )
+        self.task_rejected = scope.counter(
+            "events_total", f"Total number of events in {kind}", {"event": "task_rejected"}
+        )
 
 
 class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionRuntime):
@@ -453,19 +562,28 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
             if config is None:
                 raise ValueError(f"pool config {pool_name!r} not found")
             count = config.executors_count or 1
-            capacity = config.queue_capacity or 0
             if semantics == CallSemantics.TaskPool:
                 self._task_pools.setdefault(
                     pool_name,
                     _WorkflowTaskPool(
-                        pool_name, count, capacity, self._record_failure
+                        pool_name,
+                        count,
+                        self._record_failure,
+                        self._metrics,
+                        self._service_config.name,
+                        False,
                     ),
                 )
             else:
                 self._priority_task_pools.setdefault(
                     pool_name,
                     _WorkflowPriorityTaskPool(
-                        pool_name, count, capacity, self._record_failure
+                        pool_name,
+                        count,
+                        self._record_failure,
+                        self._metrics,
+                        self._service_config.name,
+                        True,
                     ),
                 )
 
