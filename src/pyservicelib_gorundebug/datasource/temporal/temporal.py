@@ -11,7 +11,7 @@ import asyncio
 from contextlib import ExitStack
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from ...runtime.common import (
     CollectFunc,
@@ -240,35 +240,43 @@ def make_schedule_endpoint_consumer[T, R, E](
     stream: TypedInputStream[T, R, E],
     function: ScheduleEndpointFunction[T],
 ) -> Consumer[T]:
-    """Bind a Temporal Schedule function to an ordinary typed input."""
+    """Bind scheduled and on-demand activation to one typed endpoint."""
 
-    def decode(envelope: EndpointEnvelope) -> ScheduleTrigger:
+    def decode(envelope: EndpointEnvelope) -> tuple[bool, ScheduleTrigger | T]:
+        if not envelope.scheduled:
+            return False, stream.serde.deserialize(envelope.payload)
         if (
-            not envelope.scheduled
-            or not envelope.schedule_id
+            not envelope.schedule_id
             or envelope.scheduled_at_unix_nano <= 0
             or envelope.fired_at_unix_nano <= 0
         ):
             raise ValueError(
                 f"invalid Temporal schedule envelope for endpoint {envelope.endpoint_id}"
             )
-        return new_schedule_trigger(
-            envelope.endpoint_id,
-            envelope.schedule_id,
-            datetime.fromtimestamp(
-                envelope.scheduled_at_unix_nano / 1_000_000_000,
-                tz=timezone.utc,
+        return (
+            True,
+            new_schedule_trigger(
+                envelope.endpoint_id,
+                envelope.schedule_id,
+                datetime.fromtimestamp(
+                    envelope.scheduled_at_unix_nano / 1_000_000_000,
+                    tz=timezone.utc,
+                ),
+                datetime.fromtimestamp(
+                    envelope.fired_at_unix_nano / 1_000_000_000,
+                    tz=timezone.utc,
+                ),
+                ScheduleBackend.TEMPORAL,
             ),
-            datetime.fromtimestamp(
-                envelope.fired_at_unix_nano / 1_000_000_000,
-                tz=timezone.utc,
-            ),
-            ScheduleBackend.TEMPORAL,
         )
 
     out: CollectFunc[T] = CollectFunc(stream.consume)
 
-    async def invoke(trigger: ScheduleTrigger) -> None:
-        await function.on_trigger(trigger, out)
+    async def invoke(value: tuple[bool, ScheduleTrigger | T]) -> None:
+        scheduled, payload = value
+        if scheduled:
+            await function.on_trigger(cast(ScheduleTrigger, payload), out)
+            return
+        await stream.consume(cast(T, payload))
 
     return _make_endpoint_consumer(stream, decode, invoke)
