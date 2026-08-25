@@ -434,8 +434,13 @@ class DurableDelayCaller[T](Caller[T]):
             await self._delegate.consume(value)
             return
         payload = bytes(self._source.serde.serialize(value))
+        trace_carrier: dict[str, str] = {}
+        tracing = self._source.environment.tracing
+        if tracing is not None:
+            tracing.inject(trace_carrier)
         if not capture_durable_continuation(
-            self._source.name, self._consumer.stream.name, payload
+            self._source.name, self._consumer.stream.name, payload,
+            trace_carrier,
         ):
             await self._delegate.consume(value)
 

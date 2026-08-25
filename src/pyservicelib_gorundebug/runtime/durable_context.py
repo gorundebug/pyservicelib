@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 
@@ -63,6 +63,7 @@ class DurableContinuation:
     deadline_unix_nano: int
     wake_at_unix_nano: int
     payload: bytes
+    trace_carrier: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +195,8 @@ class DurableCallContext:
             self._delay_at = datetime.now(timezone.utc) + duration
 
     def capture_continuation(
-        self, from_name: str, to_name: str, payload: bytes
+        self, from_name: str, to_name: str, payload: bytes,
+        trace_carrier: Mapping[str, str] | None = None,
     ) -> bool:
         from .context import priority_from_context, request_deadline, stream_id_from_context
 
@@ -221,6 +223,7 @@ class DurableCallContext:
                 ),
                 wake_at_unix_nano=int(self._delay_at.timestamp() * 1_000_000_000),
                 payload=bytes(payload),
+                trace_carrier=dict(trace_carrier or {}),
             )
             self._completed = True
         self._report(SUSPENDED, None)
@@ -257,12 +260,15 @@ def begin_durable_delay(duration: timedelta) -> bool:
 
 
 def capture_durable_continuation(
-    from_name: str, to_name: str, payload: bytes
+    from_name: str, to_name: str, payload: bytes,
+    trace_carrier: Mapping[str, str] | None = None,
 ) -> bool:
     durable = current_durable_call_context()
     if durable is None:
         return False
-    return durable.capture_continuation(from_name, to_name, payload)
+    return durable.capture_continuation(
+        from_name, to_name, payload, trace_carrier
+    )
 
 
 def _require_current(operation: str) -> DurableCallContext:

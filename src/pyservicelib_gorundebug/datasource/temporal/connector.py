@@ -17,6 +17,7 @@ import os
 import re
 import threading
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -900,20 +901,25 @@ def _make_continuation_activity(
             if tracer is None or not sampling_enabled():
                 await resume(continuation)
                 return
-            _, span = start_span(
-                tracer,
-                "temporal.activity",
-                string_attr("boundary", "durable_delay"),
-                string_attr("from", continuation.from_name),
-                string_attr("to", continuation.to_name),
-            )
-            durable_span = bind_durable_call_span(span)
-            try:
-                with span.scoped():
-                    await resume(continuation)
-            finally:
-                if not durable_span:
-                    span.end()
+            with (
+                tracing.extract(continuation.trace_carrier)
+                if tracing is not None and continuation.trace_carrier
+                else nullcontext(False)
+            ):
+                _, span = start_span(
+                    tracer,
+                    "temporal.activity",
+                    string_attr("boundary", "durable_delay"),
+                    string_attr("from", continuation.from_name),
+                    string_attr("to", continuation.to_name),
+                )
+                durable_span = bind_durable_call_span(span)
+                try:
+                    with span.scoped():
+                        await resume(continuation)
+                finally:
+                    if not durable_span:
+                        span.end()
 
         return await run_durable_call_activity(
             durable, resume_with_span

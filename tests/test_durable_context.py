@@ -149,7 +149,8 @@ async def test_durable_delay_returns_serializable_continuation() -> None:
     async def invoke() -> None:
         assert begin_durable_delay(timedelta(hours=1))
         assert capture_durable_continuation(
-            "Delay", "After Delay", b"value"
+            "Delay", "After Delay", b"value",
+            {"traceparent": "parent"},
         )
 
     result = await run_durable_call_activity(durable, invoke)
@@ -158,6 +159,7 @@ async def test_durable_delay_returns_serializable_continuation() -> None:
     assert result.continuation.to_name == "After Delay"
     assert result.continuation.call_id == "call-1/delay"
     assert result.continuation.payload == b"value"
+    assert result.continuation.trace_carrier == {"traceparent": "parent"}
 
 
 def test_begin_durable_delay_keeps_ordinary_context_local() -> None:
