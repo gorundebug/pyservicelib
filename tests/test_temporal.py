@@ -26,8 +26,12 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
 from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
+    EndpointEnvelope,
+    EndpointResult,
     _DurableWorkflowRequest,
+    _EndpointRegistration,
     _LinkRegistration,
+    _make_endpoint_activity,
     _make_link_activity,
     _scheduled_time_nanos,
     _validate_workflow_ownership,
@@ -117,6 +121,33 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
     assert received == [envelope]
     with pytest.raises(ValueError, match="invalid durable envelope"):
         await function(_envelope(to_id=9))
+
+
+@pytest.mark.asyncio
+async def test_on_demand_endpoint_runs_inside_durable_activity_scope() -> None:
+    received: list[EndpointEnvelope] = []
+
+    async def handler(envelope: EndpointEnvelope) -> EndpointResult:
+        received.append(envelope)
+        durable_call_success()
+        return EndpointResult(payload=b"accepted")
+
+    function = _make_endpoint_activity(
+        _EndpointRegistration(11, "temporal.endpoint.durable_job.v1", handler)
+    )
+    envelope = EndpointEnvelope(
+        version=1,
+        endpoint_id=11,
+        execution_id="job-1",
+        stream_id="stream-1",
+        priority=0,
+        payload=b"value",
+    )
+
+    result = await function(envelope)
+
+    assert received[0].scheduled is False
+    assert result.result == EndpointResult(payload=b"accepted")
 
 
 @pytest.mark.asyncio

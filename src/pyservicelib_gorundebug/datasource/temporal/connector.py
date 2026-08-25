@@ -853,8 +853,6 @@ def _make_endpoint_activity(
                 f"Temporal endpoint {registration.endpoint_id} has no local Activity handler"
             )
         fired = replace(envelope, fired_at_unix_nano=workflow_time_nanos())
-        if not fired.scheduled:
-            return _EndpointActivityResult(result=await handler(fired))
         durable = DurableCallContext(
             fired.execution_id,
             heartbeat=activity.heartbeat,
