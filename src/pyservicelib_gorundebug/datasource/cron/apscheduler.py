@@ -30,6 +30,11 @@ from ...runtime.datasource import (
     InputDataSource,
 )
 from ...runtime.environment.log.log import err_field, str_field
+from ...runtime.environment.tracing import (
+    data_source_endpoint_tracing_enabled,
+    sampling_enabled,
+    sampling_scope,
+)
 from ...runtime.schedule import (
     ScheduleBackend,
     ScheduleEndpointFunction,
@@ -170,6 +175,15 @@ class _CronEndpoint(DataSourceEndpoint):
             )
 
     async def _fire(self, scheduled_at: datetime) -> None:
+        if self._consumer is None:
+            return
+        with sampling_scope(
+            sampling_enabled()
+            or data_source_endpoint_tracing_enabled(self.environment, self.id)
+        ):
+            await self._fire_inner(scheduled_at)
+
+    async def _fire_inner(self, scheduled_at: datetime) -> None:
         if self._consumer is None:
             return
         fired_at = datetime.now(timezone.utc)

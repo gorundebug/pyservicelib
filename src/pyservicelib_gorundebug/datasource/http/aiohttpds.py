@@ -22,6 +22,7 @@ from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
     Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, string_attr,
     sampling_scope,
+    data_source_endpoint_tracing_enabled,
 )
 
 _PENDING_ROTATION_INTERVAL = 30.0
@@ -307,7 +308,11 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             await self._pending.stop(ctx)
 
     async def serve_http(self, request: web.Request) -> web.Response:
-        trace_requested = bool(request.headers.get('x-trace'))
+        trace_requested = bool(request.headers.get('x-trace')) or (
+            data_source_endpoint_tracing_enabled(
+                self._endpoint.environment, self._endpoint.id,
+            )
+        )
         has_remote_parent = bool(request.headers.get('traceparent'))
         if not trace_requested and not has_remote_parent:
             return await self._serve_http(request)

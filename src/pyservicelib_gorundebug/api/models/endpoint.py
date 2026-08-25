@@ -36,6 +36,7 @@ class Endpoint(BaseModel):
     name: StrictStr = Field(description="Human-readable endpoint name shown in the visual designer.", json_schema_extra={"examples": ["IngestEndpoint"]})
     id_data_connector: StrictInt = Field(description="ID of the data connector this endpoint belongs to.", alias="idDataConnector", json_schema_extra={"examples": [1]})
     enabled: Optional[StrictBool] = Field(default=None, description="Controls whether an endpoint starts its transport integration. When omitted or false, the endpoint remains in the execution graph but its external transport or scheduler is not started. ")
+    tracing_enabled: Optional[StrictBool] = Field(default=None, description="Enables tracing for events admitted by this DataSource endpoint. The current reloadable value is evaluated for every inbound event. DataSink adapters ignore this flag and only propagate tracing already present in the message context. ", alias="tracingEnabled")
     http_method_type: Optional[HTTPMethodType] = Field(default=None, alias="httpMethodType")
     path: Optional[StrictStr] = Field(default=None, description="URL path for HTTP endpoints (e.g. `/api/v1/orders`). Applies to HTTP connectors.")
     function_name: Optional[StrictStr] = Field(default=None, description="Name of the generated Go handler struct for this endpoint.", alias="functionName")
@@ -61,7 +62,7 @@ class Endpoint(BaseModel):
     activity_start_to_close_timeout: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Temporal Activity start-to-close timeout in milliseconds.", alias="activityStartToCloseTimeout")
     activity_heartbeat_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Activity heartbeat timeout in milliseconds; zero disables it.", alias="activityHeartbeatTimeout")
     maximum_attempts: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Temporal Activity attempts including the initial attempt.", alias="maximumAttempts")
-    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
+    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "tracingEnabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -118,6 +119,7 @@ class Endpoint(BaseModel):
             "name": obj.get("name"),
             "idDataConnector": obj.get("idDataConnector"),
             "enabled": obj.get("enabled"),
+            "tracingEnabled": obj.get("tracingEnabled"),
             "httpMethodType": obj.get("httpMethodType"),
             "path": obj.get("path"),
             "functionName": obj.get("functionName"),

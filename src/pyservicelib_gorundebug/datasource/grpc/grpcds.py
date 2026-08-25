@@ -28,6 +28,7 @@ import grpc.aio
 from ...runtime.environment.tracing import (
     Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, span_attrs,
     string_attr, bool_attr, sampling_scope,
+    data_source_endpoint_tracing_enabled,
 )
 from ...runtime.common import (
     TypedInputStream, InputEndpoint, ServiceExecutionEnvironment,
@@ -401,7 +402,11 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         eof_after_first: bool,
         request_iter: Optional[AsyncIterator[ReqT]] = None,
     ) -> Optional[Exception]:
-        trace_requested = bool(carrier.get('x-trace'))
+        trace_requested = bool(carrier.get('x-trace')) or (
+            data_source_endpoint_tracing_enabled(
+                self._endpoint.environment, self._endpoint.id,
+            )
+        )
         has_remote_parent = bool(carrier.get('traceparent'))
         if not trace_requested and not has_remote_parent:
             return await self._handle_common_inner(

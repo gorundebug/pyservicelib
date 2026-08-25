@@ -166,6 +166,12 @@ def sampling_enabled() -> bool:
     return _sampling_var.get()
 
 
+def data_source_endpoint_tracing_enabled(environment: Any, endpoint_id: int) -> bool:
+    """Read the current reloadable source-endpoint tracing policy."""
+    endpoint = environment.config.get_endpoint_config_by_id(endpoint_id)
+    return bool(getattr(endpoint, "tracing_enabled", False))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def start_span(tracer: Optional[Tracer], operation: str, *attrs: Attribute) -> Tuple[Any, Span]:

@@ -19,6 +19,7 @@ from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourc
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
     Tracer, Span, start_endpoint_span, span_event, span_error, string_attr,
+    data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
 )
 
 
@@ -246,6 +247,15 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         await self._input_stream.consume(value)
 
     async def _endpoint_request(self, value: T) -> None:
+        with sampling_scope(
+            sampling_enabled()
+            or data_source_endpoint_tracing_enabled(
+                self._endpoint.environment, self._endpoint.id,
+            )
+        ):
+            await self._endpoint_request_inner(value)
+
+    async def _endpoint_request_inner(self, value: T) -> None:
         ctx = self._ctx or Context()
         ep = cast(DataSourceEndpoint, self._endpoint)
 

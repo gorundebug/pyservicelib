@@ -182,6 +182,7 @@ class _AIOKafkaSinkDataSink(OutputDataSink):
         key: Optional[bytes],
         value: Optional[bytes],
         partition: Optional[int],
+        headers: Optional[list[tuple[str, bytes]]],
         on_delivery: Callable[[int, int, Optional[Exception]], None],
     ) -> None:
         if self._producer is None or self._stopped:
@@ -189,7 +190,7 @@ class _AIOKafkaSinkDataSink(OutputDataSink):
             return
         try:
             fut = await self._producer.send(
-                topic, value=value, key=key, partition=partition
+                topic, value=value, key=key, partition=partition, headers=headers
             )
             record_metadata = await fut
             on_delivery(record_metadata.partition, record_metadata.offset, None)
@@ -307,6 +308,14 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                     val: Optional[bytes],
                     on_delivery: Callable,
                 ) -> None:
+                    carrier: dict[str, str] = {}
+                    tracing = getattr(ep.environment, "tracing", None)
+                    if tracing is not None:
+                        tracing.inject(carrier)
+                    headers = [
+                        (key, item.encode("utf-8"))
+                        for key, item in carrier.items()
+                    ]
                     async def _send_message() -> None:
                         try:
                             partitions = await ds.partitions_for(ep.topic)
@@ -319,7 +328,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                             on_delivery(0, 0, err)
                             return
                         await ds.send_message(
-                            ep.topic, key, val, partition, on_delivery
+                            ep.topic, key, val, partition, headers, on_delivery
                         )
 
                     ep.environment.runtime.create_task(

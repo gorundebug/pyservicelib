@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+from contextlib import nullcontext
 from typing import Optional, Protocol, Any, Callable, cast
 
 from aiokafka import AIOKafkaConsumer  # type: ignore[import-not-found,import-untyped]
@@ -30,6 +31,7 @@ from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, D
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
     Tracer, Span, start_endpoint_span, span_event, span_error, string_attr,
+    data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
 )
 
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
@@ -434,6 +436,31 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             self._concurrency_changed.notify_all()
 
     async def _endpoint_request(self, record: ConsumerRecord) -> None:
+        env = getattr(self._input_stream, "environment", None)
+        if env is None:
+            await self._endpoint_request_inner(record)
+            return
+        carrier = {
+            key.lower(): value.decode("utf-8")
+            for key, value in (getattr(record, "headers", None) or [])
+            if value is not None and key.lower() in ("traceparent", "tracestate")
+        }
+        tracing = env.tracing
+        with (
+            tracing.extract(carrier)
+            if tracing is not None and carrier
+            else nullcontext(False)
+        ) as remote_sampled:
+            with sampling_scope(
+                sampling_enabled()
+                or remote_sampled
+                or data_source_endpoint_tracing_enabled(
+                    self._endpoint.environment, self._endpoint.id,
+                )
+            ):
+                await self._endpoint_request_inner(record)
+
+    async def _endpoint_request_inner(self, record: ConsumerRecord) -> None:
         assert self._kafka_consumer is not None
         sid = new_stream_id()
         with_stream_id(sid)

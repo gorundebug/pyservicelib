@@ -32,6 +32,8 @@ from ...runtime.datasource import DataSourceEndpoint, DataSourceEndpointConsumer
 from ...runtime.environment.tracing import (
     Tracer,
     Tracing,
+    data_source_endpoint_tracing_enabled,
+    sampling_enabled,
     sampling_scope,
     span_error,
     start_endpoint_span,
@@ -134,7 +136,14 @@ class _TemporalEndpointConsumer[Input, T, R, E](
                     else nullcontext(False)
                 )
                 scopes.enter_context(
-                    sampling_scope(envelope.sampling_enabled or remote_sampled)
+                sampling_scope(
+                    sampling_enabled()
+                    or envelope.sampling_enabled
+                    or remote_sampled
+                    or data_source_endpoint_tracing_enabled(
+                        self.endpoint.environment, self.endpoint.id,
+                    )
+                )
                 )
                 _, span = start_endpoint_span(
                     self._tracer,
