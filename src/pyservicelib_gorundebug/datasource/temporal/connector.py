@@ -54,9 +54,16 @@ from ...runtime.durable_context import (
     DurableCallContext,
     DurableCallDiagnostics,
     DurableContinuation,
+    bind_durable_call_span,
     run_durable_call_activity,
 )
 from ...runtime.environment.log import err_field, str_field
+from ...runtime.environment.tracing import (
+    Tracing,
+    sampling_enabled,
+    start_span,
+    string_attr,
+)
 from ...runtime.schedule import normalize_temporal_priority
 from .context_propagation import TemporalContextPropagationInterceptor
 
@@ -585,6 +592,8 @@ class Connector(DurableTransport):
                     self._continuation_activity_type(),
                     self._environment.runtime.resume_durable_continuation,
                     self._durable_diagnostics("continuation", self._name),
+                    self._environment.tracing,
+                    self._environment.service_config.name,
                 )
             )
         return queues
@@ -866,7 +875,11 @@ def _make_continuation_activity(
     activity_type: str,
     resume: Callable[[DurableContinuation], Awaitable[None]],
     diagnostics: DurableCallDiagnostics | None = None,
+    tracing: Tracing | None = None,
+    service_name: str = "",
 ) -> Callable[[DurableContinuation], Awaitable[DurableActivityResult]]:
+    tracer = tracing.tracer(service_name) if tracing is not None else None
+
     async def invoke_continuation(
         continuation: DurableContinuation,
     ) -> DurableActivityResult:
@@ -882,8 +895,28 @@ def _make_continuation_activity(
             heartbeat=activity.heartbeat,
             diagnostics=diagnostics,
         )
+
+        async def resume_with_span() -> None:
+            if tracer is None or not sampling_enabled():
+                await resume(continuation)
+                return
+            _, span = start_span(
+                tracer,
+                "temporal.activity",
+                string_attr("boundary", "durable_delay"),
+                string_attr("from", continuation.from_name),
+                string_attr("to", continuation.to_name),
+            )
+            durable_span = bind_durable_call_span(span)
+            try:
+                with span.scoped():
+                    await resume(continuation)
+            finally:
+                if not durable_span:
+                    span.end()
+
         return await run_durable_call_activity(
-            durable, lambda: resume(continuation)
+            durable, resume_with_span
         )
 
     return activity.defn(name=activity_type)(invoke_continuation)
