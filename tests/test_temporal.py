@@ -34,6 +34,7 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     _make_endpoint_activity,
     _make_link_activity,
     _scheduled_time_nanos,
+    _temporal_cron_expression,
     _validate_workflow_ownership,
 )
 from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
@@ -44,6 +45,10 @@ from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
     _current_carrier,
     _encode_carrier,
 )
+
+
+def test_temporal_cron_preserves_portable_minute_semantics() -> None:
+    assert _temporal_cron_expression("  */5   * * * * ") == "0 */5 * * * *"
 
 
 class _Config:

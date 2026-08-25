@@ -324,6 +324,11 @@ def _required_string(obj: Any, name: str) -> str:
     return value
 
 
+def _temporal_cron_expression(expression: str) -> str:
+    """Translate the portable five-field DSL cron into Temporal's format."""
+    return "0 " + " ".join(expression.split())
+
+
 def _integer(obj: Any, name: str, default: int = 0) -> int:
     value = getattr(obj, name, None)
     return value if isinstance(value, int) else default
@@ -742,7 +747,9 @@ class Connector(DurableTransport):
                 Schedule(
                     action,
                     ScheduleSpec(
-                        cron_expressions=[_required_string(cfg, "schedule")],
+                        cron_expressions=[_temporal_cron_expression(
+                            _required_string(cfg, "schedule")
+                        )],
                         time_zone_name=getattr(cfg, "timezone", None) or None,
                     ),
                     SchedulePolicy(overlap=overlap, catchup_window=catchup),
