@@ -836,7 +836,6 @@ class TypedConsumedStream[T](TypedStream[T], StreamConsumer[T], ABC):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
         self._consumer = None
-        self._consumer = None
 
     @property
     def consumer(self) -> Optional[StreamConsumer[T]]:
@@ -915,6 +914,7 @@ class TypedTransformConsumedStream[T, R](TypedStream[R], StreamConsumer[T], ABC)
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment", serde: TypedStreamSerde[R]):
         super().__init__(stream_id=stream_id, env=env, serde=serde)
         self._caller = None
+        self._consumer = None
 
     @property
     def consumer(self) -> Optional[StreamConsumer[R]]:

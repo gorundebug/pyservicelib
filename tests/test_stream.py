@@ -15,8 +15,13 @@ import pytest
 
 from pyservicelib_gorundebug.runtime.config import ConfigSettings
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
-from pyservicelib_gorundebug.runtime.common import CallerStatistics, DirectCaller
+from pyservicelib_gorundebug.runtime.common import (
+    CallerStatistics,
+    DirectCaller,
+    TypedTransformConsumedStream,
+)
 from pyservicelib_gorundebug import transformation
+from pyservicelib_gorundebug.operators.map import MapStream
 from pyservicelib_gorundebug.operators.split import SplitLink, SplitStream
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
@@ -164,6 +169,29 @@ def test_split_build_orders_async_links_once():
     split.build()
 
     assert [link._caller.is_async for link in split._links] == [True, False]
+
+
+def test_terminal_transform_has_no_consumers_before_wiring():
+    stream = object.__new__(MapStream)
+    environment = SimpleNamespace(
+        config=SimpleNamespace(
+            get_stream_config_by_id=lambda _stream_id: SimpleNamespace(
+                name="terminal-map",
+                transformation_name="Map",
+            ),
+        ),
+        runtime=SimpleNamespace(register_stream=lambda _stream: None),
+    )
+
+    TypedTransformConsumedStream.__init__(
+        stream,
+        stream_id=1,
+        env=environment,
+        serde=SimpleNamespace(),
+    )
+
+    assert stream.consumer is None
+    assert stream.consumers == []
 
 
 @pytest.mark.benchmark(group="slots")
