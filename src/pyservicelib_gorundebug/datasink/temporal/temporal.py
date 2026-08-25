@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import timezone
-from typing import Optional
+from typing import Optional, Protocol
 
 from ...runtime.common import (
     Consumer,
     DataSink,
     OutputEndpointConsumer,
     RuntimeEndpointConsumer,
+    ServiceStream,
     ServiceExecutionEnvironment,
     TypedSinkStream,
     TypedSinkStreamWithResult,
@@ -46,21 +47,59 @@ class _TemporalDataSink(OutputDataSink):
         del ctx
 
 
-class _TemporalSinkConsumer[T, R, E](
+class EndpointHandler[HandlerState, T](Protocol):
+    """User lifecycle and stable message identity for a Temporal submission."""
+
+    def get_message_id(
+        self,
+        stream: ServiceStream,
+        handler_state: HandlerState,
+        value: T,
+    ) -> str: ...
+
+    async def begin_request(self, stream: ServiceStream) -> HandlerState: ...
+
+    async def end_request(
+        self,
+        stream: ServiceStream,
+        error: Optional[Exception],
+        state: HandlerState,
+    ) -> None: ...
+
+
+class _DirectEndpointHandler[T]:
+    def get_message_id(
+        self, stream: ServiceStream, handler_state: None, value: T
+    ) -> str:
+        del stream, handler_state, value
+        return stream_id_from_context() or ""
+
+    async def begin_request(self, stream: ServiceStream) -> None:
+        del stream
+
+    async def end_request(
+        self, stream: ServiceStream, error: Optional[Exception], state: None
+    ) -> None:
+        del stream, error, state
+
+
+class _TemporalSinkConsumer[HandlerState, T, R, E](
     Consumer[T], OutputEndpointConsumer, RuntimeEndpointConsumer
 ):
     def __init__(
         self,
         endpoint: DataSinkEndpoint,
         connector: Connector,
-        stream_name: str,
+        stream: TypedSinkStream[T, E] | TypedSinkStreamWithResult[T, R, E],
+        handler: EndpointHandler[HandlerState, T],
         input_serde: TypedStreamSerde[T],
         result_serde: Optional[TypedStreamSerde[R]],
         emit_result: Optional[Callable[[R], Awaitable[None]]],
     ) -> None:
         self._endpoint = endpoint
         self._connector = connector
-        self._stream_name = stream_name
+        self._stream = stream
+        self._handler = handler
         self._input_serde = input_serde
         self._result_serde = result_serde
         self._emit_result = emit_result
@@ -86,13 +125,18 @@ class _TemporalSinkConsumer[T, R, E](
         _, span = start_endpoint_span(
             self._tracer,
             "temporal.output",
-            self._stream_name,
+            self._stream.name,
             self.endpoint.name,
         )
+        state: HandlerState
         try:
             with span.scoped():
-                execution_id = stream_id_from_context() or new_stream_id()
-                stream_id = stream_id_from_context() or execution_id
+                state = await self._handler.begin_request(self._stream)
+                message_id = (
+                    self._handler.get_message_id(self._stream, state, value)
+                    or new_stream_id()
+                )
+                stream_id = stream_id_from_context() or message_id
                 priority = priority_from_context()
                 deadline = request_deadline.get()
                 deadline_nanos = 0
@@ -105,7 +149,7 @@ class _TemporalSinkConsumer[T, R, E](
                     EndpointEnvelope(
                         version=1,
                         endpoint_id=self.endpoint.id,
-                        execution_id=execution_id,
+                        message_id=message_id,
                         stream_id=stream_id,
                         priority=priority if priority is not None else 0,
                         deadline_unix_nano=deadline_nanos,
@@ -123,8 +167,11 @@ class _TemporalSinkConsumer[T, R, E](
             span_error(span, exc)
             raise
         finally:
+            if "state" in locals():
+                await self._handler.end_request(self._stream, error, state)
             span.end()
             self.endpoint.on_request_end(started, error)
+
 
 def _get_or_create_datasink(
     connector_id: int,
@@ -154,14 +201,43 @@ def _create_endpoint(
     return endpoint, connector
 
 
-def make_direct_endpoint_consumer[T, E](
+def make_endpoint_consumer[HandlerState, T, E](
     stream: TypedSinkStream[T, E],
+    handler: EndpointHandler[HandlerState, T],
 ) -> Consumer[T]:
     """Create a submission-only Temporal endpoint sink."""
 
     endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
-    consumer = _TemporalSinkConsumer[T, object, E](
-        endpoint, connector, stream.name, stream.serde, None, None
+    consumer = _TemporalSinkConsumer[HandlerState, T, object, E](
+        endpoint, connector, stream, handler, stream.serde, None, None
+    )
+    endpoint.add_endpoint_consumer(consumer)
+    stream.set_sink_consumer(consumer)
+    stream.environment.runtime.register_endpoint_consumer(consumer)
+    return consumer
+
+
+def make_direct_endpoint_consumer[T, E](
+    stream: TypedSinkStream[T, E],
+) -> Consumer[T]:
+    return make_endpoint_consumer(stream, _DirectEndpointHandler[T]())
+
+
+def make_endpoint_consumer_with_result[HandlerState, T, R, E](
+    stream: TypedSinkStreamWithResult[T, R, E],
+    handler: EndpointHandler[HandlerState, T],
+) -> Consumer[T]:
+    """Create a Temporal sink that emits the existing endpoint result."""
+
+    endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
+    consumer = _TemporalSinkConsumer[HandlerState, T, R, E](
+        endpoint,
+        connector,
+        stream,
+        handler,
+        stream.input_serde,
+        stream.serde,
+        stream.consume_result,
     )
     endpoint.add_endpoint_consumer(consumer)
     stream.set_sink_consumer(consumer)
@@ -172,18 +248,4 @@ def make_direct_endpoint_consumer[T, E](
 def make_direct_endpoint_consumer_with_result[T, R, E](
     stream: TypedSinkStreamWithResult[T, R, E],
 ) -> Consumer[T]:
-    """Create a Temporal sink that emits the existing endpoint result."""
-
-    endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
-    consumer = _TemporalSinkConsumer[T, R, E](
-        endpoint,
-        connector,
-        stream.name,
-        stream.input_serde,
-        stream.serde,
-        stream.consume_result,
-    )
-    endpoint.add_endpoint_consumer(consumer)
-    stream.set_sink_consumer(consumer)
-    stream.environment.runtime.register_endpoint_consumer(consumer)
-    return consumer
+    return make_endpoint_consumer_with_result(stream, _DirectEndpointHandler[T]())

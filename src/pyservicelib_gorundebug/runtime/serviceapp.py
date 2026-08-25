@@ -6,10 +6,10 @@
 import argparse
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, Optional, Set, cast
+from typing import Any, Callable, Coroutine, Optional, Set, cast
 
 import aiofiles  # type: ignore[import-untyped]
 import yaml
@@ -21,7 +21,7 @@ from .common import (
     ConsumeStatistics,
     DataSink,
     DataSource,
-    DurableTransport,
+    ManagedDataConnector,
     RuntimeEndpointConsumer,
     RuntimeLinkInfo,
     ServiceExecutionEnvironment,
@@ -41,14 +41,7 @@ from .config import (
     apply_environment,
     replace_placeholders,
 )
-from .context import (
-    Context,
-    request_cancelled,
-    request_deadline,
-    request_priority,
-    request_stream_id,
-)
-from .durable_context import DurableContinuation
+from .context import Context
 from .environment import AdmissionLifecycle, Lifecycle, ServiceDependency
 from .environment.log import Logger, LogsEngine, err_field, str_field
 from .environment.metrics import MetricsEngine
@@ -163,10 +156,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     _endpoint_consumers: dict[int, RuntimeEndpointConsumer]
     _dep: Optional[ServiceDependency]
     _components: list[Lifecycle]
-    _durable_transports: dict[int, DurableTransport]
-    _durable_continuations: dict[
-        tuple[str, str], Callable[[DurableContinuation], Awaitable[None]]
-    ]
+    _managed_data_connectors: dict[int, ManagedDataConnector]
     _aiohttp_app: Optional[web.Application]
     _aiohttp_runner: Optional[web.AppRunner]
 
@@ -184,8 +174,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._endpoint_consumers = {}
         self._tracing_engine = None
         self._components = []
-        self._durable_transports = {}
-        self._durable_continuations = {}
+        self._managed_data_connectors = {}
         self._aiohttp_app = None
         self._aiohttp_runner = None
 
@@ -272,7 +261,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                     CallSemantics.TaskPool,
                     CallSemantics.PriorityTaskPool,
                     CallSemantics.ParallelCall,
-                    CallSemantics.DurableCall,
                 ]:
                     raise ValueError(
                         f"Invalid call semantics {call_semantics} defined for link from={link.var_from} to={link.to}"
@@ -439,55 +427,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     def register_link_info(self, link_info: RuntimeLinkInfo) -> None:
         self._runtime_links.append(link_info)
-
-    def register_durable_continuation(
-        self,
-        from_name: str,
-        to_name: str,
-        handler: Callable[[DurableContinuation], Awaitable[None]],
-    ) -> None:
-        key = (from_name, to_name)
-        if key in self._durable_continuations:
-            raise ValueError(
-                f"durable continuation {from_name!r}->{to_name!r} is already registered"
-            )
-        self._durable_continuations[key] = handler
-
-    async def resume_durable_continuation(
-        self, continuation: DurableContinuation
-    ) -> None:
-        if (
-            continuation.version != 1
-            or not continuation.from_name
-            or not continuation.to_name
-            or not continuation.call_id
-        ):
-            raise ValueError("invalid durable continuation envelope")
-        handler = self._durable_continuations.get(
-            (continuation.from_name, continuation.to_name)
-        )
-        if handler is None:
-            raise ValueError(
-                f"durable continuation {continuation.from_name!r}->"
-                f"{continuation.to_name!r} is not registered"
-            )
-        deadline = None
-        if continuation.deadline_unix_nano > 0:
-            deadline = datetime.fromtimestamp(
-                continuation.deadline_unix_nano / 1_000_000_000,
-                tz=timezone.utc,
-            )
-        stream_token = request_stream_id.set(continuation.stream_id or None)
-        priority_token = request_priority.set(continuation.priority)
-        deadline_token = request_deadline.set(deadline)
-        cancelled_token = request_cancelled.set(asyncio.Event())
-        try:
-            await handler(continuation)
-        finally:
-            request_cancelled.reset(cancelled_token)
-            request_deadline.reset(deadline_token)
-            request_priority.reset(priority_token)
-            request_stream_id.reset(stream_token)
 
     def register_endpoint_consumer(self, consumer: RuntimeEndpointConsumer) -> None:
         self._endpoint_consumers[consumer.id] = consumer
@@ -669,14 +608,18 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def get_datasink(self, id_connector: int) -> Optional[DataSink]:
         return self._dataSinks.get(id_connector)
 
-    def add_durable_transport(self, transport: DurableTransport) -> None:
-        if transport.id in self._durable_transports:
-            raise ValueError(f"durable transport id={transport.id} is already registered")
-        self._durable_transports[transport.id] = transport
-        self.add_component(transport)
+    def add_managed_data_connector(self, connector: ManagedDataConnector) -> None:
+        if connector.id in self._managed_data_connectors:
+            raise ValueError(
+                f"managed data connector id={connector.id} is already registered"
+            )
+        self._managed_data_connectors[connector.id] = connector
+        self.add_component(connector)
 
-    def get_durable_transport(self, id_connector: int) -> Optional[DurableTransport]:
-        return self._durable_transports.get(id_connector)
+    def get_managed_data_connector(
+        self, id_connector: int
+    ) -> Optional[ManagedDataConnector]:
+        return self._managed_data_connectors.get(id_connector)
 
     @property
     def metrics(self) -> Metrics:

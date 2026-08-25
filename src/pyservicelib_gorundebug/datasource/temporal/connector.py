@@ -3,7 +3,7 @@
 #
 #  Licensed under the MIT License. See LICENSE for details.
 
-"""Temporal transport boundary for DurableCall and symmetric endpoints.
+"""Temporal transport boundary for symmetric source/sink endpoints.
 
 The Workflows and Activities in this module are infrastructure only. An
 Activity activates an already existing graph consumer; it never replaces or
@@ -17,8 +17,7 @@ import os
 import re
 import threading
 from collections.abc import Awaitable, Callable
-from contextlib import nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -47,29 +46,19 @@ from temporalio.worker import Worker
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy as ApiOverlapPolicy
-from ...runtime.common import DurableEnvelope, DurableTransport, ServiceExecutionEnvironment
-from ...runtime.config import EndpointConfig, LinkId
+from ...runtime.common import ManagedDataConnector, ServiceExecutionEnvironment
+from ...runtime.config import EndpointConfig
 from ...runtime.context import Context
 from ...runtime.durable_context import (
-    DurableActivityResult,
     DurableCallContext,
     DurableCallDiagnostics,
-    DurableContinuation,
-    bind_durable_call_span,
     run_durable_call_activity,
 )
 from ...runtime.environment.log import err_field, str_field
-from ...runtime.environment.tracing import (
-    Tracing,
-    sampling_enabled,
-    start_span,
-    string_attr,
-)
 from ...runtime.schedule import normalize_temporal_priority
 from .context_propagation import TemporalContextPropagationInterceptor
 
 
-DURABLE_WORKFLOW_TYPE = "servicelib.durable-link.v1"
 ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
 _MEMO_MANAGED_BY = "servicelib.managedBy"
 _MEMO_OWNER = "servicelib.owner"
@@ -113,6 +102,23 @@ def _identity_name(value: str) -> str:
     return "_".join(word.lower() for word in words)
 
 
+def _endpoint_workflow_id(
+    connector_name: str, endpoint_name: str, message_id: str
+) -> str:
+    return (
+        f"{_identity_name(connector_name)}/endpoint/"
+        f"{_identity_name(endpoint_name)}/"
+        f"{_opaque_identity_component(message_id)}"
+    )
+
+
+def _endpoint_owner(connector_name: str, endpoint_name: str) -> str:
+    return (
+        f"{_identity_name(connector_name)}/endpoint/"
+        f"{_identity_name(endpoint_name)}/v1"
+    )
+
+
 def _sdk_runtime() -> Runtime | None:
     """Return one process-wide Temporal runtime with official SDK metrics."""
 
@@ -144,7 +150,7 @@ def _sdk_runtime() -> Runtime | None:
 class EndpointEnvelope:
     version: int
     endpoint_id: int
-    execution_id: str
+    message_id: str
     stream_id: str
     priority: int
     deadline_unix_nano: int = 0
@@ -164,55 +170,13 @@ EndpointHandler = Callable[[EndpointEnvelope], Awaitable[EndpointResult]]
 
 
 @dataclass(frozen=True, slots=True)
-class _DurableWorkflowRequest:
-    activity_type: str
-    continuation_activity_type: str
-    activity_start_to_close_millis: int
-    activity_heartbeat_millis: int
-    maximum_attempts: int
-    priority: int
-    envelope: DurableEnvelope
-
-
-@dataclass(frozen=True, slots=True)
 class _EndpointWorkflowRequest:
     activity_type: str
-    continuation_activity_type: str
     activity_start_to_close_millis: int
     activity_heartbeat_millis: int
     maximum_attempts: int
     priority: int
     envelope: EndpointEnvelope
-
-
-@dataclass(frozen=True, slots=True)
-class _EndpointActivityResult:
-    durable: DurableActivityResult = DurableActivityResult()
-    result: EndpointResult = EndpointResult()
-
-
-@workflow.defn(name=DURABLE_WORKFLOW_TYPE, sandboxed=False)
-class _DurableLinkWorkflow:
-    @workflow.run
-    async def run(self, request: _DurableWorkflowRequest) -> None:
-        result = await workflow.execute_activity(
-            request.activity_type,
-            request.envelope,
-            result_type=DurableActivityResult,
-            start_to_close_timeout=timedelta(
-                milliseconds=request.activity_start_to_close_millis
-            ),
-            heartbeat_timeout=(
-                timedelta(milliseconds=request.activity_heartbeat_millis)
-                if request.activity_heartbeat_millis > 0
-                else None
-            ),
-            retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
-            priority=Priority(priority_key=request.priority),
-        )
-        await _run_durable_continuations(
-            request.continuation_activity_type, request, result
-        )
 
 
 @workflow.defn(name=ENDPOINT_WORKFLOW_TYPE, sandboxed=False)
@@ -224,7 +188,7 @@ class _TemporalEndpointWorkflow:
             info = workflow.info()
             envelope = replace(
                 envelope,
-                execution_id=info.workflow_id,
+                message_id=info.workflow_id,
                 stream_id=info.workflow_id,
                 scheduled_at_unix_nano=_scheduled_time_nanos(
                     info.workflow_id, info.workflow_start_time
@@ -233,7 +197,7 @@ class _TemporalEndpointWorkflow:
         result = await workflow.execute_activity(
             request.activity_type,
             envelope,
-            result_type=_EndpointActivityResult,
+            result_type=EndpointResult,
             start_to_close_timeout=timedelta(
                 milliseconds=request.activity_start_to_close_millis
             ),
@@ -245,41 +209,7 @@ class _TemporalEndpointWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
             priority=Priority(priority_key=request.priority),
         )
-        await _run_durable_continuations(
-            request.continuation_activity_type, request, result.durable
-        )
-        return result.result
-
-
-async def _run_durable_continuations(
-    activity_type: str,
-    request: _DurableWorkflowRequest | _EndpointWorkflowRequest,
-    result: DurableActivityResult,
-) -> None:
-    while result.continuation is not None:
-        continuation = result.continuation
-        wake_at = datetime.fromtimestamp(
-            continuation.wake_at_unix_nano / 1_000_000_000,
-            tz=timezone.utc,
-        )
-        delay = wake_at - workflow.now().astimezone(timezone.utc)
-        if delay.total_seconds() > 0:
-            await workflow.sleep(delay)
-        result = await workflow.execute_activity(
-            activity_type,
-            continuation,
-            result_type=DurableActivityResult,
-            start_to_close_timeout=timedelta(
-                milliseconds=request.activity_start_to_close_millis
-            ),
-            heartbeat_timeout=(
-                timedelta(milliseconds=request.activity_heartbeat_millis)
-                if request.activity_heartbeat_millis > 0
-                else None
-            ),
-            retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
-            priority=Priority(priority_key=request.priority),
-        )
+        return result
 
 
 def _scheduled_time_nanos(workflow_id: str, fallback: datetime) -> int:
@@ -294,16 +224,6 @@ def _scheduled_time_nanos(workflow_id: str, fallback: datetime) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class _LinkRegistration:
-    link_id: LinkId
-    service_name: str
-    source_name: str
-    target_name: str
-    activity_type: str
-    handler: Callable[[DurableEnvelope], Awaitable[None]]
-
-
-@dataclass(frozen=True, slots=True)
 class _EndpointRegistration:
     endpoint_id: int
     activity_type: str
@@ -313,7 +233,6 @@ class _EndpointRegistration:
 @dataclass(slots=True)
 class _QueueRegistration:
     activities: list[Callable[..., Awaitable[Any]]]
-    durable_workflow: bool = False
     endpoint_workflow: bool = False
 
 
@@ -339,7 +258,7 @@ def _bool(obj: Any, name: str, default: bool = False) -> bool:
     return value if isinstance(value, bool) else default
 
 
-class Connector(DurableTransport):
+class Connector(ManagedDataConnector):
     """One official Temporal client and its generated Worker registrations."""
 
     def __init__(self, connector_id: int, environment: ServiceExecutionEnvironment):
@@ -347,15 +266,14 @@ class Connector(DurableTransport):
         self._id = connector_id
         self._name = cfg.name
         self._environment = environment
-        self._links: dict[LinkId, _LinkRegistration] = {}
         self._endpoints: dict[int, _EndpointRegistration] = {}
         self._client: Optional[Client] = None
         self._workers: list[Worker] = []
         self._worker_tasks: list[asyncio.Task[None]] = []
-        self._durable_events = environment.metrics.scope(
-            "durable_call", {"connector": self._name}
+        self._activity_events = environment.metrics.scope(
+            "temporal_activity", {"connector": self._name}
         ).counter_vec(
-            "events_total", "Total number of DurableCall Activity lifecycle events"
+            "events_total", "Total number of Temporal Activity lifecycle events"
         )
         self._started = False
 
@@ -370,17 +288,11 @@ class Connector(DurableTransport):
     def _config(self) -> Any:
         return self._environment.config.get_data_connector_by_id(self._id)
 
-    def _continuation_activity_type(self) -> str:
-        return (
-            f"{_identity_name(self._environment.service_config.name)}."
-            f"durable_continuation.{_identity_name(self._name)}.v1"
-        )
-
     def _durable_diagnostics(
         self, boundary: str, target: str
     ) -> DurableCallDiagnostics:
         def report(event: str, error: BaseException | None) -> None:
-            self._durable_events.with_({
+            self._activity_events.with_({
                 "boundary": boundary,
                 "target": target,
                 "event": event,
@@ -394,45 +306,14 @@ class Connector(DurableTransport):
                 str_field("event", event),
                 err_field(error),
             )
-            if event in ("missing_outcome", "duplicate_terminal", "late_heartbeat"):
+            if event == "late_heartbeat":
                 self._environment.log.warn(
-                    "DurableCall Activity lifecycle misuse", *fields
+                    "Temporal Activity lifecycle misuse", *fields
                 )
             else:
-                self._environment.log.error("DurableCall Activity failed", *fields)
+                self._environment.log.error("Temporal Activity failed", *fields)
 
         return report
-
-    def register_link(
-        self,
-        link_id: LinkId,
-        handler: Callable[[DurableEnvelope], Awaitable[None]],
-    ) -> None:
-        if self._started:
-            raise RuntimeError("cannot register DurableCall after Temporal connector start")
-        if link_id in self._links:
-            raise ValueError(
-                f"durable link {link_id.from_id}->{link_id.to_id} is already registered"
-            )
-        cfg = self._environment.config.get_link(link_id.from_id, link_id.to_id)
-        if cfg is None or cfg.id_data_connector != self._id:
-            raise ValueError(
-                f"link {link_id.from_id}->{link_id.to_id} does not belong to "
-                f"Temporal connector {self._name!r}"
-            )
-        service_name = self._environment.service_config.name
-        source = self._environment.config.get_stream_config_by_id(link_id.from_id)
-        target = self._environment.config.get_stream_config_by_id(link_id.to_id)
-        self._links[link_id] = _LinkRegistration(
-            link_id,
-            service_name,
-            source.name,
-            target.name,
-            f"{_identity_name(service_name)}.durable."
-            f"{_identity_name(source.name)}."
-            f"{_identity_name(target.name)}.v1",
-            handler,
-        )
 
     def register_endpoint(self, endpoint_id: int, handler: EndpointHandler) -> None:
         if self._started:
@@ -498,8 +379,6 @@ class Connector(DurableTransport):
         try:
             for task_queue, registration in queues.items():
                 workflows: list[type[Any]] = []
-                if registration.durable_workflow:
-                    workflows.append(_DurableLinkWorkflow)
                 if registration.endpoint_workflow:
                     workflows.append(_TemporalEndpointWorkflow)
                 worker = Worker(
@@ -559,22 +438,6 @@ class Connector(DurableTransport):
 
     def _build_queue_registrations(self) -> dict[str, _QueueRegistration]:
         queues: dict[str, _QueueRegistration] = {}
-        for link_id, link_registration in self._links.items():
-            cfg = self._link_config(link_id)
-            queue = queues.setdefault(
-                _required_string(cfg, "task_queue"), _QueueRegistration([])
-            )
-
-            queue.activities.append(
-                _make_link_activity(
-                    link_registration,
-                    self._durable_diagnostics(
-                        "link",
-                        f"{link_id.from_id}:{link_id.to_id}",
-                    ),
-                )
-            )
-            queue.durable_workflow = True
         for endpoint_id, endpoint_registration in self._endpoints.items():
             if endpoint_registration.handler is None:
                 continue
@@ -588,66 +451,11 @@ class Connector(DurableTransport):
             queue.activities.append(
                 _make_endpoint_activity(
                     endpoint_registration,
-                    self._durable_diagnostics("schedule", str(endpoint_id)),
+                    self._durable_diagnostics("endpoint", str(endpoint_id)),
                 )
             )
             queue.endpoint_workflow = True
-        for queue in queues.values():
-            queue.activities.append(
-                _make_continuation_activity(
-                    self._continuation_activity_type(),
-                    self._environment.runtime.resume_durable_continuation,
-                    self._durable_diagnostics("continuation", self._name),
-                    self._environment.tracing,
-                    self._environment.service_config.name,
-                )
-            )
         return queues
-
-    async def submit_link(self, link_id: LinkId, envelope: DurableEnvelope) -> None:
-        registration = self._links.get(link_id)
-        if not self._started:
-            raise RuntimeError(f"Temporal connector {self._name!r} is not started")
-        client = self._require_client()
-        if registration is None:
-            raise ValueError(
-                f"durable link {link_id.from_id}->{link_id.to_id} is not registered"
-            )
-        cfg = self._link_config(link_id)
-        request = _DurableWorkflowRequest(
-            registration.activity_type,
-            self._continuation_activity_type(),
-            _integer(cfg, "activity_start_to_close_timeout"),
-            _integer(cfg, "activity_heartbeat_timeout"),
-            _integer(cfg, "maximum_attempts"),
-            normalize_temporal_priority(envelope.priority),
-            envelope,
-        )
-        workflow_id = (
-            f"{_identity_name(registration.service_name)}/durable/"
-            f"{_identity_name(registration.source_name)}/"
-            f"{_identity_name(registration.target_name)}/"
-            f"{_opaque_identity_component(envelope.call_id)}"
-        )
-        owner = (
-            f"{_identity_name(registration.service_name)}/link/"
-            f"{_identity_name(registration.source_name)}/"
-            f"{_identity_name(registration.target_name)}/v1"
-        )
-        handle = await client.start_workflow(
-            DURABLE_WORKFLOW_TYPE,
-            request,
-            id=workflow_id,
-            task_queue=_required_string(cfg, "task_queue"),
-            execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-            id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
-            memo=_ownership_memo(owner, envelope.call_id),
-            priority=Priority(priority_key=request.priority),
-        )
-        await _validate_workflow_ownership(
-            handle, DURABLE_WORKFLOW_TYPE, owner, envelope.call_id
-        )
 
     async def submit_endpoint(
         self,
@@ -666,22 +474,16 @@ class Connector(DurableTransport):
             raise RuntimeError(f"Temporal endpoint {cfg.name!r} is disabled")
         request = _EndpointWorkflowRequest(
             registration.activity_type,
-            self._continuation_activity_type(),
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
             normalize_temporal_priority(envelope.priority),
             envelope,
         )
-        workflow_id = (
-            f"{_identity_name(self._name)}/endpoint/"
-            f"{_identity_name(cfg.name)}/"
-            f"{_opaque_identity_component(envelope.execution_id)}"
+        workflow_id = _endpoint_workflow_id(
+            self._name, cfg.name, envelope.message_id
         )
-        owner = (
-            f"{_identity_name(self._name)}/endpoint/"
-            f"{_identity_name(cfg.name)}/v1"
-        )
+        owner = _endpoint_owner(self._name, cfg.name)
         handle = await client.start_workflow(
             ENDPOINT_WORKFLOW_TYPE,
             request,
@@ -690,11 +492,11 @@ class Connector(DurableTransport):
             execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
             id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
-            memo=_ownership_memo(owner, envelope.execution_id),
+            memo=_ownership_memo(owner, envelope.message_id),
             priority=Priority(priority_key=request.priority),
         )
         await _validate_workflow_ownership(
-            handle, ENDPOINT_WORKFLOW_TYPE, owner, envelope.execution_id
+            handle, ENDPOINT_WORKFLOW_TYPE, owner, envelope.message_id
         )
         if not wait_for_result:
             return EndpointResult()
@@ -705,13 +507,9 @@ class Connector(DurableTransport):
         endpoint_id = cfg.id
         registration = self._endpoints[endpoint_id]
         schedule_id = _required_string(cfg, "schedule_id")
-        owner = (
-            f"{_identity_name(self._name)}/endpoint/"
-            f"{_identity_name(cfg.name)}/v1"
-        )
+        owner = _endpoint_owner(self._name, cfg.name)
         request = _EndpointWorkflowRequest(
             registration.activity_type,
-            self._continuation_activity_type(),
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
@@ -719,7 +517,7 @@ class Connector(DurableTransport):
             EndpointEnvelope(
                 version=1,
                 endpoint_id=endpoint_id,
-                execution_id="",
+                message_id="",
                 stream_id="",
                 priority=0,
                 scheduled=True,
@@ -769,14 +567,6 @@ class Connector(DurableTransport):
                     f"Temporal schedule {schedule_id!r} ownership collision"
                 ) from None
 
-    def _link_config(self, link_id: LinkId) -> Any:
-        cfg = self._environment.config.get_link(link_id.from_id, link_id.to_id)
-        if cfg is None:
-            raise ValueError(
-                f"durable link {link_id.from_id}->{link_id.to_id} configuration not found"
-            )
-        return cfg
-
     def _endpoint_config(self, endpoint_id: int) -> EndpointConfig:
         return self._environment.config.get_endpoint_config_by_id(endpoint_id)
 
@@ -813,45 +603,18 @@ def workflow_time_nanos() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
 
 
-def _make_link_activity(
-    registration: _LinkRegistration,
-    diagnostics: DurableCallDiagnostics | None = None,
-) -> Callable[[DurableEnvelope], Awaitable[DurableActivityResult]]:
-    async def invoke_link(envelope: DurableEnvelope) -> DurableActivityResult:
-        if (
-            envelope.version != 1
-            or envelope.from_id != registration.link_id.from_id
-            or envelope.to_id != registration.link_id.to_id
-            or not envelope.call_id
-        ):
-            raise ValueError(
-                f"invalid durable envelope for link "
-                f"{registration.link_id.from_id}->{registration.link_id.to_id}"
-            )
-        durable = DurableCallContext(
-            envelope.call_id,
-            heartbeat=activity.heartbeat,
-            diagnostics=diagnostics,
-        )
-        return await run_durable_call_activity(
-            durable, lambda: registration.handler(envelope)
-        )
-
-    return activity.defn(name=registration.activity_type)(invoke_link)
-
-
 def _make_endpoint_activity(
     registration: _EndpointRegistration,
     diagnostics: DurableCallDiagnostics | None = None,
-) -> Callable[[EndpointEnvelope], Awaitable[_EndpointActivityResult]]:
-    async def invoke_endpoint(envelope: EndpointEnvelope) -> _EndpointActivityResult:
+) -> Callable[[EndpointEnvelope], Awaitable[EndpointResult]]:
+    async def invoke_endpoint(envelope: EndpointEnvelope) -> EndpointResult:
         if (
             envelope.version != 1
             or envelope.endpoint_id != registration.endpoint_id
-            or not envelope.execution_id
+            or not envelope.message_id
         ):
             raise ValueError(
-                f"invalid durable envelope for Temporal endpoint "
+                f"invalid Temporal endpoint envelope for "
                 f"{registration.endpoint_id}"
             )
         handler = registration.handler
@@ -861,76 +624,13 @@ def _make_endpoint_activity(
             )
         fired = replace(envelope, fired_at_unix_nano=workflow_time_nanos())
         durable = DurableCallContext(
-            fired.execution_id,
+            fired.message_id,
             heartbeat=activity.heartbeat,
             diagnostics=diagnostics,
         )
-        result = EndpointResult()
-
-        async def invoke() -> None:
-            nonlocal result
-            result = await handler(fired)
-
-        durable_result = await run_durable_call_activity(durable, invoke)
-        return _EndpointActivityResult(durable=durable_result, result=result)
+        return await run_durable_call_activity(durable, lambda: handler(fired))
 
     return activity.defn(name=registration.activity_type)(invoke_endpoint)
-
-
-def _make_continuation_activity(
-    activity_type: str,
-    resume: Callable[[DurableContinuation], Awaitable[None]],
-    diagnostics: DurableCallDiagnostics | None = None,
-    tracing: Tracing | None = None,
-    service_name: str = "",
-) -> Callable[[DurableContinuation], Awaitable[DurableActivityResult]]:
-    tracer = tracing.tracer(service_name) if tracing is not None else None
-
-    async def invoke_continuation(
-        continuation: DurableContinuation,
-    ) -> DurableActivityResult:
-        if (
-            continuation.version != 1
-            or not continuation.from_name
-            or not continuation.to_name
-            or not continuation.call_id
-        ):
-            raise ValueError("invalid durable continuation envelope")
-        durable = DurableCallContext(
-            continuation.call_id,
-            heartbeat=activity.heartbeat,
-            diagnostics=diagnostics,
-        )
-
-        async def resume_with_span() -> None:
-            if tracer is None or not sampling_enabled():
-                await resume(continuation)
-                return
-            with (
-                tracing.extract(continuation.trace_carrier)
-                if tracing is not None and continuation.trace_carrier
-                else nullcontext(False)
-            ):
-                _, span = start_span(
-                    tracer,
-                    "temporal.activity",
-                    string_attr("boundary", "durable_delay"),
-                    string_attr("from", continuation.from_name),
-                    string_attr("to", continuation.to_name),
-                )
-                durable_span = bind_durable_call_span(span)
-                try:
-                    with span.scoped():
-                        await resume(continuation)
-                finally:
-                    if not durable_span:
-                        span.end()
-
-        return await run_durable_call_activity(
-            durable, resume_with_span
-        )
-
-    return activity.defn(name=activity_type)(invoke_continuation)
 
 
 def _optional_timeout(obj: Any, name: str) -> Optional[timedelta]:
@@ -984,13 +684,13 @@ def make_connector(
         raise ValueError(
             f"data connector id={connector_id} is not a temporal/python connector"
         )
-    existing = environment.get_durable_transport(connector_id)
+    existing = environment.get_managed_data_connector(connector_id)
     if existing is not None:
         if not isinstance(existing, Connector):
             raise TypeError(
-                f"durable transport id={connector_id} is not a Python Temporal connector"
+                f"managed connector id={connector_id} is not a Python Temporal connector"
             )
         return existing
     connector = Connector(connector_id, environment)
-    environment.add_durable_transport(connector)
+    environment.add_managed_data_connector(connector)
     return connector

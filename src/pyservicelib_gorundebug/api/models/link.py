@@ -19,7 +19,6 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from typing_extensions import Annotated
 from ..models.call_semantics import CallSemantics
 from typing import Optional, Set
 from typing_extensions import Self
@@ -35,13 +34,7 @@ class Link(BaseModel):
     var_async: Optional[StrictBool] = Field(default=None, description="Value returned by the caller's `IsAsync`/`isAsync` method when `callSemantics` is `FunctionCall`. Ignored for all other call semantics. ", alias="async")
     pool_name: Optional[StrictStr] = Field(default=None, description="Name of the worker pool to use when `callSemantics` is `TaskPool` or `PriorityTaskPool`. Must match a pool defined in `StreamApp.pools`. ", alias="poolName", json_schema_extra={"examples": ["default"]})
     priority: Optional[StrictInt] = Field(default=None, description="Message priority for `PriorityTaskPool` delivery. Higher values are processed first. Ignored for other call semantics. ")
-    id_data_connector: Optional[StrictInt] = Field(default=None, description="Temporal data connector used when `callSemantics` is `DurableCall`. Ignored for every other call semantics. ", alias="idDataConnector")
-    task_queue: Optional[StrictStr] = Field(default=None, description="Temporal Task Queue used by this DurableCall link.", alias="taskQueue")
-    workflow_execution_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Workflow execution timeout in milliseconds; zero means SDK default.", alias="workflowExecutionTimeout")
-    activity_start_to_close_timeout: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Temporal Activity start-to-close timeout in milliseconds for this DurableCall link.", alias="activityStartToCloseTimeout")
-    activity_heartbeat_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Activity heartbeat timeout in milliseconds; zero disables it.", alias="activityHeartbeatTimeout")
-    maximum_attempts: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Temporal Activity attempts including the initial attempt.", alias="maximumAttempts")
-    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "async", "poolName", "priority", "idDataConnector", "taskQueue", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
+    __properties: ClassVar[List[str]] = ["from", "to", "callSemantics", "async", "poolName", "priority"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -99,14 +92,6 @@ class Link(BaseModel):
             "callSemantics": obj.get("callSemantics"),
             "async": obj.get("async"),
             "poolName": obj.get("poolName"),
-            "priority": obj.get("priority"),
-            "idDataConnector": obj.get("idDataConnector"),
-            "taskQueue": obj.get("taskQueue"),
-            "workflowExecutionTimeout": obj.get("workflowExecutionTimeout"),
-            "activityStartToCloseTimeout": obj.get("activityStartToCloseTimeout"),
-            "activityHeartbeatTimeout": obj.get("activityHeartbeatTimeout"),
-            "maximumAttempts": obj.get("maximumAttempts")
+            "priority": obj.get("priority")
         })
         return _obj
-
-

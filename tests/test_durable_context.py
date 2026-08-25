@@ -1,20 +1,13 @@
 import asyncio
-from datetime import timedelta
 
 import pytest
 
 from pyservicelib_gorundebug.runtime.durable_context import (
-    DurableCallAlreadyCompletedError,
     DurableCallContext,
     DurableCallHeartbeatAfterCompletionError,
-    DurableCallOutcomeMissingError,
-    NoDurableCallContextError,
     bind_durable_call_span,
-    begin_durable_delay,
-    capture_durable_continuation,
-    durable_call_error,
+    current_durable_call_context,
     durable_call_heartbeat,
-    durable_call_success,
     run_durable_call_activity,
 )
 from pyservicelib_gorundebug.runtime.environment.tracing import (
@@ -25,76 +18,75 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
 )
 
 
-@pytest.mark.asyncio
-async def test_explicit_success_is_required_without_deadline() -> None:
-    durable = DurableCallContext("parent")
-    entered = asyncio.Event()
-    complete = asyncio.Event()
-
-    async def invoke() -> None:
-        async def finish() -> None:
-            await complete.wait()
-            durable_call_success()
-
-        asyncio.create_task(finish())
-        entered.set()
-
-    task = asyncio.create_task(run_durable_call_activity(durable, invoke))
-    await entered.wait()
-    await asyncio.sleep(0)
-    assert not task.done()
-    complete.set()
-    await task
-
-
-async def _complete_from_child_context() -> None:
-    durable_call_success()
-
-
-def test_operation_outside_activity_is_observable() -> None:
-    with pytest.raises(NoDurableCallContextError):
-        durable_call_success()
+def test_heartbeat_outside_temporal_is_a_silent_noop() -> None:
+    durable_call_heartbeat("ignored")
 
 
 @pytest.mark.asyncio
-async def test_activity_context_propagates_to_graph_task() -> None:
-    durable = DurableCallContext("parent")
+async def test_activity_context_propagates_to_graph_task_and_returns_result() -> None:
+    durable = DurableCallContext("message-1")
+
+    async def invoke() -> str:
+        async def inspect() -> None:
+            assert current_durable_call_context() is durable
+
+        await asyncio.create_task(inspect())
+        return "done"
+
+    assert await run_durable_call_activity(durable, invoke) == "done"
+    assert current_durable_call_context() is None
+
+
+@pytest.mark.asyncio
+async def test_activity_records_heartbeat_and_automatic_success() -> None:
+    recorded: list[object] = []
+    diagnostics: list[tuple[str, BaseException | None]] = []
+    durable = DurableCallContext(
+        "message-1",
+        heartbeat=recorded.append,
+        diagnostics=lambda event, error: diagnostics.append((event, error)),
+    )
 
     async def invoke() -> None:
-        await asyncio.create_task(_complete_from_child_context())
+        durable_call_heartbeat({"step": 2})
 
     await run_durable_call_activity(durable, invoke)
 
+    assert recorded == [{"step": 2}]
+    assert diagnostics == [("heartbeat", None), ("success", None)]
+
 
 @pytest.mark.asyncio
-async def test_first_terminal_wins_and_late_heartbeat_is_rejected() -> None:
-    durable = DurableCallContext("parent")
+async def test_activity_records_automatic_error_and_propagates_it() -> None:
+    diagnostics: list[tuple[str, BaseException | None]] = []
+    durable = DurableCallContext(
+        "message-1",
+        diagnostics=lambda event, error: diagnostics.append((event, error)),
+    )
+    failure = RuntimeError("business failure")
 
     async def invoke() -> None:
-        durable_call_heartbeat("half-way")
-        durable_call_success()
-        with pytest.raises(DurableCallAlreadyCompletedError):
-            durable_call_error(RuntimeError("too late"))
-        with pytest.raises(DurableCallHeartbeatAfterCompletionError):
-            durable_call_heartbeat("too late")
+        raise failure
+
+    with pytest.raises(RuntimeError, match="business failure"):
+        await run_durable_call_activity(durable, invoke)
+
+    assert diagnostics == [("error", failure)]
+
+
+@pytest.mark.asyncio
+async def test_late_heartbeat_after_activity_completion_is_rejected() -> None:
+    durable = DurableCallContext("message-1")
+    captured: DurableCallContext | None = None
+
+    async def invoke() -> None:
+        nonlocal captured
+        captured = current_durable_call_context()
 
     await run_durable_call_activity(durable, invoke)
-
-
-@pytest.mark.asyncio
-async def test_cancellation_supplies_missing_outcome() -> None:
-    durable = DurableCallContext("parent")
-    started = asyncio.Event()
-
-    async def invoke() -> None:
-        started.set()
-        await asyncio.Future()
-
-    task = asyncio.create_task(run_durable_call_activity(durable, invoke))
-    await started.wait()
-    task.cancel()
-    with pytest.raises(DurableCallOutcomeMissingError):
-        await task
+    assert captured is durable
+    with pytest.raises(DurableCallHeartbeatAfterCompletionError):
+        captured.heartbeat("too late")
 
 
 @pytest.mark.asyncio
@@ -125,42 +117,17 @@ async def test_lifecycle_events_are_attached_to_activity_span() -> None:
         def span_context(self) -> SpanContext:
             return SpanContext()
 
-    durable = DurableCallContext("parent")
+    durable = DurableCallContext("message-1")
     span = RecordedSpan()
 
     async def invoke() -> None:
         assert bind_durable_call_span(span)
         durable_call_heartbeat("half-way")
-        durable_call_success()
 
     await run_durable_call_activity(durable, invoke)
     assert span.status_code == StatusCode.OK
     assert span.ended
     assert span.events == [
-        "durable_call.heartbeat",
-        "durable_call.success",
+        "temporal.activity.heartbeat",
+        "temporal.activity.success",
     ]
-
-
-@pytest.mark.asyncio
-async def test_durable_delay_returns_serializable_continuation() -> None:
-    durable = DurableCallContext("call-1")
-
-    async def invoke() -> None:
-        assert begin_durable_delay(timedelta(hours=1))
-        assert capture_durable_continuation(
-            "Delay", "After Delay", b"value",
-            {"traceparent": "parent"},
-        )
-
-    result = await run_durable_call_activity(durable, invoke)
-    assert result.continuation is not None
-    assert result.continuation.from_name == "Delay"
-    assert result.continuation.to_name == "After Delay"
-    assert result.continuation.call_id == "call-1/delay"
-    assert result.continuation.payload == b"value"
-    assert result.continuation.trace_carrier == {"traceparent": "parent"}
-
-
-def test_begin_durable_delay_keeps_ordinary_context_local() -> None:
-    assert not begin_durable_delay(timedelta(hours=1))

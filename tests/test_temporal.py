@@ -4,38 +4,33 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from temporalio.converter import DataConverter
 from temporalio.worker import ExecuteActivityInput
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
-)
-from pyservicelib_gorundebug.runtime.common import DurableEnvelope
-from pyservicelib_gorundebug.runtime.config import LinkId
-from pyservicelib_gorundebug.runtime.durable_context import (
-    durable_call_error,
-    durable_call_success,
 )
 from pyservicelib_gorundebug.runtime.context import (
     request_deadline,
     request_priority,
     request_stream_id,
 )
+from pyservicelib_gorundebug.runtime.durable_context import (
+    current_durable_call_context,
+    durable_call_heartbeat,
+)
+from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
 from pyservicelib_gorundebug.runtime.environment.tracing import (
     Tracing,
     sampling_enabled,
     sampling_scope,
 )
-from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     EndpointEnvelope,
     EndpointResult,
-    _DurableWorkflowRequest,
     _EndpointRegistration,
-    _LinkRegistration,
+    _endpoint_workflow_id,
     _make_endpoint_activity,
-    _make_link_activity,
     _scheduled_time_nanos,
     _temporal_cron_expression,
     _validate_workflow_ownership,
@@ -54,14 +49,30 @@ def test_temporal_cron_preserves_portable_minute_semantics() -> None:
     assert _temporal_cron_expression("  */5   * * * * ") == "0 */5 * * * *"
 
 
+def test_workflow_identity_uses_connector_endpoint_and_business_message_id() -> None:
+    assert _endpoint_workflow_id(
+        "Temporal Main", "Durable Job", "order/42:item 7"
+    ) == "temporal_main/endpoint/durable_job/order%2F42%3Aitem%207"
+
+
 class _Config:
     def __init__(self) -> None:
         self.connector = SimpleNamespace(
             id=7,
-            name="temporal",
+            name="Temporal Main",
             implementation=DataConnectorImplementation.TemporalPython,
         )
-        self.endpoint = SimpleNamespace(id=11, name="durableJob", id_data_connector=7)
+        self.endpoint = SimpleNamespace(
+            id=11,
+            name="Durable Job",
+            id_data_connector=7,
+            enabled=True,
+            task_queue="automation",
+            activity_start_to_close_timeout=1_000,
+            activity_heartbeat_timeout=0,
+            workflow_execution_timeout=10_000,
+            maximum_attempts=3,
+        )
 
     def get_data_connector_by_id(self, connector_id: int):
         assert connector_id == 7
@@ -80,19 +91,6 @@ class _Environment:
         self.log = SimpleNamespace(warn=lambda *_: None, error=lambda *_: None)
 
 
-def _envelope(*, to_id: int = 4) -> DurableEnvelope:
-    return DurableEnvelope(
-        version=1,
-        from_id=3,
-        to_id=to_id,
-        call_id="call-1",
-        stream_id="stream-1",
-        priority=0,
-        deadline_unix_nano=0,
-        payload=b"value",
-    )
-
-
 def test_scheduled_time_uses_temporal_schedule_workflow_id_suffix() -> None:
     fallback = datetime(2026, 8, 24, 12, 35, 1, tzinfo=timezone.utc)
     assert _scheduled_time_nanos(
@@ -105,39 +103,20 @@ def test_scheduled_time_uses_temporal_schedule_workflow_id_suffix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_temporal_activity_only_activates_registered_target() -> None:
-    received: list[DurableEnvelope] = []
-
-    async def handler(envelope: DurableEnvelope) -> None:
-        received.append(envelope)
-        durable_call_success()
-
-    function = _make_link_activity(
-        _LinkRegistration(
-            LinkId(3, 4),
-            "Automation Service",
-            "Consume Durable Job",
-            "Process Durable Job",
-            "automation_service.durable.consume_durable_job."
-            "process_durable_job.v1",
-            handler,
-        )
-    )
-    envelope = _envelope()
-    await function(envelope)
-
-    assert received == [envelope]
-    with pytest.raises(ValueError, match="invalid durable envelope"):
-        await function(_envelope(to_id=9))
-
-
-@pytest.mark.asyncio
-async def test_on_demand_endpoint_runs_inside_durable_activity_scope() -> None:
+async def test_on_demand_endpoint_runs_inside_activity_scope(monkeypatch) -> None:
     received: list[EndpointEnvelope] = []
+    heartbeats: list[object] = []
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.connector.activity.heartbeat",
+        heartbeats.append,
+    )
 
     async def handler(envelope: EndpointEnvelope) -> EndpointResult:
         received.append(envelope)
-        durable_call_success()
+        durable = current_durable_call_context()
+        assert durable is not None
+        assert durable.message_id == "item/42"
+        durable_call_heartbeat("accepted")
         return EndpointResult(payload=b"accepted")
 
     function = _make_endpoint_activity(
@@ -146,7 +125,7 @@ async def test_on_demand_endpoint_runs_inside_durable_activity_scope() -> None:
     envelope = EndpointEnvelope(
         version=1,
         endpoint_id=11,
-        execution_id="job-1",
+        message_id="item/42",
         stream_id="stream-1",
         priority=0,
         payload=b"value",
@@ -155,16 +134,15 @@ async def test_on_demand_endpoint_runs_inside_durable_activity_scope() -> None:
     result = await function(envelope)
 
     assert received[0].scheduled is False
-    assert result.result == EndpointResult(payload=b"accepted")
+    assert result == EndpointResult(payload=b"accepted")
+    assert heartbeats == ["accepted"]
+    assert current_durable_call_context() is None
 
 
 @pytest.mark.asyncio
-async def test_endpoint_activity_propagates_explicit_business_error() -> None:
-    failure = RuntimeError("business failure")
-
+async def test_endpoint_activity_propagates_business_error() -> None:
     async def handler(_envelope: EndpointEnvelope) -> EndpointResult:
-        durable_call_error(failure)
-        return EndpointResult()
+        raise RuntimeError("business failure")
 
     function = _make_endpoint_activity(
         _EndpointRegistration(11, "temporal.endpoint.durable_job.v1", handler)
@@ -172,7 +150,7 @@ async def test_endpoint_activity_propagates_explicit_business_error() -> None:
     envelope = EndpointEnvelope(
         version=1,
         endpoint_id=11,
-        execution_id="job-2",
+        message_id="job-2",
         stream_id="stream-2",
         priority=0,
         payload=b"value",
@@ -180,29 +158,6 @@ async def test_endpoint_activity_propagates_explicit_business_error() -> None:
 
     with pytest.raises(RuntimeError, match="business failure"):
         await function(envelope)
-
-
-@pytest.mark.asyncio
-async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> None:
-    request = _DurableWorkflowRequest(
-        activity_type=(
-            "automation_service.durable.consume_durable_job."
-            "process_durable_job.v1"
-        ),
-        continuation_activity_type=(
-            "automation_service.durable_continuation.temporal.v1"
-        ),
-        activity_start_to_close_millis=1_000,
-        activity_heartbeat_millis=0,
-        maximum_attempts=3,
-        priority=3,
-        envelope=_envelope(),
-    )
-    converter = DataConverter.default
-    payloads = await converter.encode([request])
-    decoded = await converter.decode(payloads, [_DurableWorkflowRequest])
-
-    assert decoded == [request]
 
 
 def test_temporal_header_deadline_is_an_absolute_timezone_independent_instant() -> None:
@@ -285,7 +240,9 @@ def test_remote_endpoint_activity_identity_uses_shared_connector_and_endpoint() 
 
     connector.register_endpoint_submission(11)
 
-    assert connector._endpoints[11].activity_type == "temporal.endpoint.durable_job.v1"
+    assert connector._endpoints[11].activity_type == (
+        "temporal_main.endpoint.durable_job.v1"
+    )
     assert connector._endpoints[11].handler is None
 
 
@@ -299,7 +256,7 @@ async def test_workflow_ownership_awaits_decoded_memo() -> None:
             return {
                 "servicelib.managedBy": "servicelib",
                 "servicelib.owner": "owner-1",
-                "servicelib.callId": "call-1",
+                "servicelib.callId": "message-1",
             }
 
     class _Handle:
@@ -307,5 +264,5 @@ async def test_workflow_ownership_awaits_decoded_memo() -> None:
             return _Description()
 
     await _validate_workflow_ownership(
-        _Handle(), "servicelib.test", "owner-1", "call-1"
+        _Handle(), "servicelib.test", "owner-1", "message-1"
     )
