@@ -53,6 +53,7 @@ from ...runtime.context import Context
 from ...runtime.durable_context import (
     DurableCallContext,
     DurableCallDiagnostics,
+    TemporalContinueAsNewRequest,
     run_durable_call_activity,
     run_durable_call_workflow,
 )
@@ -183,6 +184,7 @@ class EndpointResult:
 
 
 EndpointHandler = Callable[[EndpointEnvelope], Awaitable[EndpointResult]]
+EndpointEncoder = Callable[[Any], bytes]
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +247,7 @@ class _EndpointRegistration:
     activity_type: str
     handler: Optional[EndpointHandler]
     workflow_type: str = ""
+    encode_input: EndpointEncoder | None = None
 
 
 @dataclass(slots=True)
@@ -333,7 +336,12 @@ class Connector(ManagedDataConnector):
 
         return report
 
-    def register_endpoint(self, endpoint_id: int, handler: EndpointHandler) -> None:
+    def register_endpoint(
+        self,
+        endpoint_id: int,
+        handler: EndpointHandler,
+        encode_input: EndpointEncoder,
+    ) -> None:
         if self._started:
             raise RuntimeError("cannot register endpoint after Temporal connector start")
         existing = self._endpoints.get(endpoint_id)
@@ -345,7 +353,9 @@ class Connector(ManagedDataConnector):
                 f"endpoint {endpoint_id} does not belong to Temporal connector {self._name!r}"
             )
         registration = existing or self._endpoint_registration(endpoint_id)
-        self._endpoints[endpoint_id] = replace(registration, handler=handler)
+        self._endpoints[endpoint_id] = replace(
+            registration, handler=handler, encode_input=encode_input
+        )
 
     def register_endpoint_submission(self, endpoint_id: int) -> None:
         """Register only the immutable remote endpoint contract for a sink."""
@@ -715,7 +725,26 @@ def _make_endpoint_workflow(
             workflow=True,
             recording_policy=lambda: not workflow.unsafe.is_replaying(),
         )
-        return await run_durable_call_workflow(durable, lambda: handler(envelope))
+        try:
+            return await run_durable_call_workflow(
+                durable, lambda: handler(envelope)
+            )
+        except TemporalContinueAsNewRequest as continuation:
+            if registration.encode_input is None:
+                raise RuntimeError(
+                    f"Temporal endpoint {registration.endpoint_id} has no input encoder"
+                )
+            next_envelope = replace(
+                envelope,
+                scheduled=False,
+                schedule_id="",
+                scheduled_at_unix_nano=0,
+                fired_at_unix_nano=0,
+                payload=registration.encode_input(continuation.next_input),
+            )
+            workflow.continue_as_new(
+                next_envelope, workflow=registration.workflow_type
+            )
 
     run.__name__ = "run"
     run.__qualname__ = f"{class_name}.run"

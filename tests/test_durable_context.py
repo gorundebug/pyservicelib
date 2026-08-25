@@ -4,11 +4,15 @@ import pytest
 
 from pyservicelib_gorundebug.runtime.durable_context import (
     DurableCallContext,
+    DurableCallContextError,
     DurableCallHeartbeatAfterCompletionError,
+    TemporalContinueAsNewRequest,
     bind_durable_call_span,
     current_durable_call_context,
     durable_call_heartbeat,
     run_durable_call_activity,
+    run_durable_call_workflow,
+    temporal_continue_as_new,
 )
 from pyservicelib_gorundebug.runtime.environment.tracing import (
     Attribute,
@@ -20,6 +24,30 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
 
 def test_heartbeat_outside_temporal_is_a_silent_noop() -> None:
     durable_call_heartbeat("ignored")
+
+
+def test_continue_as_new_outside_workflow_is_rejected() -> None:
+    with pytest.raises(DurableCallContextError, match="requires a Workflow"):
+        temporal_continue_as_new("next")
+
+
+@pytest.mark.asyncio
+async def test_continue_as_new_is_a_successful_terminal_workflow_outcome() -> None:
+    diagnostics: list[tuple[str, BaseException | None]] = []
+    durable = DurableCallContext(
+        "message-1",
+        workflow=True,
+        diagnostics=lambda event, error: diagnostics.append((event, error)),
+    )
+
+    async def invoke() -> None:
+        temporal_continue_as_new("next-run")
+
+    with pytest.raises(TemporalContinueAsNewRequest) as raised:
+        await run_durable_call_workflow(durable, invoke)
+
+    assert raised.value.next_input == "next-run"
+    assert diagnostics == [("success", None)]
 
 
 @pytest.mark.asyncio

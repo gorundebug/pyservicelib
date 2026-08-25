@@ -28,7 +28,9 @@ from .durable_context import (
     DurableCallContext,
     DurableCallContextError,
     DurableCallHeartbeatAfterCompletionError,
+    TemporalContinueAsNewRequest,
     durable_call_heartbeat,
+    temporal_continue_as_new,
 )
 from .statusweb import (
     data_handler,

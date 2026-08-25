@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from .environment.tracing import Span, StatusCode, string_attr
 from .execution_policy import recording_policy_scope
@@ -26,6 +26,14 @@ class DurableCallContextError(RuntimeError):
 
 class DurableCallHeartbeatAfterCompletionError(DurableCallContextError):
     pass
+
+
+class TemporalContinueAsNewRequest(BaseException):
+    """Terminal Workflow control outcome consumed by the Temporal adapter."""
+
+    def __init__(self, next_input: Any) -> None:
+        super().__init__("Temporal Continue-As-New")
+        self.next_input = next_input
 
 
 HEARTBEAT: Final = "heartbeat"
@@ -122,6 +130,20 @@ class DurableCallContext:
         await self._delay(duration)
         return True
 
+    def continue_as_new(self, next_input: Any) -> NoReturn:
+        with self._lock:
+            workflow = self._workflow
+            closed = self._closed
+        if not workflow:
+            raise DurableCallContextError(
+                "Temporal Continue-As-New requires a Workflow endpoint"
+            )
+        if closed:
+            raise DurableCallContextError(
+                "Temporal Continue-As-New after Workflow completion"
+            )
+        raise TemporalContinueAsNewRequest(next_input)
+
     def close(self, outcome: BaseException | None) -> None:
         with self._lock:
             if self._closed:
@@ -154,6 +176,17 @@ def durable_call_heartbeat(message: Any) -> None:
     durable = current_durable_call_context()
     if durable is not None:
         durable.heartbeat(message)
+
+
+def temporal_continue_as_new(next_input: Any) -> NoReturn:
+    """Terminate the current Workflow run with a new typed endpoint input."""
+
+    durable = current_durable_call_context()
+    if durable is None:
+        raise DurableCallContextError(
+            "Temporal Continue-As-New requires a Workflow endpoint"
+        )
+    durable.continue_as_new(next_input)
 
 
 def bind_durable_call_span(span: Span) -> bool:
@@ -196,8 +229,24 @@ async def run_durable_call_workflow[ResultT](
 ) -> ResultT:
     """Run one existing endpoint handler inside its Workflow scope."""
 
+    async def run() -> ResultT:
+        token: Token[DurableCallContext | None] = _current_durable_call.set(durable)
+        try:
+            try:
+                result = await invoke()
+            except TemporalContinueAsNewRequest:
+                durable.close(None)
+                raise
+            except BaseException as error:
+                durable.close(error)
+                raise
+            durable.close(None)
+            return result
+        finally:
+            _current_durable_call.reset(token)
+
     policy = durable._recording_policy
     if policy is None:
-        return await run_durable_call_activity(durable, invoke)
+        return await run()
     with recording_policy_scope(policy):
-        return await run_durable_call_activity(durable, invoke)
+        return await run()

@@ -219,7 +219,11 @@ def _make_endpoint_consumer[Input, T, R, E](
         endpoint, stream, connector, decode, invoke
     )
     endpoint.add_endpoint_consumer(consumer)
-    connector.register_endpoint(cfg.id, consumer.activate)
+    connector.register_endpoint(
+        cfg.id,
+        consumer.activate,
+        lambda value: bytes(stream.serde.serialize(cast(T, value))),
+    )
     environment.runtime.register_endpoint_consumer(consumer)
     return consumer
 
