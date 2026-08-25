@@ -35,7 +35,7 @@ from ...runtime.environment.tracing import (
     span_error,
     start_endpoint_span,
 )
-from ...runtime.temporal import Connector, EndpointEnvelope, make_connector
+from ...datasource.temporal.connector import Connector, EndpointEnvelope, make_connector
 from ...runtime.serde import TypedStreamSerde
 
 

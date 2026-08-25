@@ -10,7 +10,7 @@ from pyservicelib_gorundebug.api.models.data_connector_implementation import (
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.common import DurableEnvelope
 from pyservicelib_gorundebug.runtime.config import LinkId
-from pyservicelib_gorundebug.runtime.temporal.connector import (
+from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     _DurableWorkflowRequest,
     _LinkRegistration,

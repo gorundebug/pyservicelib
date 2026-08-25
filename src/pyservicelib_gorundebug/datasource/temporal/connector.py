@@ -46,10 +46,10 @@ from ...api.models.data_connector_implementation import DataConnectorImplementat
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy as ApiOverlapPolicy
 from ...api.models.transformation_type import TransformationType
-from ..common import DurableEnvelope, DurableTransport, ServiceExecutionEnvironment
-from ..config import EndpointConfig, LinkId
-from ..context import Context
-from ..schedule import normalize_temporal_priority
+from ...runtime.common import DurableEnvelope, DurableTransport, ServiceExecutionEnvironment
+from ...runtime.config import EndpointConfig, LinkId
+from ...runtime.context import Context
+from ...runtime.schedule import normalize_temporal_priority
 
 
 DURABLE_WORKFLOW_TYPE = "servicegen.durable-link.v1"

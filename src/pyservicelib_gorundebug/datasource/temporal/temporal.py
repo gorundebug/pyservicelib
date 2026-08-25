@@ -42,7 +42,7 @@ from ...runtime.schedule import (
     ScheduleTrigger,
     new_schedule_trigger,
 )
-from ...runtime.temporal import Connector, EndpointEnvelope, EndpointResult, make_connector
+from .connector import Connector, EndpointEnvelope, EndpointResult, make_connector
 
 
 class _TemporalDataSource(InputDataSource):
