@@ -43,6 +43,7 @@ def test_cron_config_preserves_portable_schedule_contract() -> None:
         "name": "reconcile",
         "idDataConnector": 1,
         "enabled": True,
+        "tracingEnabled": False,
         "schedule": "*/5 * * * *",
         "timezone": "UTC",
         "overlapPolicy": "Allow",
@@ -76,6 +77,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
         connector.id,
         TemporalExecutionType.ACTIVITY,
         enabled=True,
+        tracing_enabled=True,
         task_queue="reconcile",
         activity_start_to_close_timeout=30_000,
         maximum_attempts=3,
@@ -86,6 +88,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
     assert connector.max_concurrent_activities == 8
     assert connector.max_concurrent_workflows == 4
     assert endpoint.task_queue == "reconcile"
+    assert endpoint.tracing_enabled
     assert endpoint.temporal_execution_type is TemporalExecutionType.ACTIVITY
     assert endpoint.activity_start_to_close_timeout == 30_000
     assert endpoint.maximum_attempts == 3

@@ -14,7 +14,6 @@ from ...api.models.temporal_execution_type import TemporalExecutionType
 
 
 class EndpointConfig(ABC):
-
     @property
     @abstractmethod
     def id(self) -> int:
@@ -37,22 +36,32 @@ class EndpointConfig(ABC):
     def get_property(self, name: str) -> Any:
         return None
 
+    @property
+    def tracing_enabled(self) -> bool:
+        return getattr(self, "_tracing_enabled", False)
+
 
 class HttpEndpointConfig(EndpointConfig):
-
-    def __init__(self, id: int, name: str, id_data_connector: int,
-                 http_method_type: Optional[HTTPMethodType] = None,
-                 path: Optional[str] = None,
-                 function_name: Optional[str] = None,
-                 function_package: Optional[str] = None,
-                 public_function: bool = False,
-                 function_description: Optional[str] = None,
-                 function_initializer_group: Optional[str] = None,
-                 function_module: Optional[str] = None,
-                 properties: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        tracing_enabled: bool = False,
+        http_method_type: Optional[HTTPMethodType] = None,
+        path: Optional[str] = None,
+        function_name: Optional[str] = None,
+        function_package: Optional[str] = None,
+        public_function: bool = False,
+        function_description: Optional[str] = None,
+        function_initializer_group: Optional[str] = None,
+        function_module: Optional[str] = None,
+        properties: Optional[dict[str, Any]] = None,
+    ):
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector
+        self._tracing_enabled = tracing_enabled
         self._http_method_type = http_method_type
         self._path = path
         self._function_name = function_name
@@ -112,6 +121,7 @@ class HttpEndpointConfig(EndpointConfig):
             "id": self._id,
             "name": self._name,
             "idDataConnector": self._id_data_connector,
+            "tracingEnabled": self._tracing_enabled,
         }
         if self._http_method_type is not None:
             result["httpMethodType"] = self._http_method_type.value
@@ -126,20 +136,26 @@ class HttpEndpointConfig(EndpointConfig):
 
 
 class GrpcEndpointConfig(EndpointConfig):
-
-    def __init__(self, id: int, name: str, id_data_connector: int,
-                 grpc_method_type: Optional[GrpcMethodType] = None,
-                 method_name: Optional[str] = None,
-                 function_name: Optional[str] = None,
-                 function_package: Optional[str] = None,
-                 public_function: bool = False,
-                 function_description: Optional[str] = None,
-                 function_initializer_group: Optional[str] = None,
-                 function_module: Optional[str] = None,
-                 properties: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        tracing_enabled: bool = False,
+        grpc_method_type: Optional[GrpcMethodType] = None,
+        method_name: Optional[str] = None,
+        function_name: Optional[str] = None,
+        function_package: Optional[str] = None,
+        public_function: bool = False,
+        function_description: Optional[str] = None,
+        function_initializer_group: Optional[str] = None,
+        function_module: Optional[str] = None,
+        properties: Optional[dict[str, Any]] = None,
+    ):
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector
+        self._tracing_enabled = tracing_enabled
         self._grpc_method_type = grpc_method_type
         self._method_name = method_name
         self._function_name = function_name
@@ -199,6 +215,7 @@ class GrpcEndpointConfig(EndpointConfig):
             "id": self._id,
             "name": self._name,
             "idDataConnector": self._id_data_connector,
+            "tracingEnabled": self._tracing_enabled,
         }
         if self._grpc_method_type is not None:
             result["grpcMethodType"] = self._grpc_method_type.value
@@ -213,24 +230,30 @@ class GrpcEndpointConfig(EndpointConfig):
 
 
 class KafkaEndpointConfig(EndpointConfig):
-
-    def __init__(self, id: int, name: str, id_data_connector: int,
-                 topic: Optional[str] = None,
-                 consumer_group: Optional[str] = None,
-                 enabled: bool = False,
-                 create_topic: bool = False,
-                 partitions: int = 0,
-                 replication_factor: int = 0,
-                 function_name: Optional[str] = None,
-                 function_package: Optional[str] = None,
-                 public_function: bool = False,
-                 function_description: Optional[str] = None,
-                 function_initializer_group: Optional[str] = None,
-                 function_module: Optional[str] = None,
-                 properties: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        tracing_enabled: bool = False,
+        topic: Optional[str] = None,
+        consumer_group: Optional[str] = None,
+        enabled: bool = False,
+        create_topic: bool = False,
+        partitions: int = 0,
+        replication_factor: int = 0,
+        function_name: Optional[str] = None,
+        function_package: Optional[str] = None,
+        public_function: bool = False,
+        function_description: Optional[str] = None,
+        function_initializer_group: Optional[str] = None,
+        function_module: Optional[str] = None,
+        properties: Optional[dict[str, Any]] = None,
+    ):
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector
+        self._tracing_enabled = tracing_enabled
         self._topic = topic
         self._consumer_group = consumer_group
         self._enabled = enabled
@@ -311,6 +334,7 @@ class KafkaEndpointConfig(EndpointConfig):
             "name": self._name,
             "idDataConnector": self._id_data_connector,
             "enabled": self._enabled,
+            "tracingEnabled": self._tracing_enabled,
         }
         if self._topic is not None:
             result["topic"] = self._topic
@@ -331,18 +355,24 @@ class KafkaEndpointConfig(EndpointConfig):
 
 
 class CustomEndpointConfig(EndpointConfig):
-
-    def __init__(self, id: int, name: str, id_data_connector: int,
-                 function_name: Optional[str] = None,
-                 function_package: Optional[str] = None,
-                 public_function: bool = False,
-                 function_description: Optional[str] = None,
-                 function_initializer_group: Optional[str] = None,
-                 function_module: Optional[str] = None,
-                 properties: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        id_data_connector: int,
+        tracing_enabled: bool = False,
+        function_name: Optional[str] = None,
+        function_package: Optional[str] = None,
+        public_function: bool = False,
+        function_description: Optional[str] = None,
+        function_initializer_group: Optional[str] = None,
+        function_module: Optional[str] = None,
+        properties: Optional[dict[str, Any]] = None,
+    ):
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector
+        self._tracing_enabled = tracing_enabled
         self._function_name = function_name
         self._function_package = function_package
         self._public_function = public_function
@@ -392,6 +422,7 @@ class CustomEndpointConfig(EndpointConfig):
             "id": self._id,
             "name": self._name,
             "idDataConnector": self._id_data_connector,
+            "tracingEnabled": self._tracing_enabled,
         }
         if self._function_name is not None:
             result["functionName"] = self._function_name
@@ -402,13 +433,13 @@ class CustomEndpointConfig(EndpointConfig):
 
 
 class CronEndpointConfig(EndpointConfig):
-
     def __init__(
         self,
         id: int,
         name: str,
         id_data_connector: int,
         enabled: bool = False,
+        tracing_enabled: bool = False,
         schedule: str = "",
         timezone: str = "UTC",
         overlap_policy: ScheduleOverlapPolicy = ScheduleOverlapPolicy.SKIP,
@@ -421,6 +452,7 @@ class CronEndpointConfig(EndpointConfig):
         self._name = name
         self._id_data_connector = id_data_connector
         self._enabled = enabled
+        self._tracing_enabled = tracing_enabled
         self._schedule = schedule
         self._timezone = timezone
         self._overlap_policy = overlap_policy
@@ -465,6 +497,7 @@ class CronEndpointConfig(EndpointConfig):
             "name": self._name,
             "idDataConnector": self._id_data_connector,
             "enabled": self._enabled,
+            "tracingEnabled": self._tracing_enabled,
             "schedule": self._schedule,
             "timezone": self._timezone,
             "overlapPolicy": self._overlap_policy.value,
@@ -476,7 +509,6 @@ class CronEndpointConfig(EndpointConfig):
 
 
 class TemporalEndpointConfig(CronEndpointConfig):
-
     def __init__(
         self,
         id: int,
@@ -484,6 +516,7 @@ class TemporalEndpointConfig(CronEndpointConfig):
         id_data_connector: int,
         temporal_execution_type: TemporalExecutionType,
         enabled: bool = False,
+        tracing_enabled: bool = False,
         task_queue: str = "",
         schedule: str = "",
         schedule_id: str = "",
@@ -501,6 +534,7 @@ class TemporalEndpointConfig(CronEndpointConfig):
             name=name,
             id_data_connector=id_data_connector,
             enabled=enabled,
+            tracing_enabled=tracing_enabled,
             schedule=schedule,
             timezone=timezone,
             overlap_policy=overlap_policy,
@@ -511,7 +545,9 @@ class TemporalEndpointConfig(CronEndpointConfig):
             temporal_execution_type is TemporalExecutionType.ACTIVITY
             and activity_start_to_close_timeout < 1
         ):
-            raise ValueError("Temporal activity start-to-close timeout must be positive")
+            raise ValueError(
+                "Temporal activity start-to-close timeout must be positive"
+            )
         if maximum_attempts < 1:
             raise ValueError("Temporal maximum attempts must be positive")
         if not isinstance(temporal_execution_type, TemporalExecutionType):
@@ -556,13 +592,15 @@ class TemporalEndpointConfig(CronEndpointConfig):
 
     def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()
-        result.update({
-            "taskQueue": self._task_queue,
-            "temporalExecutionType": self._temporal_execution_type.value,
-            "scheduleId": self._schedule_id,
-            "workflowExecutionTimeout": self._workflow_execution_timeout,
-            "activityStartToCloseTimeout": self._activity_start_to_close_timeout,
-            "activityHeartbeatTimeout": self._activity_heartbeat_timeout,
-            "maximumAttempts": self._maximum_attempts,
-        })
+        result.update(
+            {
+                "taskQueue": self._task_queue,
+                "temporalExecutionType": self._temporal_execution_type.value,
+                "scheduleId": self._schedule_id,
+                "workflowExecutionTimeout": self._workflow_execution_timeout,
+                "activityStartToCloseTimeout": self._activity_start_to_close_timeout,
+                "activityHeartbeatTimeout": self._activity_heartbeat_timeout,
+                "maximumAttempts": self._maximum_attempts,
+            }
+        )
         return result
