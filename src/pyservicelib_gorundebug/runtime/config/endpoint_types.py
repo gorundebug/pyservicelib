@@ -10,6 +10,7 @@ from ...api.models.http_method_type import HTTPMethodType
 from ...api.models.grpc_method_type import GrpcMethodType
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ...api.models.schedule_overlap_policy import ScheduleOverlapPolicy
+from ...api.models.temporal_execution_type import TemporalExecutionType
 
 
 class EndpointConfig(ABC):
@@ -481,6 +482,7 @@ class TemporalEndpointConfig(CronEndpointConfig):
         id: int,
         name: str,
         id_data_connector: int,
+        temporal_execution_type: TemporalExecutionType,
         enabled: bool = False,
         task_queue: str = "",
         schedule: str = "",
@@ -509,7 +511,12 @@ class TemporalEndpointConfig(CronEndpointConfig):
             raise ValueError("Temporal activity start-to-close timeout must be positive")
         if maximum_attempts < 1:
             raise ValueError("Temporal maximum attempts must be positive")
+        if not isinstance(temporal_execution_type, TemporalExecutionType):
+            raise ValueError(
+                "Temporal endpoint execution type must be Activity or Workflow"
+            )
         self._task_queue = task_queue
+        self._temporal_execution_type = temporal_execution_type
         self._schedule_id = schedule_id
         self._workflow_execution_timeout = workflow_execution_timeout
         self._activity_start_to_close_timeout = activity_start_to_close_timeout
@@ -519,6 +526,10 @@ class TemporalEndpointConfig(CronEndpointConfig):
     @property
     def task_queue(self) -> str:
         return self._task_queue
+
+    @property
+    def temporal_execution_type(self) -> TemporalExecutionType:
+        return self._temporal_execution_type
 
     @property
     def schedule_id(self) -> str:
@@ -544,6 +555,7 @@ class TemporalEndpointConfig(CronEndpointConfig):
         result = super().to_dict()
         result.update({
             "taskQueue": self._task_queue,
+            "temporalExecutionType": self._temporal_execution_type.value,
             "scheduleId": self._schedule_id,
             "workflowExecutionTimeout": self._workflow_execution_timeout,
             "activityStartToCloseTimeout": self._activity_start_to_close_timeout,

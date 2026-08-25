@@ -7,6 +7,9 @@ from pyservicelib_gorundebug.api.models.schedule_missed_run_policy import (
 from pyservicelib_gorundebug.api.models.schedule_overlap_policy import (
     ScheduleOverlapPolicy,
 )
+from pyservicelib_gorundebug.api.models.temporal_execution_type import (
+    TemporalExecutionType,
+)
 from pyservicelib_gorundebug.runtime.config import (
     CronDataConnectorConfig,
     CronEndpointConfig,
@@ -71,6 +74,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
         4,
         "durableReconcile",
         connector.id,
+        TemporalExecutionType.ACTIVITY,
         enabled=True,
         task_queue="reconcile",
         activity_start_to_close_timeout=30_000,
@@ -82,6 +86,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
     assert connector.max_concurrent_activities == 8
     assert connector.max_concurrent_workflows == 4
     assert endpoint.task_queue == "reconcile"
+    assert endpoint.temporal_execution_type is TemporalExecutionType.ACTIVITY
     assert endpoint.activity_start_to_close_timeout == 30_000
     assert endpoint.maximum_attempts == 3
 
@@ -107,6 +112,7 @@ def test_temporal_config_rejects_non_operational_values() -> None:
             2,
             "job",
             1,
+            TemporalExecutionType.ACTIVITY,
             task_queue="jobs",
             activity_start_to_close_timeout=0,
         )

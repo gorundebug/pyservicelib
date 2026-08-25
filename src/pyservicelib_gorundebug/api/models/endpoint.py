@@ -24,6 +24,7 @@ from ..models.grpc_method_type import GrpcMethodType
 from ..models.http_method_type import HTTPMethodType
 from ..models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ..models.schedule_overlap_policy import ScheduleOverlapPolicy
+from ..models.temporal_execution_type import TemporalExecutionType
 from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
@@ -58,11 +59,12 @@ class Endpoint(BaseModel):
     overlap_policy: Optional[ScheduleOverlapPolicy] = Field(default=None, alias="overlapPolicy")
     missed_run_policy: Optional[ScheduleMissedRunPolicy] = Field(default=None, alias="missedRunPolicy")
     task_queue: Optional[StrictStr] = Field(default=None, description="Temporal Task Queue used by this durable endpoint.", alias="taskQueue")
+    temporal_execution_type: Optional[TemporalExecutionType] = Field(default=None, alias="temporalExecutionType")
     workflow_execution_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Workflow execution timeout in milliseconds; zero means SDK default.", alias="workflowExecutionTimeout")
     activity_start_to_close_timeout: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Temporal Activity start-to-close timeout in milliseconds.", alias="activityStartToCloseTimeout")
     activity_heartbeat_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Activity heartbeat timeout in milliseconds; zero disables it.", alias="activityHeartbeatTimeout")
     maximum_attempts: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Temporal Activity attempts including the initial attempt.", alias="maximumAttempts")
-    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "tracingEnabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
+    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "tracingEnabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "temporalExecutionType", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -141,6 +143,7 @@ class Endpoint(BaseModel):
             "overlapPolicy": obj.get("overlapPolicy"),
             "missedRunPolicy": obj.get("missedRunPolicy"),
             "taskQueue": obj.get("taskQueue"),
+            "temporalExecutionType": obj.get("temporalExecutionType"),
             "workflowExecutionTimeout": obj.get("workflowExecutionTimeout"),
             "activityStartToCloseTimeout": obj.get("activityStartToCloseTimeout"),
             "activityHeartbeatTimeout": obj.get("activityHeartbeatTimeout"),
