@@ -230,6 +230,48 @@ _WORKFLOW_SUBMISSION: ContextVar[_WorkflowSubmission | None] = ContextVar(
 )
 
 
+def _endpoint_envelope(value: EndpointEnvelope | dict[str, Any]) -> EndpointEnvelope:
+    """Restore types at the boundary of a dynamically named Workflow.
+
+    Temporal cannot infer the input annotation when the Workflow is started by
+    its registered string name, so its default JSON converter returns a dict.
+    """
+
+    if isinstance(value, EndpointEnvelope):
+        return value
+    data = dict(value)
+    payload = data.get("payload", b"")
+    if not isinstance(payload, bytes):
+        data["payload"] = bytes(payload)
+    return EndpointEnvelope(**data)
+
+
+def _workflow_endpoint_config(
+    value: _WorkflowEndpointConfig | dict[str, Any],
+) -> _WorkflowEndpointConfig:
+    if isinstance(value, _WorkflowEndpointConfig):
+        return value
+    data = dict(value)
+    execution_type = data.get("execution_type")
+    if not isinstance(execution_type, TemporalExecutionType):
+        data["execution_type"] = TemporalExecutionType(execution_type)
+    return _WorkflowEndpointConfig(**data)
+
+
+def _direct_workflow_request(
+    value: _DirectEndpointWorkflowRequest | dict[str, Any],
+) -> _DirectEndpointWorkflowRequest:
+    if isinstance(value, _DirectEndpointWorkflowRequest):
+        return value
+    return _DirectEndpointWorkflowRequest(
+        connector_name=str(value["connector_name"]),
+        envelope=_endpoint_envelope(value["envelope"]),
+        endpoints=tuple(
+            _workflow_endpoint_config(item) for item in value.get("endpoints", ())
+        ),
+    )
+
+
 @workflow.defn(name=ENDPOINT_WORKFLOW_TYPE, sandboxed=False)
 class _TemporalEndpointWorkflow:
     @workflow.run
@@ -611,6 +653,7 @@ class Connector(ManagedDataConnector):
             id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
             memo=_ownership_memo(owner, envelope.message_id),
             priority=Priority(priority_key=request.priority),
+            result_type=EndpointResult,
         )
         await _validate_workflow_ownership(
             handle, workflow_type, owner, envelope.message_id
@@ -846,8 +889,10 @@ def _make_endpoint_workflow(
     )
 
     async def run(
-        _self: object, request: _DirectEndpointWorkflowRequest
+        _self: object,
+        request: _DirectEndpointWorkflowRequest | dict[str, Any],
     ) -> EndpointResult:
+        request = _direct_workflow_request(request)
         envelope = request.envelope
         if envelope.version != 1 or envelope.endpoint_id != registration.endpoint_id:
             raise ValueError(

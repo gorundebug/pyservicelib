@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -95,15 +96,16 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
             workflow_type,
         )
     )
-    result = await workflow_class().run(
-        _DirectEndpointWorkflowRequest(
-            "temporal",
-            EndpointEnvelope(
-                1, 12, "workflow-1", "request-1", 0, payload=b"job"
-            ),
-            (),
-        )
+    request = _DirectEndpointWorkflowRequest(
+        "temporal",
+        EndpointEnvelope(
+            1, 12, "workflow-1", "request-1", 0, payload=b"job"
+        ),
+        (),
     )
+    converted_request = asdict(request)
+    converted_request["envelope"]["payload"] = list(b"job")
+    result = await workflow_class().run(converted_request)
     assert result.payload == b"job-done"
     assert waited == [timedelta(hours=1)]
     assert _schedule_workflow_id("Temporal Connector", "Workflow Job") == (
