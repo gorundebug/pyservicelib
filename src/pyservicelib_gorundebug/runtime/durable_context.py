@@ -16,6 +16,8 @@ import logging
 import threading
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 
 from .environment.tracing import Span, StatusCode, string_attr
@@ -47,6 +49,25 @@ ERROR: Final = "error"
 MISSING_OUTCOME: Final = "missing_outcome"
 DUPLICATE_TERMINAL: Final = "duplicate_terminal"
 LATE_HEARTBEAT: Final = "late_heartbeat"
+SUSPENDED: Final = "suspended"
+
+
+@dataclass(frozen=True, slots=True)
+class DurableContinuation:
+    version: int
+    from_name: str
+    to_name: str
+    call_id: str
+    stream_id: str
+    priority: int
+    deadline_unix_nano: int
+    wake_at_unix_nano: int
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class DurableActivityResult:
+    continuation: DurableContinuation | None = None
 
 type DurableCallDiagnostics = Callable[[str, BaseException | None], None]
 type DurableCallHeartbeatRecorder = Callable[[Any], None]
@@ -58,6 +79,7 @@ class DurableCallContext:
     __slots__ = (
         "parent_id", "counts", "_lock", "_completed", "_outcome", "_done",
         "_heartbeat", "_diagnostics", "_span", "_span_ended",
+        "_delay_at", "_continuation",
     )
 
     def __init__(
@@ -76,6 +98,8 @@ class DurableCallContext:
         self._diagnostics = diagnostics
         self._span: Span | None = None
         self._span_ended = False
+        self._delay_at: datetime | None = None
+        self._continuation: DurableContinuation | None = None
 
     def bind_span(self, span: Span) -> None:
         with self._lock:
@@ -150,12 +174,58 @@ class DurableCallContext:
         self._report(MISSING_OUTCOME, error)
         self._done.set()
 
-    async def wait(self) -> None:
+    async def wait(self) -> DurableActivityResult:
         await self._done.wait()
         with self._lock:
             outcome = self._outcome
+            continuation = self._continuation
         if outcome is not None:
             raise outcome
+        return DurableActivityResult(continuation)
+
+    def begin_delay(self, duration: timedelta) -> None:
+        with self._lock:
+            if self._completed:
+                raise DurableCallAlreadyCompletedError(
+                    "durable call is already completed; attempted delay"
+                )
+            if self._delay_at is not None:
+                raise DurableCallContextError("durable delay is already pending")
+            self._delay_at = datetime.now(timezone.utc) + duration
+
+    def capture_continuation(
+        self, from_name: str, to_name: str, payload: bytes
+    ) -> bool:
+        from .context import priority_from_context, request_deadline, stream_id_from_context
+
+        with self._lock:
+            if self._delay_at is None:
+                return False
+            if self._completed:
+                raise DurableCallAlreadyCompletedError(
+                    "durable call is already completed; attempted suspension"
+                )
+            deadline = request_deadline.get()
+            if deadline is not None and deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            self._continuation = DurableContinuation(
+                version=1,
+                from_name=from_name,
+                to_name=to_name,
+                call_id=f"{self.parent_id}/delay",
+                stream_id=stream_id_from_context() or "",
+                priority=priority_from_context() or 0,
+                deadline_unix_nano=(
+                    int(deadline.timestamp() * 1_000_000_000)
+                    if deadline is not None else 0
+                ),
+                wake_at_unix_nano=int(self._delay_at.timestamp() * 1_000_000_000),
+                payload=bytes(payload),
+            )
+            self._completed = True
+        self._report(SUSPENDED, None)
+        self._done.set()
+        return True
 
     def finish_span(self) -> None:
         with self._lock:
@@ -176,6 +246,23 @@ _current_durable_call: ContextVar[DurableCallContext | None] = ContextVar(
 
 def current_durable_call_context() -> DurableCallContext | None:
     return _current_durable_call.get()
+
+
+def begin_durable_delay(duration: timedelta) -> bool:
+    durable = current_durable_call_context()
+    if durable is None:
+        return False
+    durable.begin_delay(duration)
+    return True
+
+
+def capture_durable_continuation(
+    from_name: str, to_name: str, payload: bytes
+) -> bool:
+    durable = current_durable_call_context()
+    if durable is None:
+        return False
+    return durable.capture_continuation(from_name, to_name, payload)
 
 
 def _require_current(operation: str) -> DurableCallContext:
@@ -217,7 +304,7 @@ def bind_durable_call_span(span: Span) -> bool:
 async def run_durable_call_activity(
     durable: DurableCallContext,
     invoke: Callable[[], Any],
-) -> None:
+) -> DurableActivityResult:
     """Dispatch existing graph code, then await explicit outcome/cancellation."""
 
     token: Token[DurableCallContext | None] = _current_durable_call.set(durable)
@@ -234,7 +321,7 @@ async def run_durable_call_activity(
                     durable.fail(error)
                 except DurableCallAlreadyCompletedError:
                     pass
-            await durable.wait()
+            return await durable.wait()
         except asyncio.CancelledError as cause:
             durable.cancel_without_outcome(cause)
             raise DurableCallOutcomeMissingError(

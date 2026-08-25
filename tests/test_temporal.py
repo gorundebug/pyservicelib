@@ -126,6 +126,9 @@ async def test_temporal_workflow_request_round_trips_through_sdk_converter() -> 
             "automation_service.durable.consume_durable_job."
             "process_durable_job.v1"
         ),
+        continuation_activity_type=(
+            "automation_service.durable_continuation.temporal.v1"
+        ),
         activity_start_to_close_millis=1_000,
         activity_heartbeat_millis=0,
         maximum_attempts=3,

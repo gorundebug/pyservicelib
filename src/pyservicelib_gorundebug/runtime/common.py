@@ -15,7 +15,7 @@ from typing import cast, Iterable
 
 from ..api.models.call_semantics import CallSemantics
 from .environment import ServiceEnvironment, ServiceDependency
-from .config import StreamConfig, Config, LinkId
+from .config import StreamConfig, Config, LinkId, DelayStreamConfig
 from .serde import Serializer, StreamSerializer, TypedStreamSerde, StreamKeyValueSerde
 from .serde import TypedStreamKeyValueSerde, StreamSerde, Serde
 from .store import Storage
@@ -32,7 +32,12 @@ from .environment.tracing import (
 )
 from .context import Context
 from .datastruct import KeyValue
-from .durable_context import bind_durable_call_span, current_durable_call_context
+from .durable_context import (
+    DurableContinuation,
+    bind_durable_call_span,
+    capture_durable_continuation,
+    current_durable_call_context,
+)
 from .config import EndpointConfig, DataConnectorConfig
 from .serde import BytesBuffer
 
@@ -414,6 +419,31 @@ class DurableCaller[T](Caller[T]):
         return True
 
 
+class DurableDelayCaller[T](Caller[T]):
+    """Captures Delay output instead of executing it in the current Activity."""
+
+    def __init__(self, delegate: Caller[T], source: "TypedStream[T]") -> None:
+        self._delegate = delegate
+        self._source = source
+        if source.consumer is None:
+            raise ValueError(f"Delay stream {source.name!r} has no consumer")
+        self._consumer = source.consumer
+
+    async def consume(self, value: T) -> None:
+        if current_durable_call_context() is None:
+            await self._delegate.consume(value)
+            return
+        payload = bytes(self._source.serde.serialize(value))
+        if not capture_durable_continuation(
+            self._source.name, self._consumer.stream.name, payload
+        ):
+            await self._delegate.consume(value)
+
+    @property
+    def is_async(self) -> bool:
+        return self._delegate.is_async
+
+
 class Collect[T](ABC):
 
     @abstractmethod
@@ -491,14 +521,27 @@ class RuntimeHelpers[T]:
         tracing = env.tracing
         tracer = tracing.tracer(service_config.name) if tracing is not None else None
 
+        def finalize(caller: Caller[T]) -> Caller[T]:
+            if not isinstance(stream_cfg, DelayStreamConfig):
+                return caller
+
+            async def resume(continuation: DurableContinuation) -> None:
+                value = source.serde.deserialize(continuation.payload)
+                await caller.consume(value)
+
+            runtime.register_durable_continuation(
+                source.name, consumer.stream.name, resume
+            )
+            return DurableDelayCaller(caller, source)
+
         if call_semantics == CallSemantics.FunctionCall:
             async_ = bool(
                 link is not None
                 and link.call_semantics == CallSemantics.FunctionCall
                 and link.var_async
             )
-            return DirectCaller[T](source=source, statistics=statistics, tracer=tracer,
-                                   messages_counter=messages_counter, async_=async_)
+            return finalize(DirectCaller[T](source=source, statistics=statistics, tracer=tracer,
+                                            messages_counter=messages_counter, async_=async_))
 
         elif call_semantics == CallSemantics.TaskPool:
             if link is None:
@@ -509,9 +552,9 @@ class RuntimeHelpers[T]:
                 raise ValueError(f"Invalid {'' if stream_cfg.id_service == service_config.id else 'income '}"
                                  f"pool name for link between streams from={source.id} to={consumer.stream.id}")
 
-            return TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source,
-                                     statistics=statistics, tracer=tracer,
-                                     messages_counter=messages_counter)
+            return finalize(TaskPoolCaller[T](task_pool=runtime.get_task_pool(pool_name), source=source,
+                                              statistics=statistics, tracer=tracer,
+                                              messages_counter=messages_counter))
 
         elif call_semantics == CallSemantics.PriorityTaskPool:
             if link is None:
@@ -527,16 +570,16 @@ class RuntimeHelpers[T]:
                 raise ValueError(f"Invalid {" " if stream_cfg.id_service == service_config.id else " income "} priority\
 for link between streams from={source.id} to={consumer.stream.id}")
 
-            return PriorityTaskPoolCaller[T](priority_task_pool=runtime.get_priority_task_pool(pool_name),
-                                             priority=priority,
-                                             source=source,
-                                             statistics=statistics,
-                                             tracer=tracer,
-                                             messages_counter=messages_counter)
+            return finalize(PriorityTaskPoolCaller[T](priority_task_pool=runtime.get_priority_task_pool(pool_name),
+                                                      priority=priority,
+                                                      source=source,
+                                                      statistics=statistics,
+                                                      tracer=tracer,
+                                                      messages_counter=messages_counter))
 
         elif call_semantics == CallSemantics.ParallelCall:
-            return ParallelCaller[T](source=source, statistics=statistics, tracer=tracer,
-                                     messages_counter=messages_counter)
+            return finalize(ParallelCaller[T](source=source, statistics=statistics, tracer=tracer,
+                                              messages_counter=messages_counter))
 
         elif call_semantics == CallSemantics.DurableCall:
             from .context import (
@@ -608,14 +651,14 @@ for link between streams from={source.id} to={consumer.stream.id}")
                     request_stream_id.reset(stream_token)
 
             transport.register_link(link_id, activate_target)
-            return DurableCaller[T](
+            return finalize(DurableCaller[T](
                 transport=transport,
                 link_id=link_id,
                 source=source,
                 statistics=statistics,
                 tracer=tracer,
                 messages_counter=messages_counter,
-            )
+            ))
 
         raise ValueError(f"Invalid call semantics: {call_semantics}")
 
@@ -1378,6 +1421,21 @@ class ServiceExecutionRuntime(ABC):
 
     @abstractmethod
     def register_link_info(self, link_info: RuntimeLinkInfo) -> None:
+        pass
+
+    @abstractmethod
+    def register_durable_continuation(
+        self,
+        from_name: str,
+        to_name: str,
+        handler: Callable[[DurableContinuation], Awaitable[None]],
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def resume_durable_continuation(
+        self, continuation: DurableContinuation
+    ) -> None:
         pass
 
     @abstractmethod

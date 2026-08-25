@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 
@@ -9,6 +10,8 @@ from pyservicelib_gorundebug.runtime.durable_context import (
     DurableCallOutcomeMissingError,
     NoDurableCallContextError,
     bind_durable_call_span,
+    begin_durable_delay,
+    capture_durable_continuation,
     durable_call_error,
     durable_call_heartbeat,
     durable_call_success,
@@ -137,3 +140,25 @@ async def test_lifecycle_events_are_attached_to_activity_span() -> None:
         "durable_call.heartbeat",
         "durable_call.success",
     ]
+
+
+@pytest.mark.asyncio
+async def test_durable_delay_returns_serializable_continuation() -> None:
+    durable = DurableCallContext("call-1")
+
+    async def invoke() -> None:
+        assert begin_durable_delay(timedelta(hours=1))
+        assert capture_durable_continuation(
+            "Delay", "After Delay", b"value"
+        )
+
+    result = await run_durable_call_activity(durable, invoke)
+    assert result.continuation is not None
+    assert result.continuation.from_name == "Delay"
+    assert result.continuation.to_name == "After Delay"
+    assert result.continuation.call_id == "call-1/delay"
+    assert result.continuation.payload == b"value"
+
+
+def test_begin_durable_delay_keeps_ordinary_context_local() -> None:
+    assert not begin_durable_delay(timedelta(hours=1))

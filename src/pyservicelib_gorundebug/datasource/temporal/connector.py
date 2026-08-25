@@ -50,8 +50,10 @@ from ...runtime.common import DurableEnvelope, DurableTransport, ServiceExecutio
 from ...runtime.config import EndpointConfig, LinkId
 from ...runtime.context import Context
 from ...runtime.durable_context import (
+    DurableActivityResult,
     DurableCallContext,
     DurableCallDiagnostics,
+    DurableContinuation,
     run_durable_call_activity,
 )
 from ...runtime.environment.log import err_field, str_field
@@ -156,6 +158,7 @@ EndpointHandler = Callable[[EndpointEnvelope], Awaitable[EndpointResult]]
 @dataclass(frozen=True, slots=True)
 class _DurableWorkflowRequest:
     activity_type: str
+    continuation_activity_type: str
     activity_start_to_close_millis: int
     activity_heartbeat_millis: int
     maximum_attempts: int
@@ -166,6 +169,7 @@ class _DurableWorkflowRequest:
 @dataclass(frozen=True, slots=True)
 class _EndpointWorkflowRequest:
     activity_type: str
+    continuation_activity_type: str
     activity_start_to_close_millis: int
     activity_heartbeat_millis: int
     maximum_attempts: int
@@ -173,13 +177,20 @@ class _EndpointWorkflowRequest:
     envelope: EndpointEnvelope
 
 
+@dataclass(frozen=True, slots=True)
+class _EndpointActivityResult:
+    durable: DurableActivityResult = DurableActivityResult()
+    result: EndpointResult = EndpointResult()
+
+
 @workflow.defn(name=DURABLE_WORKFLOW_TYPE, sandboxed=False)
 class _DurableLinkWorkflow:
     @workflow.run
     async def run(self, request: _DurableWorkflowRequest) -> None:
-        await workflow.execute_activity(
+        result = await workflow.execute_activity(
             request.activity_type,
             request.envelope,
+            result_type=DurableActivityResult,
             start_to_close_timeout=timedelta(
                 milliseconds=request.activity_start_to_close_millis
             ),
@@ -190,6 +201,9 @@ class _DurableLinkWorkflow:
             ),
             retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
             priority=Priority(priority_key=request.priority),
+        )
+        await _run_durable_continuations(
+            request.continuation_activity_type, request, result
         )
 
 
@@ -208,10 +222,45 @@ class _TemporalEndpointWorkflow:
                     info.workflow_id, info.workflow_start_time
                 ),
             )
-        return await workflow.execute_activity(
+        result = await workflow.execute_activity(
             request.activity_type,
             envelope,
-            result_type=EndpointResult,
+            result_type=_EndpointActivityResult,
+            start_to_close_timeout=timedelta(
+                milliseconds=request.activity_start_to_close_millis
+            ),
+            heartbeat_timeout=(
+                timedelta(milliseconds=request.activity_heartbeat_millis)
+                if request.activity_heartbeat_millis > 0
+                else None
+            ),
+            retry_policy=RetryPolicy(maximum_attempts=request.maximum_attempts),
+            priority=Priority(priority_key=request.priority),
+        )
+        await _run_durable_continuations(
+            request.continuation_activity_type, request, result.durable
+        )
+        return result.result
+
+
+async def _run_durable_continuations(
+    activity_type: str,
+    request: _DurableWorkflowRequest | _EndpointWorkflowRequest,
+    result: DurableActivityResult,
+) -> None:
+    while result.continuation is not None:
+        continuation = result.continuation
+        wake_at = datetime.fromtimestamp(
+            continuation.wake_at_unix_nano / 1_000_000_000,
+            tz=timezone.utc,
+        )
+        delay = wake_at - workflow.now().astimezone(timezone.utc)
+        if delay.total_seconds() > 0:
+            await workflow.sleep(delay)
+        result = await workflow.execute_activity(
+            activity_type,
+            continuation,
+            result_type=DurableActivityResult,
             start_to_close_timeout=timedelta(
                 milliseconds=request.activity_start_to_close_millis
             ),
@@ -307,6 +356,12 @@ class Connector(DurableTransport):
 
     def _config(self) -> Any:
         return self._environment.config.get_data_connector_by_id(self._id)
+
+    def _continuation_activity_type(self) -> str:
+        return (
+            f"{_identity_name(self._environment.service_config.name)}."
+            f"durable_continuation.{_identity_name(self._name)}.v1"
+        )
 
     def _durable_diagnostics(
         self, boundary: str, target: str
@@ -524,6 +579,14 @@ class Connector(DurableTransport):
                 )
             )
             queue.endpoint_workflow = True
+        for queue in queues.values():
+            queue.activities.append(
+                _make_continuation_activity(
+                    self._continuation_activity_type(),
+                    self._environment.runtime.resume_durable_continuation,
+                    self._durable_diagnostics("continuation", self._name),
+                )
+            )
         return queues
 
     async def submit_link(self, link_id: LinkId, envelope: DurableEnvelope) -> None:
@@ -538,6 +601,7 @@ class Connector(DurableTransport):
         cfg = self._link_config(link_id)
         request = _DurableWorkflowRequest(
             registration.activity_type,
+            self._continuation_activity_type(),
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
@@ -587,6 +651,7 @@ class Connector(DurableTransport):
             raise RuntimeError(f"Temporal endpoint {cfg.name!r} is disabled")
         request = _EndpointWorkflowRequest(
             registration.activity_type,
+            self._continuation_activity_type(),
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
@@ -631,6 +696,7 @@ class Connector(DurableTransport):
         )
         request = _EndpointWorkflowRequest(
             registration.activity_type,
+            self._continuation_activity_type(),
             _integer(cfg, "activity_start_to_close_timeout"),
             _integer(cfg, "activity_heartbeat_timeout"),
             _integer(cfg, "maximum_attempts"),
@@ -733,8 +799,8 @@ def workflow_time_nanos() -> int:
 def _make_link_activity(
     registration: _LinkRegistration,
     diagnostics: DurableCallDiagnostics | None = None,
-) -> Callable[[DurableEnvelope], Awaitable[None]]:
-    async def invoke_link(envelope: DurableEnvelope) -> None:
+) -> Callable[[DurableEnvelope], Awaitable[DurableActivityResult]]:
+    async def invoke_link(envelope: DurableEnvelope) -> DurableActivityResult:
         if (
             envelope.version != 1
             or envelope.from_id != registration.link_id.from_id
@@ -750,7 +816,7 @@ def _make_link_activity(
             heartbeat=activity.heartbeat,
             diagnostics=diagnostics,
         )
-        await run_durable_call_activity(
+        return await run_durable_call_activity(
             durable, lambda: registration.handler(envelope)
         )
 
@@ -760,8 +826,8 @@ def _make_link_activity(
 def _make_endpoint_activity(
     registration: _EndpointRegistration,
     diagnostics: DurableCallDiagnostics | None = None,
-) -> Callable[[EndpointEnvelope], Awaitable[EndpointResult]]:
-    async def invoke_endpoint(envelope: EndpointEnvelope) -> EndpointResult:
+) -> Callable[[EndpointEnvelope], Awaitable[_EndpointActivityResult]]:
+    async def invoke_endpoint(envelope: EndpointEnvelope) -> _EndpointActivityResult:
         if (
             envelope.version != 1
             or envelope.endpoint_id != registration.endpoint_id
@@ -778,7 +844,7 @@ def _make_endpoint_activity(
             )
         fired = replace(envelope, fired_at_unix_nano=workflow_time_nanos())
         if not fired.scheduled:
-            return await handler(fired)
+            return _EndpointActivityResult(result=await handler(fired))
         durable = DurableCallContext(
             fired.execution_id,
             heartbeat=activity.heartbeat,
@@ -790,10 +856,37 @@ def _make_endpoint_activity(
             nonlocal result
             result = await handler(fired)
 
-        await run_durable_call_activity(durable, invoke)
-        return result
+        durable_result = await run_durable_call_activity(durable, invoke)
+        return _EndpointActivityResult(durable=durable_result, result=result)
 
     return activity.defn(name=registration.activity_type)(invoke_endpoint)
+
+
+def _make_continuation_activity(
+    activity_type: str,
+    resume: Callable[[DurableContinuation], Awaitable[None]],
+    diagnostics: DurableCallDiagnostics | None = None,
+) -> Callable[[DurableContinuation], Awaitable[DurableActivityResult]]:
+    async def invoke_continuation(
+        continuation: DurableContinuation,
+    ) -> DurableActivityResult:
+        if (
+            continuation.version != 1
+            or not continuation.from_name
+            or not continuation.to_name
+            or not continuation.call_id
+        ):
+            raise ValueError("invalid durable continuation envelope")
+        durable = DurableCallContext(
+            continuation.call_id,
+            heartbeat=activity.heartbeat,
+            diagnostics=diagnostics,
+        )
+        return await run_durable_call_activity(
+            durable, lambda: resume(continuation)
+        )
+
+    return activity.defn(name=activity_type)(invoke_continuation)
 
 
 def _optional_timeout(obj: Any, name: str) -> Optional[timedelta]:
