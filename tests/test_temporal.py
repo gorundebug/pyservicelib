@@ -12,7 +12,10 @@ from pyservicelib_gorundebug.api.models.data_connector_implementation import (
 )
 from pyservicelib_gorundebug.runtime.common import DurableEnvelope
 from pyservicelib_gorundebug.runtime.config import LinkId
-from pyservicelib_gorundebug.runtime.durable_context import durable_call_success
+from pyservicelib_gorundebug.runtime.durable_context import (
+    durable_call_error,
+    durable_call_success,
+)
 from pyservicelib_gorundebug.runtime.context import (
     request_deadline,
     request_priority,
@@ -153,6 +156,30 @@ async def test_on_demand_endpoint_runs_inside_durable_activity_scope() -> None:
 
     assert received[0].scheduled is False
     assert result.result == EndpointResult(payload=b"accepted")
+
+
+@pytest.mark.asyncio
+async def test_endpoint_activity_propagates_explicit_business_error() -> None:
+    failure = RuntimeError("business failure")
+
+    async def handler(_envelope: EndpointEnvelope) -> EndpointResult:
+        durable_call_error(failure)
+        return EndpointResult()
+
+    function = _make_endpoint_activity(
+        _EndpointRegistration(11, "temporal.endpoint.durable_job.v1", handler)
+    )
+    envelope = EndpointEnvelope(
+        version=1,
+        endpoint_id=11,
+        execution_id="job-2",
+        stream_id="stream-2",
+        priority=0,
+        payload=b"value",
+    )
+
+    with pytest.raises(RuntimeError, match="business failure"):
+        await function(envelope)
 
 
 @pytest.mark.asyncio
