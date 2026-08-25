@@ -10,6 +10,8 @@ from pyservicelib_gorundebug.api.models.data_connector_implementation import (
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.common import DurableEnvelope
 from pyservicelib_gorundebug.runtime.config import LinkId
+from pyservicelib_gorundebug.runtime.durable_context import durable_call_success
+from pyservicelib_gorundebug.runtime.environment.metrics.metrics import NoopMetrics
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     _DurableWorkflowRequest,
@@ -50,6 +52,8 @@ class _Environment:
     def __init__(self) -> None:
         self.config = _Config()
         self.service_config = SimpleNamespace(id=1)
+        self.metrics = NoopMetrics()
+        self.log = SimpleNamespace(warn=lambda *_: None, error=lambda *_: None)
 
 
 def _envelope(*, to_id: int = 4) -> DurableEnvelope:
@@ -86,6 +90,7 @@ async def test_temporal_activity_only_activates_registered_target() -> None:
 
     async def handler(envelope: DurableEnvelope) -> None:
         received.append(envelope)
+        durable_call_success()
 
     function = _make_link_activity(
         _LinkRegistration(LinkId(3, 4), "servicegen.test", handler)

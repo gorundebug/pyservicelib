@@ -7,7 +7,6 @@
 from abc import ABC, abstractmethod
 import asyncio
 from contextlib import nullcontext
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -33,6 +32,7 @@ from .environment.tracing import (
 )
 from .context import Context
 from .datastruct import KeyValue
+from .durable_context import bind_durable_call_span, current_durable_call_context
 from .config import EndpointConfig, DataConnectorConfig
 from .serde import BytesBuffer
 
@@ -323,21 +323,10 @@ class DurableTransport(ABC):
         pass
 
 
-@dataclass(slots=True)
-class _DurableInvocationScope:
-    parent_id: str
-    counts: dict[bytes, int]
-
-
-_durable_invocation_scope: ContextVar[Optional[_DurableInvocationScope]] = ContextVar(
-    "_durable_invocation_scope", default=None
-)
-
-
 def _next_durable_call_id(link_id: "LinkId", payload: bytes) -> str:
     from .context import new_stream_id
 
-    scope = _durable_invocation_scope.get()
+    scope = current_durable_call_context()
     if scope is None:
         return new_stream_id()
     key = b"\0".join(
@@ -602,9 +591,6 @@ for link between streams from={source.id} to={consumer.stream.id}")
                 deadline_token = request_deadline.set(deadline)
                 cancelled = asyncio.Event()
                 cancelled_token = request_cancelled.set(cancelled)
-                scope_token = _durable_invocation_scope.set(
-                    _DurableInvocationScope(envelope.call_id, {})
-                )
                 tracing = source.environment.tracing
                 trace_scope = (
                     tracing.extract(envelope.trace_carrier)
@@ -614,12 +600,24 @@ for link between streams from={source.id} to={consumer.stream.id}")
                 try:
                     with trace_scope as remote_sampled:
                         with sampling_scope(envelope.sampling_enabled or remote_sampled):
-                            await consumer.consume(value)
+                            _, activity_span = start_span(
+                                tracer,
+                                "temporal.activity",
+                                string_attr("boundary", "durable_call"),
+                                string_attr("from", source.name),
+                                string_attr("to", consumer.stream.name),
+                            )
+                            durable_span = bind_durable_call_span(activity_span)
+                            try:
+                                with activity_span.scoped():
+                                    await consumer.consume(value)
+                            finally:
+                                if not durable_span:
+                                    activity_span.end()
                 except asyncio.CancelledError:
                     cancelled.set()
                     raise
                 finally:
-                    _durable_invocation_scope.reset(scope_token)
                     request_cancelled.reset(cancelled_token)
                     request_deadline.reset(deadline_token)
                     request_priority.reset(priority_token)

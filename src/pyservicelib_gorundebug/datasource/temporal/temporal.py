@@ -36,6 +36,7 @@ from ...runtime.environment.tracing import (
     span_error,
     start_endpoint_span,
 )
+from ...runtime.durable_context import bind_durable_call_span
 from ...runtime.schedule import (
     ScheduleBackend,
     ScheduleEndpointFunction,
@@ -124,6 +125,7 @@ class _TemporalEndpointConsumer[Input, T, R, E](
         started = self.endpoint.on_request_start()
         error: Optional[Exception] = None
         future: Optional[asyncio.Future[R]] = None
+        durable_span = False
         try:
             with ExitStack() as scopes:
                 remote_sampled = scopes.enter_context(
@@ -140,6 +142,7 @@ class _TemporalEndpointConsumer[Input, T, R, E](
                     self.stream.name,
                     self.endpoint.name,
                 )
+                durable_span = bind_durable_call_span(span)
                 with span.scoped():
                     try:
                         if self._result_stream is not None:
@@ -174,7 +177,8 @@ class _TemporalEndpointConsumer[Input, T, R, E](
             if future is not None:
                 self._pending.pop(envelope.stream_id, None)
                 self.endpoint.on_pending_remove(envelope.stream_id)
-            span.end()
+            if not durable_span:
+                span.end()
             self.endpoint.on_request_end(started, error)
             request_cancelled.reset(cancelled_token)
             request_deadline.reset(deadline_token)

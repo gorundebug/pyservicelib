@@ -49,6 +49,12 @@ from ...api.models.transformation_type import TransformationType
 from ...runtime.common import DurableEnvelope, DurableTransport, ServiceExecutionEnvironment
 from ...runtime.config import EndpointConfig, LinkId
 from ...runtime.context import Context
+from ...runtime.durable_context import (
+    DurableCallContext,
+    DurableCallDiagnostics,
+    run_durable_call_activity,
+)
+from ...runtime.environment.log import err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
 
 
@@ -252,6 +258,11 @@ class Connector(DurableTransport):
         self._client: Optional[Client] = None
         self._workers: list[Worker] = []
         self._worker_tasks: list[asyncio.Task[None]] = []
+        self._durable_events = environment.metrics.scope(
+            "durable_call", {"connector": self._name}
+        ).counter_vec(
+            "events_total", "Total number of DurableCall Activity lifecycle events"
+        )
         self._started = False
 
     @property
@@ -264,6 +275,33 @@ class Connector(DurableTransport):
 
     def _config(self) -> Any:
         return self._environment.config.get_data_connector_by_id(self._id)
+
+    def _durable_diagnostics(
+        self, boundary: str, target: str
+    ) -> DurableCallDiagnostics:
+        def report(event: str, error: BaseException | None) -> None:
+            self._durable_events.with_({
+                "boundary": boundary,
+                "target": target,
+                "event": event,
+            }).inc()
+            if error is None:
+                return
+            fields = (
+                str_field("connector", self._name),
+                str_field("boundary", boundary),
+                str_field("target", target),
+                str_field("event", event),
+                err_field(error),
+            )
+            if event in ("missing_outcome", "duplicate_terminal", "late_heartbeat"):
+                self._environment.log.warn(
+                    "DurableCall Activity lifecycle misuse", *fields
+                )
+            else:
+                self._environment.log.error("DurableCall Activity failed", *fields)
+
+        return report
 
     def register_link(
         self,
@@ -427,7 +465,13 @@ class Connector(DurableTransport):
             )
 
             queue.activities.append(
-                _make_link_activity(link_registration)
+                _make_link_activity(
+                    link_registration,
+                    self._durable_diagnostics(
+                        "link",
+                        f"{link_id.from_id}:{link_id.to_id}",
+                    ),
+                )
             )
             queue.durable_workflow = True
         for endpoint_id, endpoint_registration in self._endpoints.items():
@@ -441,7 +485,10 @@ class Connector(DurableTransport):
             )
 
             queue.activities.append(
-                _make_endpoint_activity(endpoint_registration)
+                _make_endpoint_activity(
+                    endpoint_registration,
+                    self._durable_diagnostics("schedule", str(endpoint_id)),
+                )
             )
             queue.endpoint_workflow = True
         return queues
@@ -643,6 +690,7 @@ def workflow_time_nanos() -> int:
 
 def _make_link_activity(
     registration: _LinkRegistration,
+    diagnostics: DurableCallDiagnostics | None = None,
 ) -> Callable[[DurableEnvelope], Awaitable[None]]:
     async def invoke_link(envelope: DurableEnvelope) -> None:
         if (
@@ -655,13 +703,21 @@ def _make_link_activity(
                 f"invalid durable envelope for link "
                 f"{registration.link_id.from_id}->{registration.link_id.to_id}"
             )
-        await registration.handler(envelope)
+        durable = DurableCallContext(
+            envelope.call_id,
+            heartbeat=activity.heartbeat,
+            diagnostics=diagnostics,
+        )
+        await run_durable_call_activity(
+            durable, lambda: registration.handler(envelope)
+        )
 
     return activity.defn(name=registration.activity_type)(invoke_link)
 
 
 def _make_endpoint_activity(
     registration: _EndpointRegistration,
+    diagnostics: DurableCallDiagnostics | None = None,
 ) -> Callable[[EndpointEnvelope], Awaitable[EndpointResult]]:
     async def invoke_endpoint(envelope: EndpointEnvelope) -> EndpointResult:
         if (
@@ -678,9 +734,22 @@ def _make_endpoint_activity(
             raise RuntimeError(
                 f"Temporal endpoint {registration.endpoint_id} has no local Activity handler"
             )
-        return await handler(
-            replace(envelope, fired_at_unix_nano=workflow_time_nanos())
+        fired = replace(envelope, fired_at_unix_nano=workflow_time_nanos())
+        if not fired.scheduled:
+            return await handler(fired)
+        durable = DurableCallContext(
+            fired.execution_id,
+            heartbeat=activity.heartbeat,
+            diagnostics=diagnostics,
         )
+        result = EndpointResult()
+
+        async def invoke() -> None:
+            nonlocal result
+            result = await handler(fired)
+
+        await run_durable_call_activity(durable, invoke)
+        return result
 
     return activity.defn(name=registration.activity_type)(invoke_endpoint)
 

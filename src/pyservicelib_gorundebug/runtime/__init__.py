@@ -24,6 +24,17 @@ from .common import (
 )
 from .environment import Lifecycle
 from .graph import runtime_to_stream_app
+from .durable_context import (
+    DurableCallAlreadyCompletedError,
+    DurableCallContext,
+    DurableCallContextError,
+    DurableCallHeartbeatAfterCompletionError,
+    DurableCallOutcomeMissingError,
+    NoDurableCallContextError,
+    durable_call_error,
+    durable_call_heartbeat,
+    durable_call_success,
+)
 from .statusweb import (
     data_handler,
     graph_handler,
