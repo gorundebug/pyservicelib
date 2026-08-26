@@ -50,6 +50,7 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     _validate_workflow_ownership,
 )
 from pyservicelib_gorundebug.datasource.temporal.workflow_environment import (
+    TemporalWorkflowEnvironment,
     _WorkflowPriorityTaskPool,
     _WorkflowTaskPool,
 )
@@ -158,6 +159,18 @@ async def _append_async(target: list[int], value: int) -> None:
 
 def _fixed_workflow_time() -> datetime:
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_workflow_stream_registry_matches_service_virtual_stream_semantics() -> None:
+    environment = TemporalWorkflowEnvironment.__new__(TemporalWorkflowEnvironment)
+    environment._streams = {}  # type: ignore[attr-defined]
+    virtual = SimpleNamespace(id=9)
+    canonical = SimpleNamespace(id=9)
+
+    environment.register_stream(virtual)
+    environment.register_stream(canonical)
+
+    assert environment._streams[9] is canonical  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

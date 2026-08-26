@@ -378,8 +378,9 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
         self.set_config(cfg)
 
     def register_stream(self, stream: ServiceStream) -> None:
-        if stream.id in self._streams:
-            raise ValueError(f"duplicate workflow stream id {stream.id}")
+        # Match ServiceApp exactly: virtual result/error views intentionally
+        # reuse their owning configured stream id and the canonical stream is
+        # registered last by the operator constructor.
         self._streams[stream.id] = stream
 
     def register_serde(self, type_name: str, serializer: StreamSerializer) -> None:
