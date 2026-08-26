@@ -430,6 +430,11 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
             raise ValueError(f"Type config {type_name!r} not found")
         if primitive:
             serde = make_default_serde(TypeConfig.get_serde_type(type_name))
+        elif cast(Any, type_config).is_primitive:
+            # Named DSL primitives retain their public graph type name while
+            # using the same wire serde as their underlying primitive. Keep
+            # Workflow execution aligned with ServiceApp.get_type_serde().
+            serde = make_default_serde(cast(Any, type_config).serde_type)
         elif cast(Any, type_config).is_array:
             value_type = cast(Any, type_config).value_type
             if value_type is None:

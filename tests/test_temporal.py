@@ -14,6 +14,7 @@ from pyservicelib_gorundebug.api.models.data_connector_implementation import (
 from pyservicelib_gorundebug.api.models.temporal_execution_type import (
     TemporalExecutionType,
 )
+from pyservicelib_gorundebug.api.models.data_type import DataType
 from pyservicelib_gorundebug.runtime.context import (
     request_cancelled,
     request_deadline,
@@ -32,6 +33,8 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
     sampling_scope,
 )
 from pyservicelib_gorundebug.runtime.pool import PoolCancelledError
+from pyservicelib_gorundebug.runtime.config import TypeConfig
+from pyservicelib_gorundebug.runtime.serde import StringSerde
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     EndpointEnvelope,
@@ -268,6 +271,22 @@ def test_workflow_stream_registry_matches_service_virtual_stream_semantics() -> 
     environment.register_stream(canonical)
 
     assert environment._streams[9] is canonical  # type: ignore[attr-defined]
+
+
+def test_workflow_named_primitive_uses_its_underlying_serde() -> None:
+    environment = TemporalWorkflowEnvironment.__new__(TemporalWorkflowEnvironment)
+    environment._serdes = {}  # type: ignore[attr-defined]
+    automation_job = TypeConfig(name="AutomationJob", type=DataType.string)
+    environment._config = SimpleNamespace(  # type: ignore[attr-defined]
+        get_type_by_name=lambda name: (
+            automation_job if name == "AutomationJob" else None
+        )
+    )
+
+    serde = environment.get_type_serde("AutomationJob")
+
+    assert isinstance(serde, StringSerde)
+    assert serde.deserialize(serde.serialize("job-1", bytearray())) == "job-1"
 
 
 @pytest.mark.asyncio
