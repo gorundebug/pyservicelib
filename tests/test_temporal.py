@@ -238,6 +238,10 @@ async def test_direct_workflow_endpoint_uses_durable_timer_and_noop_heartbeat(
         "pyservicelib_gorundebug.datasource.temporal.workflow.workflow.sleep",
         sleep,
     )
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.runtime.durable_context.threading.Lock",
+        lambda: (_ for _ in ()).throw(AssertionError("Workflow used threading.Lock")),
+    )
 
     async def handler(envelope: EndpointEnvelope) -> EndpointResult:
         assert current_durable_call_context() is not None

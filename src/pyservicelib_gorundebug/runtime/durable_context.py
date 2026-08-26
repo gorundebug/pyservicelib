@@ -46,6 +46,16 @@ type DurableCallHeartbeatRecorder = Callable[[Any], None]
 type DurableCallDelay = Callable[[Any], Awaitable[None]]
 
 
+class _WorkflowLock:
+    """No-op context manager for Temporal's single-threaded Workflow isolate."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+
 class DurableCallContext:
     """Thread-safe Activity state shared by ordinary downstream graph code."""
 
@@ -72,7 +82,7 @@ class DurableCallContext:
         recording_policy: Callable[[], bool] | None = None,
     ) -> None:
         self.message_id = message_id
-        self._lock = threading.Lock()
+        self._lock = _WorkflowLock() if workflow else threading.Lock()
         self._closed = False
         self._heartbeat = heartbeat
         self._delay = delay
