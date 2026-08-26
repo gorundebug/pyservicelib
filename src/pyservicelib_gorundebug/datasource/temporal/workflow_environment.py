@@ -46,7 +46,7 @@ from ...runtime.config import (
 from ...runtime.context import Context
 from ...runtime.context.request import request_context_error
 from ...runtime.environment import ServiceDependency
-from ...runtime.environment.log import Logger
+from ...runtime.environment.log import Logger, str_field
 from ...runtime.environment.metrics import (
     Float64Histogram,
     Int64Counter,
@@ -454,6 +454,12 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
     async def start(self, ctx: Context) -> None:
         if self._started:
             return
+        info = workflow.info()
+        self._log.info(
+            "temporal workflow graph started",
+            str_field("workflow_id", info.workflow_id),
+            str_field("workflow_type", info.workflow_type),
+        )
         for stream in self._streams.values():
             stream.build()
         for storage in self._storages:
