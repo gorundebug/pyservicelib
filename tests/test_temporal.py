@@ -15,6 +15,7 @@ from pyservicelib_gorundebug.api.models.temporal_execution_type import (
     TemporalExecutionType,
 )
 from pyservicelib_gorundebug.runtime.context import (
+    request_cancelled,
     request_deadline,
     request_priority,
     request_stream_id,
@@ -30,6 +31,7 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
     sampling_enabled,
     sampling_scope,
 )
+from pyservicelib_gorundebug.runtime.pool import PoolCancelledError
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
     EndpointEnvelope,
@@ -185,6 +187,67 @@ async def test_workflow_priority_pool_preserves_priority_then_fifo() -> None:
 
     assert completed == [2, 3, 7]
     assert failures == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_pool_limits_logical_executors_and_stop_drains() -> None:
+    release = asyncio.Event()
+    two_entered = asyncio.Event()
+    active = 0
+    maximum_active = 0
+    completed = 0
+    failures: list[BaseException] = []
+    pool = _WorkflowTaskPool("workflow", 2, failures.append, now=_fixed_workflow_time)
+    await pool.start(Context())
+
+    async def task() -> None:
+        nonlocal active, maximum_active, completed
+        active += 1
+        maximum_active = max(maximum_active, active)
+        if active == 2:
+            two_entered.set()
+        await release.wait()
+        completed += 1
+        active -= 1
+
+    for _ in range(5):
+        await pool.add_task(task)
+    await two_entered.wait()
+    assert maximum_active == 2
+    stop = asyncio.create_task(pool.stop(Context()))
+    await asyncio.sleep(0)
+    assert not stop.done()
+    release.set()
+    await stop
+
+    assert completed == 5
+    assert failures == []
+    assert not pool.has_work
+
+
+@pytest.mark.asyncio
+async def test_workflow_pool_propagates_task_failure_and_rejects_canceled_admission() -> None:
+    failures: list[BaseException] = []
+    pool = _WorkflowTaskPool("workflow", 1, failures.append, now=_fixed_workflow_time)
+    await pool.start(Context())
+
+    async def fail() -> None:
+        raise RuntimeError("expected workflow pool failure")
+
+    await pool.add_task(fail)
+    await pool.wait_idle()
+    assert len(failures) == 1
+    assert "expected workflow pool failure" in str(failures[0])
+
+    cancelled = asyncio.Event()
+    cancelled.set()
+    token = request_cancelled.set(cancelled)
+    try:
+        with pytest.raises(PoolCancelledError):
+            await pool.add_task(lambda: _append_async([], 1))
+    finally:
+        request_cancelled.reset(token)
+    await pool.stop(Context())
 
 
 async def _append_async(target: list[int], value: int) -> None:
