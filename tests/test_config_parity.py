@@ -1,4 +1,5 @@
 import pytest
+import warnings
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
@@ -68,3 +69,17 @@ def test_api_connections_count_is_not_defaulted_for_every_connector() -> None:
     )
     assert "connectionsCount" not in data_connector_config_to_api(http_config).to_dict()
     assert data_connector_config_to_api(grpc_config).to_dict()["connectionsCount"] == 1
+
+
+def test_runtime_connector_implementation_serializes_as_a_typed_enum() -> None:
+    config = DataConnectorConfig(
+        id=1,
+        name="temporal",
+        type=DataConnectorType.Temporal,
+        implementation="temporal/python",
+    )
+
+    assert config.implementation is DataConnectorImplementation.TemporalPython
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert config.model_dump(mode="json")["implementation"] == "temporal/python"

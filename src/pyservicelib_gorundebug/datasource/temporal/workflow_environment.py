@@ -505,7 +505,7 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
             return None
         failure = asyncio.create_task(self._failure_event.wait())
         try:
-            await asyncio.wait(
+            await workflow.wait(
                 (result, failure),
                 return_when=asyncio.FIRST_COMPLETED,
             )

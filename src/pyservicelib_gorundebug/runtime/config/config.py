@@ -18,6 +18,7 @@ from ...api.models.data_type import DataType
 from ...api.models.transformation_type import TransformationType
 from ...api.models.stream import Stream
 from ...api.models.data_connector import DataConnector
+from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.endpoint import Endpoint
 from ...api.models.pool import Pool
 from ...api.models.type import Type
@@ -97,7 +98,7 @@ class StreamConfig(Stream):
 
 
 class DataConnectorConfig(DataConnector):
-    implementation: Optional[StrictStr] = Field(default=None)  # type: ignore[assignment]
+    implementation: Optional[DataConnectorImplementation] = Field(default=None)
     properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
