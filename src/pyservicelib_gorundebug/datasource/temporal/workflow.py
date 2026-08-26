@@ -197,7 +197,9 @@ WORKFLOW_SUBMISSION: ContextVar[WorkflowSubmission | None] = ContextVar(
 
 def _endpoint_envelope(value: EndpointEnvelope | dict[str, Any]) -> EndpointEnvelope:
     if isinstance(value, EndpointEnvelope):
-        return value
+        if isinstance(value.payload, bytes):
+            return value
+        return replace(value, payload=bytes(value.payload))
     data = dict(value)
     payload = data.get("payload", b"")
     if not isinstance(payload, bytes):
@@ -209,9 +211,23 @@ def _workflow_endpoint_config(
     value: WorkflowEndpointConfig | dict[str, Any],
 ) -> WorkflowEndpointConfig:
     if isinstance(value, WorkflowEndpointConfig):
-        return value
+        execution_type: Any = value.execution_type
+        if isinstance(execution_type, list) and all(
+            isinstance(character, str) for character in execution_type
+        ):
+            execution_type = "".join(execution_type)
+        if isinstance(execution_type, TemporalExecutionType):
+            return value
+        return replace(
+            value,
+            execution_type=TemporalExecutionType(execution_type),
+        )
     data = dict(value)
     execution_type = data.get("execution_type")
+    if isinstance(execution_type, list) and all(
+        isinstance(character, str) for character in execution_type
+    ):
+        execution_type = "".join(execution_type)
     if not isinstance(execution_type, TemporalExecutionType):
         data["execution_type"] = TemporalExecutionType(execution_type)
     return WorkflowEndpointConfig(**data)
@@ -221,7 +237,14 @@ def direct_workflow_request(
     value: DirectEndpointWorkflowRequest | dict[str, Any],
 ) -> DirectEndpointWorkflowRequest:
     if isinstance(value, DirectEndpointWorkflowRequest):
-        return value
+        return replace(
+            value,
+            envelope=_endpoint_envelope(value.envelope),
+            endpoints=tuple(
+                _workflow_endpoint_config(item) for item in value.endpoints
+            ),
+            runtime_config=dict(value.runtime_config),
+        )
     return DirectEndpointWorkflowRequest(
         connector_name=str(value["connector_name"]),
         envelope=_endpoint_envelope(value["envelope"]),

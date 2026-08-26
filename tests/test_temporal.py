@@ -55,6 +55,7 @@ from pyservicelib_gorundebug.datasource.temporal.workflow_environment import (
     _WorkflowTaskPool,
 )
 from pyservicelib_gorundebug.datasource.temporal.workflow import (
+    direct_workflow_request,
     execute_workflow_graph_endpoint,
 )
 from pyservicelib_gorundebug.runtime.context.context import Context
@@ -70,6 +71,39 @@ from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
 
 def test_temporal_cron_preserves_portable_minute_semantics() -> None:
     assert _temporal_cron_expression("  */5   * * * * ") == "0 */5 * * * *"
+
+
+def test_typed_workflow_request_normalizes_nested_converter_values() -> None:
+    request = _DirectEndpointWorkflowRequest(
+        "Temporal",
+        EndpointEnvelope(
+            1,
+            14,
+            "message-1",
+            "stream-1",
+            0,
+            payload=list(b"payload"),  # type: ignore[arg-type]
+        ),
+        (
+            _WorkflowEndpointConfig(
+                10,
+                "Sequential Activity A",
+                "automation-activity-jobs",
+                list("Activity"),  # type: ignore[arg-type]
+                "temporal.endpoint.sequential_activity_a.v1",
+                "",
+                60_000,
+                30_000,
+                5_000,
+                3,
+            ),
+        ),
+    )
+
+    normalized = direct_workflow_request(request)
+
+    assert normalized.envelope.payload == b"payload"
+    assert normalized.endpoints[0].execution_type is TemporalExecutionType.ACTIVITY
 
 
 def test_workflow_identity_uses_connector_endpoint_and_business_message_id() -> None:
