@@ -13,6 +13,7 @@ changes the target node's business function.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from collections.abc import Awaitable, Callable
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from opentelemetry import trace as otel_trace
-from temporalio import activity
+from temporalio import activity, workflow
 from temporalio.contrib.opentelemetry import OpenTelemetryPlugin
 from temporalio.client import (
     Client,
@@ -54,7 +55,7 @@ from ...runtime.durable_context import (
     DurableCallDiagnostics,
     run_durable_call_activity,
 )
-from ...runtime.environment.log import err_field, str_field
+from ...runtime.environment.log import Field, Logger, err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
 from .context_propagation import TemporalContextPropagationInterceptor
 from .workflow import (
@@ -86,6 +87,56 @@ _SDK_METRICS_BIND_ADDRESS_ENVIRONMENT = "TEMPORAL_SDK_METRICS_BIND_ADDRESS"
 _SDK_RUNTIME_LOCK = threading.Lock()
 _SDK_RUNTIME: Runtime | None = None
 _SDK_RUNTIME_ADDRESS: str | None = None
+_WORKFLOW_LOGGING_LOCK = threading.Lock()
+_WORKFLOW_LOGGING_CONFIGURED = False
+
+
+class _ServiceLibWorkflowLogHandler(logging.Handler):
+    """Route the SDK's replay-aware Workflow records through ServiceLib."""
+
+    def __init__(self, logger: Logger) -> None:
+        super().__init__(logging.DEBUG)
+        self._logger = logger
+
+    def emit(self, record: logging.LogRecord) -> None:
+        fields: list[Field] = []
+        for values in (
+            getattr(record, "temporal_workflow", None),
+            getattr(record, "servicelib", None),
+        ):
+            if isinstance(values, dict):
+                fields.extend(
+                    str_field(str(key), str(value))
+                    for key, value in sorted(values.items())
+                )
+        message = record.getMessage()
+        if record.levelno >= logging.ERROR:
+            self._logger.error(message, *fields)
+        elif record.levelno >= logging.WARNING:
+            self._logger.warn(message, *fields)
+        elif record.levelno >= logging.INFO:
+            self._logger.info(message, *fields)
+        else:
+            self._logger.debug(message, *fields)
+
+
+def _configure_workflow_logging(logger: Logger) -> None:
+    """Install one process-side sink for Temporal's Workflow logger."""
+
+    global _WORKFLOW_LOGGING_CONFIGURED
+    with _WORKFLOW_LOGGING_LOCK:
+        if _WORKFLOW_LOGGING_CONFIGURED:
+            return
+        base = workflow.logger.base_logger
+        base.addHandler(_ServiceLibWorkflowLogHandler(logger))
+        base.setLevel(logging.DEBUG)
+        base.propagate = False
+        workflow.logger.workflow_info_on_message = False
+        # The SDK suppresses replay records before entering logging. Running
+        # handlers outside the sandbox is its supported integration point for
+        # process-owned logging backends.
+        workflow.logger.unsafe_disable_sandbox(True)
+        _WORKFLOW_LOGGING_CONFIGURED = True
 
 
 def _endpoint_owner(connector_name: str, endpoint_name: str) -> str:
@@ -341,6 +392,7 @@ class Connector(ManagedDataConnector):
     async def start(self, ctx: Context) -> None:
         if self._started:
             return
+        _configure_workflow_logging(self._environment.log)
         cfg = self._config()
         tls = self._tls_config(cfg)
         context_interceptor = TemporalContextPropagationInterceptor(

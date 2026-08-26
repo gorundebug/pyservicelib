@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -475,10 +476,22 @@ async def execute_workflow_graph_endpoint(
     deadline_token = request_deadline.set(deadline)
     cancelled_token = request_cancelled.set(asyncio.Event())
     carrier = current_workflow_carrier()
-    sampled = data_source_endpoint_tracing_enabled(
-        environment, stream.endpoint_id
-    ) or sampling_requested_by_carrier(carrier)
-    with sampling_scope(sampled):
+    tracing = getattr(environment, "tracing", None)
+    with ExitStack() as scopes:
+        remote_sampled = scopes.enter_context(
+            tracing.extract(carrier)
+            if tracing is not None and carrier
+            else nullcontext(False)
+        )
+        scopes.enter_context(
+            sampling_scope(
+                data_source_endpoint_tracing_enabled(
+                    environment, stream.endpoint_id
+                )
+                or sampling_requested_by_carrier(carrier)
+                or remote_sampled
+            )
+        )
         await environment.start(Context())
         execution_error: BaseException | None = None
         try:
