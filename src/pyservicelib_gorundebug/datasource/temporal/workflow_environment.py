@@ -645,11 +645,30 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
                 *self._task_pools.values(),
                 *self._priority_task_pools.values(),
             ]
-            if not self._tasks and not any(pool.has_work for pool in pools):
-                await asyncio.sleep(0)
-                if not self._tasks and not any(pool.has_work for pool in pools):
-                    return
-            await asyncio.sleep(0)
+            tasks = tuple(self._tasks)
+            active_pools = tuple(pool for pool in pools if pool.has_work)
+            if not tasks and not active_pools:
+                return
+
+            # A zero-duration asyncio sleep is not a Temporal command.  A loop
+            # around sleep(0) can therefore keep the Workflow activation busy
+            # until the SDK deadlock detector fires while an Activity is still
+            # pending.  Await the actual graph work instead.  Work completed by
+            # this snapshot may enqueue another task, so the outer loop checks
+            # quiescence again before returning.
+            # Temporal's workflow.wait is the deterministic SDK replacement
+            # for asyncio.wait. It suspends the Workflow activation while the
+            # already-running graph branches are pending.
+            if tasks:
+                done, _pending = await workflow.wait(tasks)
+                for task in done:
+                    if task.cancelled():
+                        continue
+                    error = task.exception()
+                    if error is not None:
+                        self._record_failure(error)
+            for pool in active_pools:
+                await pool.wait_idle()
 
     def _record_failure(self, error: BaseException) -> None:
         if self._failure is None:
