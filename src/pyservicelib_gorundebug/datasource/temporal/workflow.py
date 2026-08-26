@@ -141,6 +141,10 @@ class WorkflowGraphEnvironment(Protocol):
 
     async def finish(self) -> None: ...
 
+    async def wait_for_completion(
+        self, result: asyncio.Future[Any] | None
+    ) -> Any: ...
+
 
 class _WorkflowResultConsumer(Consumer[Any]):
     def __init__(self, future: asyncio.Future[Any]) -> None:
@@ -496,9 +500,9 @@ async def execute_workflow_graph_endpoint(
         execution_error: BaseException | None = None
         try:
             await activate(envelope)
+            value = await environment.wait_for_completion(result)
             if result is None:
                 return EndpointResult()
-            value = await result
             if result_stream is None:
                 raise RuntimeError("Temporal Workflow result stream disappeared")
             return EndpointResult(bytes(result_stream.serde.serialize(value)))
@@ -511,10 +515,11 @@ async def execute_workflow_graph_endpoint(
             except BaseException as cleanup_error:
                 if execution_error is None:
                     raise
-                raise BaseExceptionGroup(
-                    "Temporal Workflow execution and graph cleanup both failed",
-                    [execution_error, cleanup_error],
-                ) from cleanup_error
+                if cleanup_error is not execution_error:
+                    raise BaseExceptionGroup(
+                        "Temporal Workflow execution and graph cleanup both failed",
+                        [execution_error, cleanup_error],
+                    ) from cleanup_error
             finally:
                 request_cancelled.reset(cancelled_token)
                 request_deadline.reset(deadline_token)

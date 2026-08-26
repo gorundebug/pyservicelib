@@ -271,6 +271,50 @@ def test_workflow_stream_registry_matches_service_virtual_stream_semantics() -> 
 
 
 @pytest.mark.asyncio
+async def test_workflow_completion_is_woken_by_async_graph_failure() -> None:
+    environment = TemporalWorkflowEnvironment.__new__(TemporalWorkflowEnvironment)
+    environment._failure = None  # type: ignore[attr-defined]
+    environment._failure_event = asyncio.Event()  # type: ignore[attr-defined]
+    environment._tasks = set()  # type: ignore[attr-defined]
+    environment._task_pools = {}  # type: ignore[attr-defined]
+    environment._priority_task_pools = {}  # type: ignore[attr-defined]
+    result: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    failure = RuntimeError("expected asynchronous graph failure")
+
+    waiter = asyncio.create_task(environment.wait_for_completion(result))
+    await asyncio.sleep(0)
+    environment._record_failure(failure)  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="expected asynchronous graph failure"):
+        await waiter
+
+
+@pytest.mark.asyncio
+async def test_workflow_result_waits_for_async_graph_quiescence() -> None:
+    environment = TemporalWorkflowEnvironment.__new__(TemporalWorkflowEnvironment)
+    environment._failure = None  # type: ignore[attr-defined]
+    environment._failure_event = asyncio.Event()  # type: ignore[attr-defined]
+    environment._task_pools = {}  # type: ignore[attr-defined]
+    environment._priority_task_pools = {}  # type: ignore[attr-defined]
+    branch_finished = asyncio.Event()
+
+    async def branch() -> None:
+        await asyncio.sleep(0)
+        branch_finished.set()
+
+    task = asyncio.create_task(branch())
+    environment._tasks = {task}  # type: ignore[attr-defined]
+    task.add_done_callback(
+        lambda completed: environment._tasks.discard(completed)  # type: ignore[attr-defined]
+    )
+    result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    result.set_result("done")
+
+    assert await environment.wait_for_completion(result) == "done"
+    assert branch_finished.is_set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("endpoint_enabled", "carrier"),
     ((True, {}), (False, {"x-trace": "1"})),
@@ -292,6 +336,11 @@ async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
 
         async def finish(self) -> None:
             pass
+
+        async def wait_for_completion(
+            self, result: asyncio.Future[object] | None
+        ) -> object | None:
+            return None if result is None else await result
 
     class Stream:
         endpoint_id = 17

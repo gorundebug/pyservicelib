@@ -324,6 +324,7 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
         self._managed_connectors: dict[int, ManagedDataConnector] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._failure: BaseException | None = None
+        self._failure_event = asyncio.Event()
         self._log = WorkflowLogger()
         self._metrics = WorkflowMetrics()
         self._tracing = WorkflowTracing()
@@ -488,6 +489,35 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
         if self._failure is not None:
             raise self._failure
 
+    async def wait_for_completion(
+        self, result: asyncio.Future[Any] | None
+    ) -> Any:
+        """Wait for the endpoint result and every asynchronous graph branch.
+
+        A pooled or parallel failure must wake a Workflow endpoint that would
+        otherwise wait forever for its result. After a result arrives we still
+        wait for quiescence so a concurrent failed branch cannot be hidden by
+        a faster successful result.
+        """
+
+        if result is None:
+            await self._wait_for_quiescence()
+            return None
+        failure = asyncio.create_task(self._failure_event.wait())
+        try:
+            await asyncio.wait(
+                (result, failure),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self._failure is not None:
+                raise self._failure
+            value = await result
+            await self._wait_for_quiescence()
+            return value
+        finally:
+            if not failure.done():
+                failure.cancel()
+
     async def stop(self, ctx: Context) -> None:
         del ctx
         await self.finish()
@@ -624,3 +654,4 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
     def _record_failure(self, error: BaseException) -> None:
         if self._failure is None:
             self._failure = error
+            self._failure_event.set()
