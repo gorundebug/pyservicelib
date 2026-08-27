@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
-from typing import Any, Optional, cast
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, Protocol, cast
 
 from ...runtime.common import (
     CollectFunc,
@@ -19,6 +19,7 @@ from ...runtime.common import (
     DataSource,
     RuntimeEndpointConsumer,
     ServiceExecutionEnvironment,
+    StreamContext,
     TypedInputStream,
 )
 from ...runtime.context import (
@@ -62,6 +63,30 @@ class _ResultConsumer[R](Consumer[R]):
 
     async def consume(self, value: R) -> None:
         self._owner.consume_result(value)
+
+
+class EndpointHandler[HandlerState, T, R, E](Protocol):
+    """User-owned lifecycle invoked before a Temporal value enters the graph."""
+
+    async def begin_request(
+        self, ctx: Context, sc: StreamContext[T, R, E]
+    ) -> tuple[Context, HandlerState]: ...
+
+    async def consume_message(
+        self,
+        ctx: Context,
+        sc: StreamContext[T, R, E],
+        handler_state: HandlerState,
+        value: T,
+    ) -> None: ...
+
+    async def end_request(
+        self,
+        ctx: Context,
+        sc: StreamContext[T, R, E],
+        err: Optional[Exception],
+        handler_state: HandlerState,
+    ) -> None: ...
 
 
 class _TemporalEndpointConsumer[Input, T, R, E](
@@ -240,6 +265,46 @@ def make_direct_endpoint_consumer[T, R, E](
         stream,
         lambda envelope: stream.serde.deserialize(envelope.payload),
         stream.consume,
+        workflow_class,
+    )
+
+
+def make_direct_endpoint_consumer_with_handler[HandlerState, T, R, E](
+    stream: TypedInputStream[T, R, E],
+    handler: EndpointHandler[HandlerState, T, R, E],
+    workflow_class: type[Any] | None = None,
+) -> Consumer[T]:
+    """Register a direct Temporal adapter through the user endpoint lifecycle."""
+
+    sc = StreamContext[T, R, E](
+        stream=stream,
+        result_stream=stream.get_result_stream(),
+        collect=CollectFunc[T](stream.consume),
+        error_collect=CollectFunc[E](stream.error_stream.consume),
+    )
+
+    async def invoke(value: T) -> None:
+        deadline = request_deadline.get()
+        timeout = None
+        if deadline is not None:
+            timeout = timedelta(
+                seconds=max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
+            )
+        ctx = Context(timeout)
+        handler_ctx, handler_state = await handler.begin_request(ctx, sc)
+        error: Optional[Exception] = None
+        try:
+            await handler.consume_message(handler_ctx, sc, handler_state, value)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            await handler.end_request(handler_ctx, sc, error, handler_state)
+
+    return _make_endpoint_consumer(
+        stream,
+        lambda envelope: stream.serde.deserialize(envelope.payload),
+        invoke,
         workflow_class,
     )
 
