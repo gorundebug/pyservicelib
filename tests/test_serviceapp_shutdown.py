@@ -54,13 +54,20 @@ async def test_shutdown_reports_failed_resource() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_reports_timeout_but_still_drains_resource() -> None:
+async def test_shutdown_timeout_cancels_resource_and_returns() -> None:
     logger = RecordingLogger()
     release = asyncio.Event()
     completed = asyncio.Event()
 
     async def hang() -> None:
-        await release.wait()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                # A misbehaving resource may defer cancellation while it
+                # releases its own state. It still cannot extend the
+                # service-wide shutdown deadline.
+                continue
         completed.set()
 
     stopped = asyncio.create_task(
@@ -71,10 +78,12 @@ async def test_shutdown_reports_timeout_but_still_drains_resource() -> None:
         )
     )
     await asyncio.sleep(0.02)
-    assert not stopped.done()
+    assert stopped.done()
     release.set()
-    await asyncio.wait_for(stopped, timeout=1)
+    await stopped
 
+    assert not completed.is_set()
+    await asyncio.sleep(0)
     assert completed.is_set()
     assert any(
         message == "shutdown operation timed out"

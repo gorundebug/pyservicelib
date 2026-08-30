@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import timezone
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from ...runtime.common import (
     Consumer,
@@ -40,11 +41,29 @@ from ...runtime.serde import TypedStreamSerde
 
 
 class _TemporalDataSink(OutputDataSink):
+    def __init__(
+        self, connector_id: int, environment: ServiceExecutionEnvironment
+    ) -> None:
+        super().__init__(connector_id, environment)
+        self._active: set[asyncio.Task[Any]] = set()
+
     async def start(self, ctx: Context) -> None:
         del ctx
 
     async def stop(self, ctx: Context) -> None:
         del ctx
+        while self._active:
+            await asyncio.gather(*tuple(self._active), return_exceptions=True)
+
+    def enter(self) -> asyncio.Task[Any]:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Temporal sink submission has no asyncio task")
+        self._active.add(task)
+        return task
+
+    def leave(self, task: asyncio.Task[Any]) -> None:
+        self._active.discard(task)
 
 
 class EndpointHandler[HandlerState, T](Protocol):
@@ -89,6 +108,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
     def __init__(
         self,
         endpoint: DataSinkEndpoint,
+        datasink: _TemporalDataSink,
         connector: Connector,
         stream: TypedSinkStream[T, E] | TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, T],
@@ -97,6 +117,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         emit_result: Optional[Callable[[R], Awaitable[None]]],
     ) -> None:
         self._endpoint = endpoint
+        self._datasink = datasink
         self._connector = connector
         self._stream = stream
         self._handler = handler
@@ -120,6 +141,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         return self.endpoint.id
 
     async def consume(self, value: T) -> None:
+        active_task = self._datasink.enter()
         started = self.endpoint.on_request_start()
         error: Optional[Exception] = None
         _, span = start_endpoint_span(
@@ -171,15 +193,20 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
                 await self._handler.end_request(self._stream, error, state)
             span.end()
             self.endpoint.on_request_end(started, error)
+            self._datasink.leave(active_task)
 
 
 def _get_or_create_datasink(
     connector_id: int,
     environment: ServiceExecutionEnvironment,
-) -> tuple[DataSink, Connector]:
+) -> tuple[_TemporalDataSink, Connector]:
     connector = make_connector(connector_id, environment)
     existing = environment.get_datasink(connector_id)
     if existing is not None:
+        if not isinstance(existing, _TemporalDataSink):
+            raise ValueError(
+                f"data sink id={connector_id} is not a Temporal data sink"
+            )
         return existing, connector
     datasink = _TemporalDataSink(connector_id, environment)
     environment.add_datasink(datasink)
@@ -189,7 +216,7 @@ def _get_or_create_datasink(
 def _create_endpoint(
     stream: TypedSinkStream[object, object]
     | TypedSinkStreamWithResult[object, object, object],
-) -> tuple[DataSinkEndpoint, Connector]:
+) -> tuple[DataSinkEndpoint, _TemporalDataSink, Connector]:
     environment = stream.environment
     cfg = environment.config.get_endpoint_config_by_id(stream.endpoint_id)
     datasink, connector = _get_or_create_datasink(cfg.id_data_connector, environment)
@@ -198,7 +225,7 @@ def _create_endpoint(
     endpoint = DataSinkEndpoint(datasink, cfg.id)
     datasink.add_endpoint(endpoint)
     connector.register_endpoint_submission(cfg.id)
-    return endpoint, connector
+    return endpoint, datasink, connector
 
 
 def make_endpoint_consumer[HandlerState, T, E](
@@ -207,9 +234,9 @@ def make_endpoint_consumer[HandlerState, T, E](
 ) -> Consumer[T]:
     """Create a submission-only Temporal endpoint sink."""
 
-    endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
+    endpoint, datasink, connector = _create_endpoint(stream)  # type: ignore[arg-type]
     consumer = _TemporalSinkConsumer[HandlerState, T, object, E](
-        endpoint, connector, stream, handler, stream.serde, None, None
+        endpoint, datasink, connector, stream, handler, stream.serde, None, None
     )
     endpoint.add_endpoint_consumer(consumer)
     stream.set_sink_consumer(consumer)
@@ -229,9 +256,10 @@ def make_endpoint_consumer_with_result[HandlerState, T, R, E](
 ) -> Consumer[T]:
     """Create a Temporal sink that emits the existing endpoint result."""
 
-    endpoint, connector = _create_endpoint(stream)  # type: ignore[arg-type]
+    endpoint, datasink, connector = _create_endpoint(stream)  # type: ignore[arg-type]
     consumer = _TemporalSinkConsumer[HandlerState, T, R, E](
         endpoint,
+        datasink,
         connector,
         stream,
         handler,

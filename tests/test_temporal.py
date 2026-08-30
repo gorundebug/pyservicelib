@@ -506,6 +506,73 @@ async def test_workflow_temporal_sinks_await_sequential_and_fanout_results(
     assert [result.payload for result in fanout] == [b"start-a-b", b"start-a-c"]
 
 
+@pytest.mark.asyncio
+async def test_sink_with_result_contract_matches_activity_and_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def execute_activity(
+        _activity_type: str, envelope: EndpointEnvelope, **_options: object
+    ) -> EndpointResult:
+        return EndpointResult(envelope.payload + b"-activity")
+
+    async def execute_child_workflow(
+        _workflow_type: str,
+        request: _DirectEndpointWorkflowRequest,
+        **_options: object,
+    ) -> EndpointResult:
+        return EndpointResult(request.envelope.payload + b"-workflow")
+
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.workflow.workflow.execute_activity",
+        execute_activity,
+    )
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.datasource.temporal.workflow.workflow.execute_child_workflow",
+        execute_child_workflow,
+    )
+    submission = _WorkflowSubmission(
+        "temporal",
+        {
+            1: _WorkflowEndpointConfig(
+                1,
+                "activityResult",
+                "automation",
+                TemporalExecutionType.ACTIVITY,
+                "temporal.endpoint.activity_result.v1",
+                "",
+                10_000,
+                1_000,
+                0,
+                1,
+            ),
+            2: _WorkflowEndpointConfig(
+                2,
+                "workflowResult",
+                "automation",
+                TemporalExecutionType.WORKFLOW,
+                "",
+                "temporal.endpoint.workflow_result.v1",
+                10_000,
+                1_000,
+                0,
+                1,
+            ),
+        },
+    )
+    activity_result = await _submit_endpoint_from_workflow(
+        submission,
+        1,
+        EndpointEnvelope(1, 1, "activity-result", "contract", 0, payload=b"value"),
+    )
+    workflow_result = await _submit_endpoint_from_workflow(
+        submission,
+        2,
+        EndpointEnvelope(1, 2, "workflow-result", "contract", 0, payload=b"value"),
+    )
+    assert activity_result.payload == b"value-activity"
+    assert workflow_result.payload == b"value-workflow"
+
+
 class _Config:
     def __init__(self) -> None:
         self.connector = SimpleNamespace(

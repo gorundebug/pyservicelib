@@ -29,7 +29,11 @@ from ...runtime.common import (
     TypedInputStream,
 )
 from ...runtime.context import Context
-from ...runtime.context.request import new_stream_id, with_stream_id
+from ...runtime.context.request import (
+    new_stream_id,
+    stream_id_from_context,
+    with_stream_id,
+)
 from ...runtime.datasource import (
     DataSourceEndpoint,
     DataSourceEndpointConsumer,
@@ -74,18 +78,40 @@ class _CronDataSource(InputDataSource):
             raise
 
     async def stop(self, ctx: Context) -> None:
-        del ctx
         if not self._started:
             return
         self._started = False
         scheduler = self._scheduler
         self._scheduler = None
+        endpoints = [cast(_CronEndpoint, endpoint) for endpoint in self.endpoints]
+        for endpoint in endpoints:
+            endpoint.stop_admission()
         if scheduler is not None and scheduler.running:
-            scheduler.shutdown(wait=True)
+            scheduler.pause()
+            scheduler.remove_all_jobs()
+        drains = [asyncio.create_task(endpoint.stop()) for endpoint in endpoints]
+        timed_out = False
+        if drains:
+            done, pending = await asyncio.wait(drains, timeout=ctx.time_left)
+            timed_out = bool(pending)
+            if timed_out:
+                self.environment.log.warn(
+                    "cron datasource stopped by shutdown timeout",
+                    str_field("datasource", self.name),
+                )
+                for task in pending:
+                    task.cancel()
+                    task.add_done_callback(self._consume_stop_result)
+            for task in done:
+                task.result()
+        if scheduler is not None and scheduler.running:
+            scheduler.shutdown(wait=not timed_out)
             await asyncio.sleep(0)
-        await asyncio.gather(
-            *(cast(_CronEndpoint, endpoint).stop() for endpoint in self.endpoints)
-        )
+
+    @staticmethod
+    def _consume_stop_result(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
 
 
 class _PortableCronTrigger(BaseTrigger):
@@ -109,6 +135,7 @@ class _CronEndpoint(DataSourceEndpoint):
     _active: set[asyncio.Task[None]]
     _scheduled: deque[datetime]
     _job_id: str
+    _accepting: bool
 
     def __init__(self, datasource: _CronDataSource, endpoint_id: int):
         super().__init__(datasource, endpoint_id)
@@ -116,11 +143,13 @@ class _CronEndpoint(DataSourceEndpoint):
         self._active = set()
         self._scheduled = deque()
         self._job_id = f"{datasource.id}:{endpoint_id}"
+        self._accepting = False
 
     def register(self, scheduler: AsyncIOScheduler) -> None:
         cfg = self.config
         if not bool(getattr(cfg, "enabled", False)):
             return
+        self._accepting = True
         schedule = str(getattr(cfg, "schedule"))
         timezone_name = str(getattr(cfg, "timezone"))
         trigger = _PortableCronTrigger(schedule, timezone_name)
@@ -148,12 +177,12 @@ class _CronEndpoint(DataSourceEndpoint):
             ),
         )
 
+    def stop_admission(self) -> None:
+        self._accepting = False
+
     async def stop(self) -> None:
-        tasks = list(self._active)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        while self._active:
+            await asyncio.gather(*tuple(self._active), return_exceptions=True)
         self._active.clear()
         self._scheduled.clear()
 
@@ -163,6 +192,8 @@ class _CronEndpoint(DataSourceEndpoint):
         self._scheduled.extend(event.scheduled_run_times)
 
     async def _scheduled_fire(self) -> None:
+        if not self._accepting:
+            return
         task = asyncio.current_task()
         if task is None:
             raise RuntimeError(f"cron endpoint {self.name!r} has no asyncio task")
@@ -216,6 +247,8 @@ class _CronEndpoint(DataSourceEndpoint):
 class _CronEndpointConsumer[T, R, E](DataSourceEndpointConsumer[T, R, E]):
     _function: ScheduleEndpointFunction[T]
     _out: Collect[T]
+    _result_stream: object | None
+    _pending: dict[str, asyncio.Future[R]]
 
     def __init__(
         self,
@@ -226,13 +259,61 @@ class _CronEndpointConsumer[T, R, E](DataSourceEndpointConsumer[T, R, E]):
         super().__init__(endpoint, input_stream)
         self._function = function
         self._out = CollectFunc(self.consume)
+        self._pending = {}
+        self._result_stream = input_stream.get_result_stream()
+        if self._result_stream is not None:
+            input_stream.set_result_consumer(_CronResultConsumer(self))
 
     @property
     def id(self) -> int:
         return self.endpoint.id
 
     async def on_trigger(self, trigger: ScheduleTrigger) -> None:
-        await self._function.on_trigger(trigger, self._out)
+        if self._result_stream is None:
+            await self._function.on_trigger(trigger, self._out)
+            return
+        stream_id = stream_id_from_context()
+        if not stream_id:
+            self.endpoint.on_missing_stream_id()
+            raise RuntimeError(
+                f"cron endpoint {self.endpoint.name!r} has no stream id"
+            )
+        if stream_id in self._pending:
+            raise RuntimeError(
+                f"cron endpoint {self.endpoint.name!r} already has active "
+                f"execution {stream_id!r}"
+            )
+        future = asyncio.get_running_loop().create_future()
+        self._pending[stream_id] = future
+        self.endpoint.on_pending_add(stream_id)
+        try:
+            await self._function.on_trigger(trigger, self._out)
+            await future
+        finally:
+            self._pending.pop(stream_id, None)
+            self.endpoint.on_pending_remove(stream_id)
+
+    def consume_result(self, value: R) -> None:
+        stream_id = stream_id_from_context()
+        if not stream_id:
+            self.endpoint.on_missing_stream_id()
+            return
+        future = self._pending.get(stream_id)
+        if future is None:
+            self.endpoint.on_late_result(stream_id)
+            return
+        if future.done():
+            self.endpoint.on_duplicate_message_id(stream_id, stream_id)
+            return
+        future.set_result(value)
+
+
+class _CronResultConsumer[T, R, E](Consumer[R]):
+    def __init__(self, consumer: _CronEndpointConsumer[T, R, E]) -> None:
+        self._consumer = consumer
+
+    async def consume(self, value: R) -> None:
+        self._consumer.consume_result(value)
 
 
 def APSchedulerEndpointConsumer[T, R, E](

@@ -435,6 +435,11 @@ class Connector(ManagedDataConnector):
                     max_concurrent_workflow_tasks=(
                         _integer(cfg, "max_concurrent_workflows") or None
                     ),
+                    graceful_shutdown_timeout=timedelta(
+                        milliseconds=max(
+                            0, self._environment.service_config.shutdown_timeout
+                        )
+                    ),
                     interceptors=[context_interceptor],
                 )
                 self._workers.append(worker)

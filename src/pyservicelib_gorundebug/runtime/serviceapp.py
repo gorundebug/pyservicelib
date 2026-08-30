@@ -43,7 +43,7 @@ from .config import (
 )
 from .context import Context
 from .environment import AdmissionLifecycle, Lifecycle, ServiceDependency
-from .environment.log import Logger, LogsEngine, err_field, str_field
+from .environment.log import Logger, LogsEngine, err_field, int_field, str_field
 from .environment.metrics import MetricsEngine
 from .environment.metrics.metrics import Int64Counter, Metrics
 from .environment.tracing import Tracing, TracingEngine
@@ -70,6 +70,11 @@ from .telemetry import create_prometheus_metrics_engine
 type ShutdownOperation = tuple[str, Coroutine[Any, Any, None]]
 
 
+def consume_detached_shutdown_result(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
 async def run_shutdown_operations(
     logger: Logger,
     ctx: Context,
@@ -91,7 +96,7 @@ async def run_shutdown_operations(
     except asyncio.CancelledError:
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+            task.add_done_callback(consume_detached_shutdown_result)
         raise
 
     for task in done:
@@ -116,9 +121,9 @@ async def run_shutdown_operations(
         )
 
     if pending:
-        # A shutdown deadline is diagnostic, not permission to detach a
-        # coroutine that can still reference the service graph.
-        await asyncio.gather(*pending, return_exceptions=True)
+        for task in pending:
+            task.cancel()
+            task.add_done_callback(consume_detached_shutdown_result)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -539,19 +544,18 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     async def stop(self, ctx: Context) -> None:
         ctx = ctx.bounded(timedelta(milliseconds=self.service_config.shutdown_timeout))
 
-        # Phase 1: concurrent — loader, pools, components, sources, HTTP server
-        phase1: list[ShutdownOperation] = [
+        # Phase 1: close network admission and let already accepted HTTP/gRPC
+        # requests finish while their endpoint state, graph pools and sinks are
+        # still available. Stopping those resources concurrently with the
+        # listeners can discard a pending result that an active request needs.
+        admission: list[ShutdownOperation] = [
             ("config_loader", self._loader.stop()),
-            ("delay_pool", self._delay_pool.stop(ctx)),
         ]
-        for name, pool in self._task_pools.items():
-            phase1.append((f"task_pool:{name}", pool.stop(ctx)))
-        for name, pool in self._priority_task_pools.items():  # type: ignore[assignment]
-            phase1.append((f"priority_task_pool:{name}", pool.stop(ctx)))
         deferred_components: list[AdmissionLifecycle] = []
+        regular_components: list[Lifecycle] = []
         for component in self._components:
             if isinstance(component, AdmissionLifecycle):
-                phase1.append(
+                admission.append(
                     (
                         f"component_admission:{type(component).__name__}",
                         component.stop_admission(ctx),
@@ -559,28 +563,60 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                 )
                 deferred_components.append(component)
             else:
-                phase1.append(
-                    (f"component:{type(component).__name__}", component.stop(ctx))
-                )
-        for ds in self._dataSources.values():
-            phase1.append((f"datasource:{ds.name}", ds.stop(ctx)))
+                regular_components.append(component)
         if self._aiohttp_runner is not None:
-            phase1.append(("http_server", self._aiohttp_runner.cleanup()))
-        await run_shutdown_operations(self._log, ctx, phase1)
+            admission.append(("http_server", self._aiohttp_runner.cleanup()))
+        await run_shutdown_operations(self._log, ctx, admission)
+
+        # Each source now closes its own admission and drains its active root
+        # invocations. Network endpoint pending-result state remains alive
+        # until the HTTP/gRPC server drain above has completed.
+        sources: list[ShutdownOperation] = []
+        for ds in self._dataSources.values():
+            sources.append((f"datasource:{ds.name}", ds.stop(ctx)))
+        sources.extend(
+            (f"component:{type(component).__name__}", component.stop(ctx))
+            for component in regular_components
+        )
+        await run_shutdown_operations(self._log, ctx, sources)
 
         # Sources and managed pools no longer admit root work. ParallelCall
         # tasks may create nested ParallelCall tasks, so drain snapshots until
         # the service-level registry is empty before stopping sinks.
         while self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+            snapshot = tuple(self._tasks)
+            done, pending = await asyncio.wait(snapshot, timeout=ctx.time_left)
+            if pending:
+                self._log.warn(
+                    "service graph drain timed out",
+                    int_field("tasks_count", len(pending)),
+                )
+                for task in pending:
+                    task.cancel()
+                    task.add_done_callback(consume_detached_shutdown_result)
+                break
+            await asyncio.gather(*done, return_exceptions=True)
 
-        # Phase 2: concurrent — sinks
+        # Phase 2: graph admission is closed and detached work is drained;
+        # pools, sinks and the remaining component/storage state can stop.
         phase2: list[ShutdownOperation] = [
-            (f"datasink:{ds.name}", ds.stop(ctx)) for ds in self._dataSinks.values()
+            ("delay_pool", self._delay_pool.stop(ctx)),
         ]
+        phase2.extend(
+            (f"datasink:{ds.name}", ds.stop(ctx))
+            for ds in self._dataSinks.values()
+        )
+        for name, pool in self._task_pools.items():
+            phase2.append((f"task_pool:{name}", pool.stop(ctx)))
+        for name, pool in self._priority_task_pools.items():  # type: ignore[assignment]
+            phase2.append((f"priority_task_pool:{name}", pool.stop(ctx)))
         phase2.extend(
             (f"component:{type(component).__name__}", component.stop(ctx))
             for component in deferred_components
+        )
+        phase2.extend(
+            (f"storage:{type(storage).__name__}", storage.stop(ctx))
+            for storage in self._storages
         )
         await run_shutdown_operations(self._log, ctx, phase2)
 
