@@ -120,6 +120,28 @@ async def test_metrics_scope_observable_gauge():
 
 
 @pytest.mark.asyncio
+async def test_same_observable_gauge_exports_every_label_set():
+    engine = create_prometheus_metrics_engine("Test Service")
+    metrics = engine.metrics
+    metrics.scope("endpoint", {"name": "first"}).observable_float64_gauge(
+        "oldest_seconds", "Oldest pending request", lambda: 1.25
+    )
+    metrics.scope("endpoint", {"name": "second"}).observable_float64_gauge(
+        "oldest_seconds", "Oldest pending request", lambda: 2.5
+    )
+
+    rendered = engine.metrics_handler().decode()
+    samples = [
+        line
+        for line in rendered.splitlines()
+        if line.startswith("endpoint_oldest_seconds{")
+    ]
+    assert any('name="first"' in line and line.endswith(" 1.25") for line in samples)
+    assert any('name="second"' in line and line.endswith(" 2.5") for line in samples)
+    await engine.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_metrics_handler_bytes():
     engine = create_prometheus_metrics_engine("Test Service")
     engine.metrics.scope("test", {}).counter(

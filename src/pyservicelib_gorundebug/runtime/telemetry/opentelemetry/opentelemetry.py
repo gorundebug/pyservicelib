@@ -258,6 +258,29 @@ class _Float64GaugeVec(Float64GaugeVec):
                 self._count -= 1
 
 
+class _ObservableFloat64GaugeVec:
+    __slots__ = ('_callbacks', '_lock', '_obs')
+
+    def __init__(self) -> None:
+        self._callbacks: dict[str, tuple[dict[str, str], Callable[[], float]]] = {}
+        self._lock = threading.Lock()
+        self._obs = None
+
+    def add(self, labels: Labels, fn: Callable[[], float]) -> None:
+        key = _labels_key(labels)
+        with self._lock:
+            if key in self._callbacks:
+                raise ValueError(
+                    f'observable gauge already registered for labels {labels!r}'
+                )
+            self._callbacks[key] = (dict(labels), fn)
+
+    def observations(self) -> list[Observation]:
+        with self._lock:
+            callbacks = list(self._callbacks.values())
+        return [Observation(fn(), labels) for labels, fn in callbacks]
+
+
 # ── Float64Histogram ──────────────────────────────────────────────────────────
 
 class _Float64Histogram(Float64Histogram):
@@ -370,22 +393,21 @@ class _MetricsScope(MetricsScope):
 
     def observable_float64_gauge(self, name: str, help: str, fn: Callable[[], float]) -> None:
         full = self._full_name(name)
-        base = self._base
-        self._otel.meter.create_observable_gauge(
-            full, description=help,
-            callbacks=[lambda _opts, _fn=fn, _base=base: [Observation(_fn(), _base)]],  # type: ignore[misc]
-        )
+        self._otel.observable_float64_gauge(full, help, self._base, fn)
 
 
 # ── OtelMetrics ───────────────────────────────────────────────────────────────
 
 class _OtelMetrics(Metrics):
-    __slots__ = ('meter', '_scopes', '_gauges', '_lock')
+    __slots__ = ('meter', '_scopes', '_gauges', '_observable_gauges', '_lock')
 
     def __init__(self, provider: MeterProvider):
         self.meter = provider.get_meter('github.com/gorundebug/servicelib')
         self._scopes: dict[str, _MetricsScope] = {}
         self._gauges: dict[str, _Int64GaugeVec] = {}
+        self._observable_gauges: dict[
+            str, tuple[str, _ObservableFloat64GaugeVec]
+        ] = {}
         self._lock = threading.Lock()
 
     def gauge_vec(self, name: str, help: str) -> _Int64GaugeVec:
@@ -405,6 +427,35 @@ class _OtelMetrics(Metrics):
                 gauge._obs = observable
                 self._gauges[name] = gauge
             return gauge
+
+    def observable_float64_gauge(
+        self,
+        name: str,
+        help: str,
+        labels: Labels,
+        fn: Callable[[], float],
+    ) -> None:
+        with self._lock:
+            entry = self._observable_gauges.get(name)
+            if entry is None:
+                gauge = _ObservableFloat64GaugeVec()
+                observable = self.meter.create_observable_gauge(
+                    name,
+                    description=help,
+                    callbacks=[
+                        lambda _opts, _gauge=gauge: _gauge.observations()  # type: ignore[misc]
+                    ],
+                )
+                gauge._obs = observable
+                self._observable_gauges[name] = (help, gauge)
+            else:
+                registered_help, gauge = entry
+                if registered_help != help:
+                    raise ValueError(
+                        f'observable gauge {name!r} is already registered '
+                        'with different help text'
+                    )
+            gauge.add(labels, fn)
 
     def scope(self, prefix: str, labels: Labels) -> MetricsScope:
         key = f'{prefix}\x00{_labels_key(labels)}'
