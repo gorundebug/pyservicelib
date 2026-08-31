@@ -467,10 +467,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         for stream in self._streams.values():
             stream.build()
 
-        for ds in self._dataSources.values():
-            await ds.start(ctx)
-        for ds in self._dataSinks.values():  # type: ignore[assignment]
-            await ds.start(ctx)
         for storage in self._storages:
             await storage.start(ctx)
         await self._delay_pool.start(ctx)
@@ -480,6 +476,12 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await pool.start(ctx)
         for component in self._components:
             await component.start(ctx)
+        for ds in self._dataSinks.values():  # type: ignore[assignment]
+            await ds.start(ctx)
+        # Sources may emit immediately from start(), so they are the final
+        # graph admission boundary after all downstream resources are ready.
+        for ds in self._dataSources.values():
+            await ds.start(ctx)
 
         service_config = self.service_config
         if service_config.status_handler:
