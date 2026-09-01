@@ -4,7 +4,6 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from datetime import timedelta
-from threading import Event
 import time
 from typing import Optional
 
@@ -20,7 +19,11 @@ class Context:
         _deadline: Optional[float] = None,
     ):
         self.__parent = _parent
-        self.__cancelled = Event()
+        # Keep cancellation as deterministic in-memory state. Context is also
+        # constructed inside Temporal Workflow sandboxes, where threading
+        # synchronization primitives are deliberately unavailable. Ordinary
+        # maker groups use this flag cooperatively between Python threads.
+        self.__cancelled = False
         if _deadline is not None:
             self.__deadline = _deadline
         elif timeout is None:
@@ -34,12 +37,12 @@ class Context:
 
     @property
     def cancelled(self) -> bool:
-        return self.__cancelled.is_set() or (
+        return self.__cancelled or (
             self.__parent is not None and self.__parent.cancelled
         )
 
     def cancel(self) -> None:
-        self.__cancelled.set()
+        self.__cancelled = True
 
     def child(self) -> "Context":
         """Return a cancellable child that preserves the parent's deadline."""
