@@ -67,7 +67,8 @@ class DataConnector(BaseModel):
     tls_key_file: Optional[StrictStr] = Field(default=None, description="Path to the PEM private key paired with tlsCertFile.", alias="tlsKeyFile")
     max_concurrent_activities: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Activity slots owned by this Temporal connector's Worker.", alias="maxConcurrentActivities")
     max_concurrent_workflows: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Workflow slots owned by this Temporal connector's Worker.", alias="maxConcurrentWorkflows")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "apiKey", "tlsEnabled", "tlsServerName", "tlsCaFile", "tlsCertFile", "tlsKeyFile", "maxConcurrentActivities", "maxConcurrentWorkflows"]
+    worker_stop_timeout: Optional[StrictInt] = Field(default=None, description="Maximum milliseconds for Temporal Workers to drain during shutdown; zero inherits the owning service shutdownTimeout.", alias="workerStopTimeout")
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "goImplementation", "cppUserverImplementation", "cppBoostImplementation", "pythonImplementation", "rustImplementation", "typeScriptImplementation", "host", "port", "address", "connectionsCount", "brokers", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "apiKey", "tlsEnabled", "tlsServerName", "tlsCaFile", "tlsCertFile", "tlsKeyFile", "maxConcurrentActivities", "maxConcurrentWorkflows", "workerStopTimeout"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -154,8 +155,7 @@ class DataConnector(BaseModel):
             "tlsCertFile": obj.get("tlsCertFile"),
             "tlsKeyFile": obj.get("tlsKeyFile"),
             "maxConcurrentActivities": obj.get("maxConcurrentActivities"),
-            "maxConcurrentWorkflows": obj.get("maxConcurrentWorkflows")
+            "maxConcurrentWorkflows": obj.get("maxConcurrentWorkflows"),
+            "workerStopTimeout": obj.get("workerStopTimeout")
         })
         return _obj
-
-

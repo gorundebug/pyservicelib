@@ -467,6 +467,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         for stream in self._streams.values():
             stream.build()
 
+        for connector in self._managed_data_connectors.values():
+            await connector.start(ctx)
         for storage in self._storages:
             await storage.start(ctx)
         await self._delay_pool.start(ctx)
@@ -582,6 +584,18 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         )
         await run_shutdown_operations(self._log, ctx, sources)
 
+        # A source may be using a managed connector for work it already
+        # accepted (Cron -> Temporal is the canonical example). Keep workers
+        # and outbound clients available until every ordinary source drains.
+        await run_shutdown_operations(
+            self._log,
+            ctx,
+            [
+                (f"managed_connector_admission:{connector.name}", connector.stop_admission(ctx))
+                for connector in self._managed_data_connectors.values()
+            ],
+        )
+
         # Sources and managed pools no longer admit root work. ParallelCall
         # tasks may create nested ParallelCall tasks, so drain snapshots until
         # the service-level registry is empty before stopping sinks.
@@ -600,14 +614,10 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await asyncio.gather(*done, return_exceptions=True)
 
         # Phase 2: graph admission is closed and detached work is drained;
-        # pools, sinks and the remaining component/storage state can stop.
+        # pools and remaining component/storage state can stop.
         phase2: list[ShutdownOperation] = [
             ("delay_pool", self._delay_pool.stop(ctx)),
         ]
-        phase2.extend(
-            (f"datasink:{ds.name}", ds.stop(ctx))
-            for ds in self._dataSinks.values()
-        )
         for name, pool in self._task_pools.items():
             phase2.append((f"task_pool:{name}", pool.stop(ctx)))
         for name, pool in self._priority_task_pools.items():  # type: ignore[assignment]
@@ -621,6 +631,20 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             for storage in self._storages
         )
         await run_shutdown_operations(self._log, ctx, phase2)
+
+        await run_shutdown_operations(
+            self._log,
+            ctx,
+            [(f"datasink:{ds.name}", ds.stop(ctx)) for ds in self._dataSinks.values()],
+        )
+        await run_shutdown_operations(
+            self._log,
+            ctx,
+            [
+                (f"managed_connector:{connector.name}", connector.stop(ctx))
+                for connector in self._managed_data_connectors.values()
+            ],
+        )
 
         telemetry: list[ShutdownOperation] = [
             ("metrics", self._metrics_engine.shutdown()),
@@ -652,7 +676,6 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                 f"managed data connector id={connector.id} is already registered"
             )
         self._managed_data_connectors[connector.id] = connector
-        self.add_component(connector)
 
     def get_managed_data_connector(
         self, id_connector: int

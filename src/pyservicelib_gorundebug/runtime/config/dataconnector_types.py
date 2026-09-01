@@ -376,6 +376,7 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
         tls_key_file: str = "",
         max_concurrent_activities: int = 1,
         max_concurrent_workflows: int = 1,
+        worker_stop_timeout: int = 0,
         properties: Optional[dict[str, Any]] = None,
     ):
         if not address:
@@ -398,6 +399,7 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
         self._tls_key_file = tls_key_file
         self._max_concurrent_activities = max_concurrent_activities
         self._max_concurrent_workflows = max_concurrent_workflows
+        self._worker_stop_timeout = worker_stop_timeout
         self._properties = properties or {}
 
     @property
@@ -460,6 +462,10 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
     def max_concurrent_workflows(self) -> int:
         return self._max_concurrent_workflows
 
+    @property
+    def worker_stop_timeout(self) -> int:
+        return self._worker_stop_timeout
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self._id,
@@ -477,6 +483,7 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
             "tlsKeyFile": self._tls_key_file,
             "maxConcurrentActivities": self._max_concurrent_activities,
             "maxConcurrentWorkflows": self._max_concurrent_workflows,
+            "workerStopTimeout": self._worker_stop_timeout,
         }
 
     def get_property(self, name: str) -> Any:

@@ -231,6 +231,23 @@ def _integer(obj: Any, name: str, default: int = 0) -> int:
     return value if isinstance(value, int) else default
 
 
+def _resolve_worker_stop_timeout(
+    configured_millis: int, service_shutdown_millis: int
+) -> int:
+    if configured_millis < 0:
+        raise ValueError("workerStopTimeout must not be negative")
+    if service_shutdown_millis < 0:
+        raise ValueError("service shutdownTimeout must not be negative")
+    if configured_millis == 0:
+        configured_millis = service_shutdown_millis
+    if configured_millis > service_shutdown_millis:
+        raise ValueError(
+            f"workerStopTimeout {configured_millis}ms exceeds service "
+            f"shutdownTimeout {service_shutdown_millis}ms"
+        )
+    return configured_millis
+
+
 def _bool(obj: Any, name: str, default: bool = False) -> bool:
     value = getattr(obj, name, None)
     return value if isinstance(value, bool) else default
@@ -394,6 +411,10 @@ class Connector(ManagedDataConnector):
             return
         _configure_workflow_logging(self._environment.log)
         cfg = self._config()
+        worker_stop_timeout = _resolve_worker_stop_timeout(
+            _integer(cfg, "worker_stop_timeout"),
+            self._environment.service_config.shutdown_timeout,
+        )
         tls = self._tls_config(cfg)
         context_interceptor = TemporalContextPropagationInterceptor(
             self._environment.tracing
@@ -436,9 +457,7 @@ class Connector(ManagedDataConnector):
                         _integer(cfg, "max_concurrent_workflows") or None
                     ),
                     graceful_shutdown_timeout=timedelta(
-                        milliseconds=max(
-                            0, self._environment.service_config.shutdown_timeout
-                        )
+                        milliseconds=worker_stop_timeout
                     ),
                     interceptors=[context_interceptor],
                 )
@@ -456,8 +475,16 @@ class Connector(ManagedDataConnector):
                     await self._ensure_schedule(endpoint_cfg)
         except BaseException:
             self._started = False
-            await self._shutdown_workers()
-            self._client = None
+            try:
+                await self._shutdown_workers()
+            except BaseException as shutdown_error:
+                self._environment.log.error(
+                    "Temporal Worker startup rollback failed",
+                    str_field("connector", self._name),
+                    err_field(shutdown_error),
+                )
+            finally:
+                self._client = None
             raise
 
     async def stop(self, ctx: Context) -> None:
@@ -465,8 +492,10 @@ class Connector(ManagedDataConnector):
         if not self._started and not self._workers:
             return
         self._started = False
-        await self._shutdown_workers()
-        self._client = None
+        try:
+            await self._shutdown_workers()
+        finally:
+            self._client = None
 
     async def stop_admission(self, ctx: Context) -> None:
         """Stop Task Queue polling while preserving outbound submissions."""
@@ -475,14 +504,20 @@ class Connector(ManagedDataConnector):
         await self._shutdown_workers()
 
     async def _shutdown_workers(self) -> None:
-        await asyncio.gather(
+        shutdown_results = await asyncio.gather(
             *(worker.shutdown() for worker in self._workers),
             return_exceptions=True,
         )
+        run_results: list[object] = []
         if self._worker_tasks:
-            await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+            run_results = list(
+                await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+            )
         self._workers.clear()
         self._worker_tasks.clear()
+        for result in (*shutdown_results, *run_results):
+            if isinstance(result, BaseException):
+                raise result
 
     def _build_queue_registrations(self) -> dict[str, _QueueRegistration]:
         queues: dict[str, _QueueRegistration] = {}

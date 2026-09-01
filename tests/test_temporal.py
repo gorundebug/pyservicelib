@@ -47,6 +47,7 @@ from pyservicelib_gorundebug.datasource.temporal.connector import (
     _endpoint_workflow_id,
     _make_endpoint_activity,
     _opentelemetry_plugins,
+    _resolve_worker_stop_timeout,
     execute_direct_endpoint_workflow,
     _schedule_workflow_id,
     _scheduled_time_nanos,
@@ -72,6 +73,49 @@ from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
     _current_carrier,
     _encode_carrier,
 )
+
+
+def test_worker_stop_timeout_inherits_and_respects_service_boundary() -> None:
+    assert _resolve_worker_stop_timeout(0, 30_000) == 30_000
+    assert _resolve_worker_stop_timeout(5_000, 30_000) == 5_000
+    with pytest.raises(ValueError, match="must not be negative"):
+        _resolve_worker_stop_timeout(-1, 30_000)
+    with pytest.raises(ValueError, match="exceeds service shutdownTimeout"):
+        _resolve_worker_stop_timeout(30_001, 30_000)
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_joins_every_worker_before_reporting_error() -> None:
+    events: list[str] = []
+
+    class WorkerStub:
+        def __init__(self, name: str, error: Exception | None = None) -> None:
+            self.name = name
+            self.error = error
+
+        async def shutdown(self) -> None:
+            events.append(f"shutdown:{self.name}")
+            if self.error is not None:
+                raise self.error
+
+    async def failed_run() -> None:
+        await asyncio.sleep(0)
+        events.append("run:failed")
+        raise RuntimeError("worker run failed")
+
+    connector = object.__new__(Connector)
+    connector._workers = [  # type: ignore[attr-defined]
+        WorkerStub("first", RuntimeError("shutdown failed")),
+        WorkerStub("second"),
+    ]
+    connector._worker_tasks = [asyncio.create_task(failed_run())]  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="shutdown failed"):
+        await connector._shutdown_workers()  # type: ignore[attr-defined]
+
+    assert events == ["shutdown:first", "shutdown:second", "run:failed"]
+    assert connector._workers == []  # type: ignore[attr-defined]
+    assert connector._worker_tasks == []  # type: ignore[attr-defined]
 
 
 def test_temporal_cron_preserves_portable_minute_semantics() -> None:

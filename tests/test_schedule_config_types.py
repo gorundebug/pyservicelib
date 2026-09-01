@@ -70,6 +70,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
         namespace="default",
         max_concurrent_activities=8,
         max_concurrent_workflows=4,
+        worker_stop_timeout=5_000,
     )
     endpoint = TemporalEndpointConfig(
         4,
@@ -87,6 +88,7 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
     assert connector.namespace == "default"
     assert connector.max_concurrent_activities == 8
     assert connector.max_concurrent_workflows == 4
+    assert connector.worker_stop_timeout == 5_000
     assert endpoint.task_queue == "reconcile"
     assert endpoint.tracing_enabled
     assert endpoint.temporal_execution_type is TemporalExecutionType.ACTIVITY
