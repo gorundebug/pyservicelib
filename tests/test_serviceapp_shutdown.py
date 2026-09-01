@@ -101,3 +101,19 @@ def test_bounded_context_uses_shorter_deadline() -> None:
     assert parent.time_left is not None
     assert child.time_left <= 0.020
     assert parent.time_left > 0.5
+
+
+def test_child_context_cancellation_is_one_way() -> None:
+    parent = Context(timedelta(seconds=1))
+    first = parent.child()
+    sibling = first
+
+    first.cancel()
+
+    assert sibling.cancelled
+    assert sibling.is_expired
+    assert not parent.cancelled
+
+    inherited = parent.child()
+    parent.cancel()
+    assert inherited.cancelled
