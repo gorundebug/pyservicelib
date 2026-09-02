@@ -6,6 +6,7 @@ import pytest
 from pyservicelib_gorundebug.runtime.context import Context
 from pyservicelib_gorundebug.runtime.environment.log import Field, Logger
 from pyservicelib_gorundebug.runtime.serviceapp import run_shutdown_operations
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 
 
 class RecordingLogger(Logger):
@@ -117,3 +118,45 @@ def test_child_context_cancellation_is_one_way() -> None:
     inherited = parent.child()
     parent.cancel()
     assert inherited.cancelled
+
+
+@pytest.mark.asyncio
+async def test_service_stops_graph_pools_before_draining_parallel_tasks() -> None:
+    events: list[str] = []
+    pool_stopped = asyncio.Event()
+
+    class TestApp(ServiceApp):
+        @property
+        def service_config(self):  # type: ignore[no-untyped-def,override]
+            return type("ServiceConfig", (), {"shutdown_timeout": 1000})()
+
+    class Loader:
+        async def stop(self) -> None:
+            return None
+
+    class Pool:
+        async def stop(self, _ctx: Context) -> None:
+            events.append("pool:stop")
+            pool_stopped.set()
+
+    class Engine:
+        async def shutdown(self) -> None:
+            return None
+
+    async def graph_task() -> None:
+        await pool_stopped.wait()
+        events.append("task:done")
+
+    app = TestApp()
+    app._loader = Loader()  # type: ignore[assignment]
+    app._log = RecordingLogger()
+    app._delay_pool = Pool()  # type: ignore[assignment]
+    app._metrics_engine = Engine()  # type: ignore[assignment]
+    app._logs_engine = Engine()  # type: ignore[assignment]
+    task = asyncio.create_task(graph_task())
+    app._tasks.add(task)
+    task.add_done_callback(app._tasks.discard)
+
+    await app.stop(Context(timedelta(seconds=1)))
+
+    assert events == ["pool:stop", "task:done"]

@@ -608,25 +608,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             ],
         )
 
-        # Sources and managed pools no longer admit root work. ParallelCall
-        # tasks may create nested ParallelCall tasks, so drain snapshots until
-        # the service-level registry is empty before stopping sinks.
-        while self._tasks:
-            snapshot = tuple(self._tasks)
-            done, pending = await asyncio.wait(snapshot, timeout=ctx.time_left)
-            if pending:
-                self._log.warn(
-                    "service graph drain timed out",
-                    int_field("tasks_count", len(pending)),
-                )
-                for task in pending:
-                    task.cancel()
-                    task.add_done_callback(consume_detached_shutdown_result)
-                break
-            await asyncio.gather(*done, return_exceptions=True)
-
-        # Phase 2: graph admission is closed and detached work is drained;
-        # pools and remaining component/storage state can stop.
+        # Pools and timers are graph-work producers. Drain them before reading
+        # the ParallelCall task registry, because an accepted pool task may
+        # create a parallel child near the end of shutdown.
         phase2: list[ShutdownOperation] = [
             ("delay_pool", self._delay_pool.stop(ctx)),
         ]
@@ -643,6 +627,22 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             for storage in self._storages
         )
         await run_shutdown_operations(self._log, ctx, phase2)
+
+        # No producer remains. ParallelCall tasks may create nested
+        # ParallelCall tasks, so drain snapshots until the registry is empty.
+        while self._tasks:
+            snapshot = tuple(self._tasks)
+            done, pending = await asyncio.wait(snapshot, timeout=ctx.time_left)
+            if pending:
+                self._log.warn(
+                    "service graph drain timed out",
+                    int_field("tasks_count", len(pending)),
+                )
+                for task in pending:
+                    task.cancel()
+                    task.add_done_callback(consume_detached_shutdown_result)
+                break
+            await asyncio.gather(*done, return_exceptions=True)
 
         await run_shutdown_operations(
             self._log,
