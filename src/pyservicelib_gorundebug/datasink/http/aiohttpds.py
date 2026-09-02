@@ -153,15 +153,27 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
     ) -> None: ...
 
 
-class _AIOHttpSinkDataSink(OutputDataSink):
+class AIOHttpDataSink(OutputDataSink):
 
     _stop_tasks: list[asyncio.Task]
 
-    def __init__(self, connector_id: int, env: ServiceExecutionEnvironment):
+    def __init__(
+        self,
+        connector_id: int,
+        env: ServiceExecutionEnvironment,
+        session: Optional[aiohttp.ClientSession] = None,
+    ):
         super().__init__(connector_id=connector_id, env=env)
         self._stop_tasks = []
+        self._session = session
+
+    @property
+    def session(self) -> Optional[aiohttp.ClientSession]:
+        return self._session
 
     async def start(self, ctx: Context) -> None:
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
         for ep in self.endpoints:
             await cast("_AIOHttpSinkEndpoint", ep).start(ctx)
 
@@ -180,12 +192,15 @@ class _AIOHttpSinkDataSink(OutputDataSink):
                 self.environment.log.warn(
                     f"AIOHttp sink data sink '{self.name}' stopped by timeout."
                 )
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
 
 class _AIOHttpSinkEndpoint(DataSinkEndpoint):
     _consumer: Optional["_NetHTTPSinkEndpointConsumer"]
 
-    def __init__(self, data_sink: _AIOHttpSinkDataSink, id_endpoint: int):
+    def __init__(self, data_sink: AIOHttpDataSink, id_endpoint: int):
         super().__init__(data_sink=data_sink, id_endpoint=id_endpoint)
         self._consumer = None
 
@@ -202,7 +217,6 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
     _endpoint: _AIOHttpSinkEndpoint
     _stream: TypedSinkStreamWithResult[T, R, E]
     _handler: EndpointHandler[HandlerState, T, R, E]
-    _session: Optional[aiohttp.ClientSession]
     _sc: SinkStreamContext[T, R, E]
     _tracer: Optional[Tracer]
 
@@ -216,7 +230,6 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         self._endpoint = endpoint
         self._stream = stream
         self._handler = handler
-        self._session = None
         self._tracer = tracer
 
         self._sc = SinkStreamContext[T, R, E](
@@ -234,14 +247,14 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         return self._endpoint
 
     async def start(self, ctx: Context) -> None:
-        self._session = aiohttp.ClientSession()
+        del ctx
 
     async def stop(self, ctx: Context) -> None:
-        if self._session is not None:
-            await self._session.close()
+        del ctx
 
     async def consume(self, value: T) -> None:
-        if self._session is None:
+        session = cast(AIOHttpDataSink, self._endpoint.datasink).session
+        if session is None:
             self._stream.environment.log.warn(
                 f"HTTP sink consume called before start for stream '{self._stream.name}'"
             )
@@ -270,7 +283,7 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                     end_err = err
                     return
                 span_event(span, "begin_request")
-                req = Requester(self._session)
+                req = Requester(session)
 
                 try:
                     await self._handler.consume_message(self._sc, handler_state, value, req)
@@ -351,9 +364,9 @@ def make_net_http_endpoint_consumer[HandlerState, T, R, E](
     datasink = env.get_datasink(cfg_ep.id_data_connector)
     if datasink is None:
         cfg_ds = env.config.get_data_connector_by_id(cfg_ep.id_data_connector)
-        datasink = _AIOHttpSinkDataSink(cfg_ds.id, env)
+        datasink = AIOHttpDataSink(cfg_ds.id, env)
         env.add_datasink(datasink)
-    ds = cast(_AIOHttpSinkDataSink, datasink)
+    ds = cast(AIOHttpDataSink, datasink)
 
     endpoint = ds.get_endpoint(stream.endpoint_id)
     if endpoint is None:

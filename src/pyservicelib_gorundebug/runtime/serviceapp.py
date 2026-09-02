@@ -196,6 +196,18 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def has_custom_http_server(self) -> bool:
         return False
 
+    def replace_http_application(self, application: web.Application) -> None:
+        """Replace the service-owned HTTP application before routes are bound."""
+        if self.has_custom_http_server():
+            raise RuntimeError(
+                "HTTP application cannot be replaced when a custom server is used"
+            )
+        if self._aiohttp_runner is not None:
+            raise RuntimeError("HTTP application cannot be replaced after server start")
+        if self._aiohttp_app is not None and len(self._aiohttp_app.router) != 0:
+            raise RuntimeError("HTTP application cannot be replaced after routes are bound")
+        self._aiohttp_app = application
+
     def register_http_handler(
         self, path: str, handler: Callable[..., Any], method: str = "*"
     ) -> None:
