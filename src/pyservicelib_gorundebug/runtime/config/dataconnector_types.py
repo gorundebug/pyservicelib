@@ -374,8 +374,6 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
         tls_ca_file: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
-        max_concurrent_activities: int = 1,
-        max_concurrent_workflows: int = 1,
         worker_stop_timeout: int = 0,
         properties: Optional[dict[str, Any]] = None,
     ):
@@ -383,8 +381,6 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
             raise ValueError("Temporal address must not be empty")
         if not namespace:
             raise ValueError("Temporal namespace must not be empty")
-        if max_concurrent_activities < 1 or max_concurrent_workflows < 1:
-            raise ValueError("Temporal concurrency limits must be positive")
         self._id = id
         self._name = name
         self._implementation = implementation
@@ -397,8 +393,6 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
         self._tls_ca_file = tls_ca_file
         self._tls_cert_file = tls_cert_file
         self._tls_key_file = tls_key_file
-        self._max_concurrent_activities = max_concurrent_activities
-        self._max_concurrent_workflows = max_concurrent_workflows
         self._worker_stop_timeout = worker_stop_timeout
         self._properties = properties or {}
 
@@ -455,14 +449,6 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
         return self._tls_key_file
 
     @property
-    def max_concurrent_activities(self) -> int:
-        return self._max_concurrent_activities
-
-    @property
-    def max_concurrent_workflows(self) -> int:
-        return self._max_concurrent_workflows
-
-    @property
     def worker_stop_timeout(self) -> int:
         return self._worker_stop_timeout
 
@@ -481,8 +467,6 @@ class TemporalDataConnectorConfig(DataConnectorConfig):
             "tlsCaFile": self._tls_ca_file,
             "tlsCertFile": self._tls_cert_file,
             "tlsKeyFile": self._tls_key_file,
-            "maxConcurrentActivities": self._max_concurrent_activities,
-            "maxConcurrentWorkflows": self._max_concurrent_workflows,
             "workerStopTimeout": self._worker_stop_timeout,
         }
 

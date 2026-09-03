@@ -68,8 +68,6 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
         implementation,
         address="temporal:7233",
         namespace="default",
-        max_concurrent_activities=8,
-        max_concurrent_workflows=4,
         worker_stop_timeout=5_000,
     )
     endpoint = TemporalEndpointConfig(
@@ -82,18 +80,18 @@ def test_temporal_config_preserves_connection_and_job_contract() -> None:
         task_queue="reconcile",
         activity_start_to_close_timeout=30_000,
         maximum_attempts=3,
+        max_concurrent_activities=8,
     )
 
     assert connector.address == "temporal:7233"
     assert connector.namespace == "default"
-    assert connector.max_concurrent_activities == 8
-    assert connector.max_concurrent_workflows == 4
     assert connector.worker_stop_timeout == 5_000
     assert endpoint.task_queue == "reconcile"
     assert endpoint.tracing_enabled
     assert endpoint.temporal_execution_type is TemporalExecutionType.ACTIVITY
     assert endpoint.activity_start_to_close_timeout == 30_000
     assert endpoint.maximum_attempts == 3
+    assert endpoint.max_concurrent_activities == 8
 
 
 def test_temporal_config_rejects_non_operational_values() -> None:
@@ -120,6 +118,7 @@ def test_temporal_config_rejects_non_operational_values() -> None:
             TemporalExecutionType.ACTIVITY,
             task_queue="jobs",
             activity_start_to_close_timeout=0,
+            max_concurrent_activities=1,
         )
     except ValueError as error:
         assert "start-to-close" in str(error)
@@ -135,5 +134,6 @@ def test_temporal_workflow_config_does_not_require_activity_timeout() -> None:
         TemporalExecutionType.WORKFLOW,
         task_queue="workflows",
         maximum_attempts=1,
+        max_concurrent_workflow_tasks=4,
     )
     assert endpoint.activity_start_to_close_timeout == 0

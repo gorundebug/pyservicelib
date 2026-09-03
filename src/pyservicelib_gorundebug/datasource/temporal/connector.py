@@ -212,6 +212,8 @@ class _QueueRegistration:
     activities: list[Callable[..., Awaitable[Any]]]
     workflows: list[type[Any]]
     endpoint_workflow: bool = False
+    max_concurrent_activities: int = 0
+    max_concurrent_workflow_tasks: int = 0
 
 
 def _required_string(obj: Any, name: str) -> str:
@@ -490,12 +492,8 @@ class Connector(ManagedDataConnector):
                     task_queue=task_queue,
                     activities=registration.activities,
                     workflows=workflows,
-                    max_concurrent_activities=(
-                        _integer(cfg, "max_concurrent_activities") or None
-                    ),
-                    max_concurrent_workflow_tasks=(
-                        _integer(cfg, "max_concurrent_workflows") or None
-                    ),
+                    max_concurrent_activities=registration.max_concurrent_activities or None,
+                    max_concurrent_workflow_tasks=registration.max_concurrent_workflow_tasks or None,
                     graceful_shutdown_timeout=timedelta(
                         milliseconds=worker_stop_timeout
                     ),
@@ -556,6 +554,16 @@ class Connector(ManagedDataConnector):
             )
 
             if cfg.temporal_execution_type is TemporalExecutionType.ACTIVITY:
+                limit = _integer(cfg, "max_concurrent_activities")
+                if limit < 1:
+                    raise ValueError(
+                        f"Temporal Activity endpoint {cfg.name!r} requires maxConcurrentActivities"
+                    )
+                if queue.max_concurrent_activities not in (0, limit):
+                    raise ValueError(
+                        f"Temporal Task Queue {cfg.task_queue!r} has conflicting maxConcurrentActivities"
+                    )
+                queue.max_concurrent_activities = limit
                 queue.activities.append(
                     _make_endpoint_activity(
                         endpoint_registration,
@@ -564,6 +572,16 @@ class Connector(ManagedDataConnector):
                 )
                 queue.endpoint_workflow = True
             elif cfg.temporal_execution_type is TemporalExecutionType.WORKFLOW:
+                limit = _integer(cfg, "max_concurrent_workflow_tasks")
+                if limit < 1:
+                    raise ValueError(
+                        f"Temporal Workflow endpoint {cfg.name!r} requires maxConcurrentWorkflowTasks"
+                    )
+                if queue.max_concurrent_workflow_tasks not in (0, limit):
+                    raise ValueError(
+                        f"Temporal Task Queue {cfg.task_queue!r} has conflicting maxConcurrentWorkflowTasks"
+                    )
+                queue.max_concurrent_workflow_tasks = limit
                 workflow_class = endpoint_registration.workflow_class
                 if workflow_class is None:
                     raise RuntimeError(

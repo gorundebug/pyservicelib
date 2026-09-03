@@ -221,26 +221,32 @@ def make_config() -> MockConfig:
             data=HttpEndpointConfig(
                 id=_data_endpoint_id, name="Data",
                 id_data_connector=_http_server_conn_id,
+                function_name="DataSource",
                 http_method_type=HTTPMethodType.POST, path="/data",
             ),
             data3=HttpEndpointConfig(
                 id=_data3_endpoint_id, name="Data3",
                 id_data_connector=_http_server_conn_id,
+                function_name="Data3Source",
                 http_method_type=HTTPMethodType.POST, path="/data3",
             ),
             data_sync=HttpEndpointConfig(
                 id=_data_sync_endpoint_id, name="DataSync",
                 id_data_connector=_http_server_conn_id,
+                function_name="DataSyncSource",
                 http_method_type=HTTPMethodType.POST, path="/dataSync",
             ),
             sink=CustomEndpointConfig(
                 id=_sink_endpoint_id, name="Sink", id_data_connector=_custom_sink_conn_id,
+                function_name="SinkSink",
             ),
             sink4=CustomEndpointConfig(
                 id=_sink4_endpoint_id, name="Sink4", id_data_connector=_custom_sink_conn_id,
+                function_name="Sink4Sink",
             ),
             sink_sync=CustomEndpointConfig(
                 id=_sink_sync_endpoint_id, name="SinkSync", id_data_connector=_custom_sink_conn_id,
+                function_name="SinkSyncSink",
             ),
         ),
         pools=MockConfig._Pools(

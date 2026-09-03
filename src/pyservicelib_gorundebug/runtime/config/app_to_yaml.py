@@ -189,6 +189,24 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 dc_obj["useDedicatedListener"] = dc.use_dedicated_listener
             if dc.module:
                 dc_obj["module"] = dc.module
+            if dc.namespace:
+                dc_obj["namespace"] = dc.namespace
+            if dc.identity:
+                dc_obj["identity"] = dc.identity
+            if dc.api_key:
+                dc_obj["apiKey"] = dc.api_key
+            if dc.tls_enabled:
+                dc_obj["tlsEnabled"] = dc.tls_enabled
+            if dc.tls_server_name:
+                dc_obj["tlsServerName"] = dc.tls_server_name
+            if dc.tls_ca_file:
+                dc_obj["tlsCaFile"] = dc.tls_ca_file
+            if dc.tls_cert_file:
+                dc_obj["tlsCertFile"] = dc.tls_cert_file
+            if dc.tls_key_file:
+                dc_obj["tlsKeyFile"] = dc.tls_key_file
+            if dc.worker_stop_timeout:
+                dc_obj["workerStopTimeout"] = dc.worker_stop_timeout
             eps = dc_endpoints.get(dc.id)
             if eps:
                 eps_node: dict[str, Any] = {}
@@ -224,6 +242,24 @@ def app_to_yaml(app: StreamApp) -> bytes:
                         ep_obj["functionInitializerGroup"] = ep.function_initializer_group
                     if ep.function_module:
                         ep_obj["functionModule"] = ep.function_module
+                    if hasattr(ep, "task_queue"):
+                        ep_obj["enabled"] = ep.enabled
+                        ep_obj["tracingEnabled"] = ep.tracing_enabled
+                        ep_obj["taskQueue"] = ep.task_queue
+                        ep_obj["temporalExecutionType"] = ep.temporal_execution_type.value
+                        if ep.max_concurrent_activities:
+                            ep_obj["maxConcurrentActivities"] = ep.max_concurrent_activities
+                        if ep.max_concurrent_workflow_tasks:
+                            ep_obj["maxConcurrentWorkflowTasks"] = ep.max_concurrent_workflow_tasks
+                        ep_obj["schedule"] = ep.schedule
+                        ep_obj["scheduleId"] = ep.schedule_id
+                        ep_obj["timezone"] = ep.timezone
+                        ep_obj["overlapPolicy"] = ep.overlap_policy.value
+                        ep_obj["missedRunPolicy"] = ep.missed_run_policy.value
+                        ep_obj["workflowExecutionTimeout"] = ep.workflow_execution_timeout
+                        ep_obj["activityStartToCloseTimeout"] = ep.activity_start_to_close_timeout
+                        ep_obj["activityHeartbeatTimeout"] = ep.activity_heartbeat_timeout
+                        ep_obj["maximumAttempts"] = ep.maximum_attempts
                     eps_node[ep_key[ep.id]] = ep_obj
                 dc_obj["endpoints"] = eps_node
             dc_node[to_camel_case_first_lower(dc.name)] = dc_obj

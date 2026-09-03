@@ -518,6 +518,8 @@ class TemporalEndpointConfig(CronEndpointConfig):
         enabled: bool = False,
         tracing_enabled: bool = False,
         task_queue: str = "",
+        max_concurrent_activities: int = 0,
+        max_concurrent_workflow_tasks: int = 0,
         schedule: str = "",
         schedule_id: str = "",
         timezone: str = "UTC",
@@ -548,6 +550,16 @@ class TemporalEndpointConfig(CronEndpointConfig):
             raise ValueError(
                 "Temporal activity start-to-close timeout must be positive"
             )
+        if (
+            temporal_execution_type is TemporalExecutionType.ACTIVITY
+            and max_concurrent_activities < 1
+        ):
+            raise ValueError("Temporal Activity concurrency limit must be positive")
+        if (
+            temporal_execution_type is TemporalExecutionType.WORKFLOW
+            and max_concurrent_workflow_tasks < 1
+        ):
+            raise ValueError("Temporal Workflow Task concurrency limit must be positive")
         if maximum_attempts < 1:
             raise ValueError("Temporal maximum attempts must be positive")
         if not isinstance(temporal_execution_type, TemporalExecutionType):
@@ -556,6 +568,8 @@ class TemporalEndpointConfig(CronEndpointConfig):
             )
         self._task_queue = task_queue
         self._temporal_execution_type = temporal_execution_type
+        self._max_concurrent_activities = max_concurrent_activities
+        self._max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
         self._schedule_id = schedule_id
         self._workflow_execution_timeout = workflow_execution_timeout
         self._activity_start_to_close_timeout = activity_start_to_close_timeout
@@ -569,6 +583,14 @@ class TemporalEndpointConfig(CronEndpointConfig):
     @property
     def temporal_execution_type(self) -> TemporalExecutionType:
         return self._temporal_execution_type
+
+    @property
+    def max_concurrent_activities(self) -> int:
+        return self._max_concurrent_activities
+
+    @property
+    def max_concurrent_workflow_tasks(self) -> int:
+        return self._max_concurrent_workflow_tasks
 
     @property
     def schedule_id(self) -> str:
@@ -596,6 +618,8 @@ class TemporalEndpointConfig(CronEndpointConfig):
             {
                 "taskQueue": self._task_queue,
                 "temporalExecutionType": self._temporal_execution_type.value,
+                "maxConcurrentActivities": self._max_concurrent_activities,
+                "maxConcurrentWorkflowTasks": self._max_concurrent_workflow_tasks,
                 "scheduleId": self._schedule_id,
                 "workflowExecutionTimeout": self._workflow_execution_timeout,
                 "activityStartToCloseTimeout": self._activity_start_to_close_timeout,

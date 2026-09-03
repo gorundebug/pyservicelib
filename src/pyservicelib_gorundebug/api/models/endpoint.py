@@ -40,7 +40,7 @@ class Endpoint(BaseModel):
     tracing_enabled: Optional[StrictBool] = Field(default=None, description="Enables tracing for events admitted by this DataSource endpoint. The current reloadable value is evaluated for every inbound event. DataSink adapters ignore this flag and only propagate tracing already present in the message context. ", alias="tracingEnabled")
     http_method_type: Optional[HTTPMethodType] = Field(default=None, alias="httpMethodType")
     path: Optional[StrictStr] = Field(default=None, description="URL path for HTTP endpoints (e.g. `/api/v1/orders`). Applies to HTTP connectors.")
-    function_name: Optional[StrictStr] = Field(default=None, description="Name of the generated Go handler struct for this endpoint.", alias="functionName")
+    function_name: StrictStr = Field(description="Name of the generated Go handler struct for this endpoint.", alias="functionName")
     function_package: Optional[StrictStr] = Field(default=None, description="Subdirectory under the functions package where the generated handler is placed.", alias="functionPackage")
     public_function: Optional[StrictBool] = Field(default=None, description="When true, the generated handler is placed in the shared `pkg/functions` tree and can be imported by other services. When false, it goes into `internal/functions`. ", alias="publicFunction")
     function_description: Optional[StrictStr] = Field(default=None, description="Doc comment added to the generated handler struct.", alias="functionDescription")
@@ -60,11 +60,13 @@ class Endpoint(BaseModel):
     missed_run_policy: Optional[ScheduleMissedRunPolicy] = Field(default=None, alias="missedRunPolicy")
     task_queue: Optional[StrictStr] = Field(default=None, description="Temporal Task Queue used by this durable endpoint.", alias="taskQueue")
     temporal_execution_type: Optional[TemporalExecutionType] = Field(default=None, alias="temporalExecutionType")
+    max_concurrent_activities: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Activity Task executions for this endpoint's Task Queue. Applies to Activity endpoints.", alias="maxConcurrentActivities")
+    max_concurrent_workflow_tasks: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Workflow Task executions for this endpoint's Task Queue. Applies to Workflow endpoints; this does not limit open Workflow executions.", alias="maxConcurrentWorkflowTasks")
     workflow_execution_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Workflow execution timeout in milliseconds; zero means SDK default.", alias="workflowExecutionTimeout")
     activity_start_to_close_timeout: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Temporal Activity start-to-close timeout in milliseconds.", alias="activityStartToCloseTimeout")
     activity_heartbeat_timeout: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Temporal Activity heartbeat timeout in milliseconds; zero disables it.", alias="activityHeartbeatTimeout")
     maximum_attempts: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Maximum Temporal Activity attempts including the initial attempt.", alias="maximumAttempts")
-    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "tracingEnabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "temporalExecutionType", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
+    __properties: ClassVar[List[str]] = ["id", "name", "idDataConnector", "enabled", "tracingEnabled", "httpMethodType", "path", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "topic", "partitions", "createTopic", "replicationFactor", "consumerGroup", "grpcMethodType", "methodName", "schedule", "scheduleId", "timezone", "overlapPolicy", "missedRunPolicy", "taskQueue", "temporalExecutionType", "maxConcurrentActivities", "maxConcurrentWorkflowTasks", "workflowExecutionTimeout", "activityStartToCloseTimeout", "activityHeartbeatTimeout", "maximumAttempts"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -144,11 +146,12 @@ class Endpoint(BaseModel):
             "missedRunPolicy": obj.get("missedRunPolicy"),
             "taskQueue": obj.get("taskQueue"),
             "temporalExecutionType": obj.get("temporalExecutionType"),
+            "maxConcurrentActivities": obj.get("maxConcurrentActivities"),
+            "maxConcurrentWorkflowTasks": obj.get("maxConcurrentWorkflowTasks"),
             "workflowExecutionTimeout": obj.get("workflowExecutionTimeout"),
             "activityStartToCloseTimeout": obj.get("activityStartToCloseTimeout"),
             "activityHeartbeatTimeout": obj.get("activityHeartbeatTimeout"),
             "maximumAttempts": obj.get("maximumAttempts")
         })
         return _obj
-
 

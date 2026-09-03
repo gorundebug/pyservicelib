@@ -118,6 +118,15 @@ def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
         "password": dc.password or None,
         "useDedicatedListener": dc.use_dedicated_listener or None,
         "module": dc.module or None,
+        "namespace": dc.namespace or None,
+        "identity": dc.identity or None,
+        "apiKey": dc.api_key or None,
+        "tlsEnabled": dc.tls_enabled or None,
+        "tlsServerName": dc.tls_server_name or None,
+        "tlsCaFile": dc.tls_ca_file or None,
+        "tlsCertFile": dc.tls_cert_file or None,
+        "tlsKeyFile": dc.tls_key_file or None,
+        "workerStopTimeout": dc.worker_stop_timeout or None,
     })
 
 
@@ -141,6 +150,21 @@ def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:
         functionDescription=ep.function_description or None,
         functionInitializerGroup=ep.function_initializer_group or None,
         functionModule=ep.function_module or None,
+        enabled=getattr(ep, "enabled", False) or None,
+        tracingEnabled=ep.tracing_enabled or None,
+        taskQueue=getattr(ep, "task_queue", "") or None,
+        temporalExecutionType=getattr(ep, "temporal_execution_type", None),
+        maxConcurrentActivities=getattr(ep, "max_concurrent_activities", 0) or None,
+        maxConcurrentWorkflowTasks=getattr(ep, "max_concurrent_workflow_tasks", 0) or None,
+        schedule=getattr(ep, "schedule", "") or None,
+        scheduleId=getattr(ep, "schedule_id", "") or None,
+        timezone=getattr(ep, "timezone", "") or None,
+        overlapPolicy=getattr(ep, "overlap_policy", None),
+        missedRunPolicy=getattr(ep, "missed_run_policy", None),
+        workflowExecutionTimeout=getattr(ep, "workflow_execution_timeout", 0) or None,
+        activityStartToCloseTimeout=getattr(ep, "activity_start_to_close_timeout", 0) or None,
+        activityHeartbeatTimeout=getattr(ep, "activity_heartbeat_timeout", 0) or None,
+        maximumAttempts=getattr(ep, "maximum_attempts", 0) or None,
     )
 
 

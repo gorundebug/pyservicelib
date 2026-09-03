@@ -47,7 +47,6 @@ class DataType(str, Enum):
     uint64 = 'uint64'
     any = 'any'
     error = 'error'
-    scheduleTrigger = 'schedule trigger'
     array = 'array'
     map = 'map'
     struct = 'struct'
