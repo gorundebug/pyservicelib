@@ -1,11 +1,16 @@
 import pytest
 import warnings
+import yaml
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
 )
 from pyservicelib_gorundebug.api.models.data_connector import DataConnector
 from pyservicelib_gorundebug.api.models.data_connector_type import DataConnectorType
+from pyservicelib_gorundebug.api.models.endpoint import Endpoint
+from pyservicelib_gorundebug.api.models.project_settings import ProjectSettings
+from pyservicelib_gorundebug.api.models.stream_app import StreamApp
+from pyservicelib_gorundebug.runtime.config.app_to_yaml import app_to_yaml
 from pyservicelib_gorundebug.runtime.config.config import (
     DataConnectorConfig,
     ModuleConfig,
@@ -83,3 +88,33 @@ def test_runtime_connector_implementation_serializes_as_a_typed_enum() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert config.model_dump(mode="json")["implementation"] == "temporal/python"
+
+
+def test_non_temporal_endpoint_yaml_does_not_serialize_absent_temporal_fields() -> None:
+    app = StreamApp(
+        settings=ProjectSettings(name="test"),
+        streams=[],
+        services=[],
+        links=[],
+        types=[],
+        dataConnectors=[
+            DataConnector(id=1, name="HTTP", type=DataConnectorType.HTTP)
+        ],
+        endpoints=[
+            Endpoint(
+                id=1,
+                name="Endpoint",
+                idDataConnector=1,
+                functionName="EndpointSource",
+            )
+        ],
+        pools=[],
+    )
+
+    document = yaml.safe_load(app_to_yaml(app))
+    endpoint = document["dataConnectors"]["http"]["endpoints"]["endpoint"]
+
+    assert endpoint == {
+        "name": "Endpoint",
+        "functionName": "EndpointSource",
+    }

@@ -242,23 +242,35 @@ def app_to_yaml(app: StreamApp) -> bytes:
                         ep_obj["functionInitializerGroup"] = ep.function_initializer_group
                     if ep.function_module:
                         ep_obj["functionModule"] = ep.function_module
-                    if hasattr(ep, "task_queue"):
+                    if ep.enabled is not None:
                         ep_obj["enabled"] = ep.enabled
+                    if ep.tracing_enabled is not None:
                         ep_obj["tracingEnabled"] = ep.tracing_enabled
+                    if ep.task_queue is not None:
                         ep_obj["taskQueue"] = ep.task_queue
+                    if ep.temporal_execution_type is not None:
                         ep_obj["temporalExecutionType"] = ep.temporal_execution_type.value
-                        if ep.max_concurrent_activities:
-                            ep_obj["maxConcurrentActivities"] = ep.max_concurrent_activities
-                        if ep.max_concurrent_workflow_tasks:
-                            ep_obj["maxConcurrentWorkflowTasks"] = ep.max_concurrent_workflow_tasks
+                    if ep.max_concurrent_activities is not None:
+                        ep_obj["maxConcurrentActivities"] = ep.max_concurrent_activities
+                    if ep.max_concurrent_workflow_tasks is not None:
+                        ep_obj["maxConcurrentWorkflowTasks"] = ep.max_concurrent_workflow_tasks
+                    if ep.schedule is not None:
                         ep_obj["schedule"] = ep.schedule
+                    if ep.schedule_id is not None:
                         ep_obj["scheduleId"] = ep.schedule_id
+                    if ep.timezone is not None:
                         ep_obj["timezone"] = ep.timezone
+                    if ep.overlap_policy is not None:
                         ep_obj["overlapPolicy"] = ep.overlap_policy.value
+                    if ep.missed_run_policy is not None:
                         ep_obj["missedRunPolicy"] = ep.missed_run_policy.value
+                    if ep.workflow_execution_timeout is not None:
                         ep_obj["workflowExecutionTimeout"] = ep.workflow_execution_timeout
+                    if ep.activity_start_to_close_timeout is not None:
                         ep_obj["activityStartToCloseTimeout"] = ep.activity_start_to_close_timeout
+                    if ep.activity_heartbeat_timeout is not None:
                         ep_obj["activityHeartbeatTimeout"] = ep.activity_heartbeat_timeout
+                    if ep.maximum_attempts is not None:
                         ep_obj["maximumAttempts"] = ep.maximum_attempts
                     eps_node[ep_key[ep.id]] = ep_obj
                 dc_obj["endpoints"] = eps_node
