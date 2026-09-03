@@ -435,6 +435,10 @@ class ManagedDataConnector(DataConnector):
         pass
 
     @abstractmethod
+    async def start_admission(self, ctx: Context) -> None:
+        pass
+
+    @abstractmethod
     async def stop(self, ctx: Context) -> None:
         pass
 

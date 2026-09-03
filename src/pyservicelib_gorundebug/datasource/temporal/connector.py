@@ -411,7 +411,7 @@ class Connector(ManagedDataConnector):
             return
         _configure_workflow_logging(self._environment.log)
         cfg = self._config()
-        worker_stop_timeout = _resolve_worker_stop_timeout(
+        _resolve_worker_stop_timeout(
             _integer(cfg, "worker_stop_timeout"),
             self._environment.service_config.shutdown_timeout,
         )
@@ -434,11 +434,51 @@ class Connector(ManagedDataConnector):
             if ctx.time_left is not None
             else connect
         )
-        # A Worker may receive an existing backlog as soon as its polling task
-        # starts.  Outbound submissions from that Activity must therefore be
-        # admitted before Worker polling begins, not after schedule
-        # reconciliation has completed.
+        # Opening the client and reconciling schedules do not admit inbound
+        # work. Worker polling is started separately by ServiceApp admission,
+        # after every downstream graph resource is ready.
         self._started = True
+        try:
+            # Validate registrations before the service reports that its
+            # connector phase completed, while still keeping admission closed.
+            self._build_queue_registrations()
+            for endpoint_id in self._endpoints:
+                endpoint_cfg = self._endpoint_config(endpoint_id)
+                if _bool(endpoint_cfg, "enabled") and getattr(
+                    endpoint_cfg, "schedule", None
+                ):
+                    await self._ensure_schedule(endpoint_cfg)
+        except BaseException:
+            self._started = False
+            try:
+                await self._shutdown_workers()
+            except BaseException as shutdown_error:
+                self._environment.log.error(
+                    "Temporal Worker startup rollback failed",
+                    str_field("connector", self._name),
+                    err_field(shutdown_error),
+                )
+            finally:
+                self._client = None
+            raise
+
+    async def start_admission(self, ctx: Context) -> None:
+        """Start polling only after the ordinary runtime graph is ready."""
+
+        if not self._started or self._client is None:
+            raise RuntimeError(
+                f"Temporal connector {self._name!r} is not started"
+            )
+        if self._worker_tasks:
+            return
+        cfg = self._config()
+        worker_stop_timeout = _resolve_worker_stop_timeout(
+            _integer(cfg, "worker_stop_timeout"),
+            self._environment.service_config.shutdown_timeout,
+        )
+        context_interceptor = TemporalContextPropagationInterceptor(
+            self._environment.tracing
+        )
         queues = self._build_queue_registrations()
         try:
             for task_queue, registration in queues.items():
@@ -467,24 +507,8 @@ class Connector(ManagedDataConnector):
             for task in self._worker_tasks:
                 if task.done():
                     task.result()
-            for endpoint_id in self._endpoints:
-                endpoint_cfg = self._endpoint_config(endpoint_id)
-                if _bool(endpoint_cfg, "enabled") and getattr(
-                    endpoint_cfg, "schedule", None
-                ):
-                    await self._ensure_schedule(endpoint_cfg)
         except BaseException:
-            self._started = False
-            try:
-                await self._shutdown_workers()
-            except BaseException as shutdown_error:
-                self._environment.log.error(
-                    "Temporal Worker startup rollback failed",
-                    str_field("connector", self._name),
-                    err_field(shutdown_error),
-                )
-            finally:
-                self._client = None
+            await self._shutdown_workers()
             raise
 
     async def stop(self, ctx: Context) -> None:

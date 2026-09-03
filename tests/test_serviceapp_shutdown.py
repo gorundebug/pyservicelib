@@ -121,6 +121,65 @@ def test_child_context_cancellation_is_one_way() -> None:
 
 
 @pytest.mark.asyncio
+async def test_service_opens_managed_admission_only_after_graph_is_ready() -> None:
+    events: list[str] = []
+
+    class TestApp(ServiceApp):
+        @property
+        def service_config(self):  # type: ignore[no-untyped-def,override]
+            return type(
+                "ServiceConfig",
+                (),
+                {
+                    "status_handler": "",
+                    "metrics_handler": "",
+                    "startup_handler": "",
+                    "readiness_handler": "",
+                    "liveness_handler": "",
+                },
+            )()
+
+    class Resource:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def start(self, _ctx: Context) -> None:
+            events.append(f"start:{self.name}")
+
+    class ManagedConnector(Resource):
+        async def start_admission(self, _ctx: Context) -> None:
+            events.append("start-admission:managed")
+
+    app = TestApp()
+    app._delay_pool = Resource("delay")  # type: ignore[assignment]
+    app._storages = [Resource("storage")]  # type: ignore[assignment]
+    app._task_pools = {"task": Resource("task")}  # type: ignore[assignment]
+    app._priority_task_pools = {  # type: ignore[assignment]
+        "priority": Resource("priority")
+    }
+    app._components = [Resource("component")]  # type: ignore[assignment]
+    app._dataSinks = {1: Resource("sink")}  # type: ignore[assignment]
+    app._managed_data_connectors = {  # type: ignore[assignment]
+        1: ManagedConnector("managed")
+    }
+    app._dataSources = {1: Resource("source")}  # type: ignore[assignment]
+
+    await app.start(Context(timedelta(seconds=1)))
+
+    assert events == [
+        "start:managed",
+        "start:storage",
+        "start:delay",
+        "start:task",
+        "start:priority",
+        "start:component",
+        "start:sink",
+        "start-admission:managed",
+        "start:source",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_service_stops_graph_pools_before_draining_parallel_tasks() -> None:
     events: list[str] = []
     pool_stopped = asyncio.Event()

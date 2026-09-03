@@ -492,6 +492,11 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await component.start(ctx)
         for ds in self._dataSinks.values():  # type: ignore[assignment]
             await ds.start(ctx)
+        # A managed connector may expose inbound polling as well as an
+        # outbound client. Open admission only after every downstream graph
+        # resource and sink is ready.
+        for connector in self._managed_data_connectors.values():
+            await connector.start_admission(ctx)
         # Sources may emit immediately from start(), so they are the final
         # graph admission boundary after all downstream resources are ready.
         for ds in self._dataSources.values():
