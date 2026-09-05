@@ -157,3 +157,32 @@ class LogsEngine(ABC):
 
     @abstractmethod
     async def shutdown(self) -> None: ...
+
+
+class NoopLogger(Logger):
+    """Logger that discards records without formatting fields."""
+
+    def debug(self, msg: str, *fields: Field) -> None:
+        del msg, fields
+
+    def info(self, msg: str, *fields: Field) -> None:
+        del msg, fields
+
+    def warn(self, msg: str, *fields: Field) -> None:
+        del msg, fields
+
+    def error(self, msg: str, *fields: Field) -> None:
+        del msg, fields
+
+
+class NoopLogsEngine(LogsEngine):
+    """Logging engine with no backend, queue, listener, or exporter."""
+
+    _logger = NoopLogger()
+
+    def default_logger(self, cfg: Optional[Config] = None) -> Logger:
+        del cfg
+        return self._logger
+
+    async def shutdown(self) -> None:
+        return None

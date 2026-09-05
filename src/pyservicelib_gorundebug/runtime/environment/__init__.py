@@ -9,3 +9,4 @@ from .environment import (
     ServiceDependency as ServiceDependency,
     ServiceEnvironment as ServiceEnvironment,
 )
+from .flags import flag_enabled as flag_enabled
