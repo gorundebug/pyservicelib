@@ -434,7 +434,7 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 )
                 if not data._response.done():
                     data.set_response(web.Response())
-                    return await data.get_response()
+                return await data.get_response()
             finally:
                 if span_scope is not None:
                     span_scope.__exit__(*sys.exc_info())
