@@ -31,6 +31,7 @@ from ...runtime.context import (
 )
 from ...runtime.datasource import DataSourceEndpoint, DataSourceEndpointConsumer, InputDataSource
 from ...runtime.environment.tracing import (
+    NOOP_SPAN,
     Tracer,
     Tracing,
     data_source_endpoint_tracing_enabled,
@@ -155,45 +156,49 @@ class _TemporalEndpointConsumer[Input, T, R, E](
         durable_span = False
         try:
             with ExitStack() as scopes:
-                scopes.enter_context(
-                    sampling_scope(
-                        sampling_enabled()
-                        or data_source_endpoint_tracing_enabled(
-                            self.endpoint.environment, self.endpoint.id,
+                if self._tracer is not None:
+                    scopes.enter_context(
+                        sampling_scope(
+                            sampling_enabled()
+                            or data_source_endpoint_tracing_enabled(
+                                self.endpoint.environment, self.endpoint.id,
+                            )
                         )
                     )
-                )
                 _, span = start_endpoint_span(
                     self._tracer,
                     "temporal.input",
                     self.stream.name,
                     self.endpoint.name,
                 )
-                durable_span = bind_durable_call_span(span)
-                with span.scoped():
-                    try:
-                        if self._result_stream is not None:
-                            if envelope.stream_id in self._pending:
-                                raise RuntimeError(
-                                    f"Temporal endpoint {self.endpoint.name!r} already "
-                                    f"has active execution {envelope.stream_id!r}"
-                                )
-                            future = asyncio.get_running_loop().create_future()
-                            self._pending[envelope.stream_id] = future
-                            self.endpoint.on_pending_add(envelope.stream_id)
-                        await self._invoke(value)
-                        if future is None:
-                            return EndpointResult()
-                        result = await future
-                        result_stream = self._result_stream
-                        if result_stream is None:
-                            raise RuntimeError("Temporal endpoint result stream disappeared")
-                        return EndpointResult(
-                            bytes(result_stream.serde.serialize(result))
-                        )
-                    except Exception as exc:
-                        span_error(span, exc)
-                        raise
+                durable_span = (
+                    span is not NOOP_SPAN and bind_durable_call_span(span)
+                )
+                if span is not NOOP_SPAN:
+                    scopes.enter_context(span.scoped())
+                try:
+                    if self._result_stream is not None:
+                        if envelope.stream_id in self._pending:
+                            raise RuntimeError(
+                                f"Temporal endpoint {self.endpoint.name!r} already "
+                                f"has active execution {envelope.stream_id!r}"
+                            )
+                        future = asyncio.get_running_loop().create_future()
+                        self._pending[envelope.stream_id] = future
+                        self.endpoint.on_pending_add(envelope.stream_id)
+                    await self._invoke(value)
+                    if future is None:
+                        return EndpointResult()
+                    result = await future
+                    result_stream = self._result_stream
+                    if result_stream is None:
+                        raise RuntimeError("Temporal endpoint result stream disappeared")
+                    return EndpointResult(
+                        bytes(result_stream.serde.serialize(result))
+                    )
+                except Exception as exc:
+                    span_error(span, exc)
+                    raise
         except asyncio.CancelledError:
             cancelled.set()
             raise
@@ -204,7 +209,7 @@ class _TemporalEndpointConsumer[Input, T, R, E](
             if future is not None:
                 self._pending.pop(envelope.stream_id, None)
                 self.endpoint.on_pending_remove(envelope.stream_id)
-            if not durable_span:
+            if span is not NOOP_SPAN and not durable_span:
                 span.end()
             self.endpoint.on_request_end(started, error)
             request_cancelled.reset(cancelled_token)

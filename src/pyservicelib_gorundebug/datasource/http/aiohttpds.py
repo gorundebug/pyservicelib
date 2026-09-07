@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import sys
 from abc import abstractmethod, ABC
 from typing import cast, Optional, Any, Protocol
 
@@ -20,7 +21,7 @@ from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
     sampling_scope,
     data_source_endpoint_tracing_enabled,
 )
@@ -308,6 +309,8 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             await self._pending.stop(ctx)
 
     async def serve_http(self, request: web.Request) -> web.Response:
+        if self._tracing is None:
+            return await self._serve_http(request)
         trace_requested = bool(request.headers.get('x-trace')) or (
             data_source_endpoint_tracing_enabled(
                 self._endpoint.environment, self._endpoint.id,
@@ -343,10 +346,14 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             "path",
             self._path,
         )
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            try:
                 try:
                     handler_data, handler_state = await self._handler.begin_request(self._sc, data)
                 except Exception as err:
@@ -427,7 +434,10 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 )
                 if not data._response.done():
                     data.set_response(web.Response())
-                return await data.get_response()
+                    return await data.get_response()
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             response = (
                 data._response.result()
@@ -456,7 +466,8 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 request.content_length,
                 response_body_size,
             )
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
     async def _consume_result(self, value: R) -> None:
         if not self._has_result or self._pending is None:

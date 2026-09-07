@@ -3,6 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 import asyncio
+import sys
 from typing import Protocol, Optional, Any, cast
 from abc import ABC, abstractmethod
 
@@ -13,7 +14,7 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -126,8 +127,12 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         try:
-            with span.scoped():
+            try:
                 handler_ctx, handler_state = await self._handler.begin_request(ctx, stream)
                 span_event(span, "begin_request")
 
@@ -142,9 +147,13 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     await self._handler.end_request(handler_ctx, stream, err, handler_state)
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
     async def start(self, ctx: Context) -> None:
         self._ctx = ctx

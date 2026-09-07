@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import sys
 from typing import Optional, Protocol, Any, cast
 
 import aiohttp
@@ -19,7 +20,7 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -272,8 +273,12 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         response_status: Optional[str] = None
         response_body_size: Optional[int] = None
         stream_id_token = None
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         try:
-            with span.scoped():
+            try:
                 try:
                     handler_state = await self._handler.begin_request(self._sc)
                 except Exception as err:
@@ -327,6 +332,9 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
 
                 span_event(span, "handle_response")
                 await self._handler.end_request(self._sc, None, handler_state)
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             ep.on_request_end(
                 start_time,
@@ -335,7 +343,8 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                 req.body_size if "req" in locals() else None,
                 response_body_size,
             )
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
             if stream_id_token is not None:
                 request_stream_id.reset(stream_id_token)
 

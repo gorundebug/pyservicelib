@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-from contextlib import nullcontext
+from contextlib import nullcontext, ExitStack
 from typing import Optional, Protocol, Any, Callable, cast
 
 from aiokafka import AIOKafkaConsumer  # type: ignore[import-not-found,import-untyped]
@@ -30,7 +30,7 @@ from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
     data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
 )
 
@@ -437,7 +437,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
 
     async def _endpoint_request(self, record: ConsumerRecord) -> None:
         env = getattr(self._input_stream, "environment", None)
-        if env is None:
+        if env is None or self._tracer is None:
             await self._endpoint_request_inner(record)
             return
         carrier = {
@@ -475,7 +475,9 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         start_time: Optional[float] = None
         end_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            with ExitStack() as scopes:
+                if span is not NOOP_SPAN:
+                    scopes.enter_context(span.scoped())
                 msg = ConsumerMessage(
                     record, self._kafka_consumer, self._mark_message
                 )
@@ -547,7 +549,8 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         finally:
             if start_time is not None:
                 ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
     async def _consume_result(self, value: R) -> None:
         if not self._has_result or self._pending is None:

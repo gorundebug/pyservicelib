@@ -5,6 +5,7 @@
 
 import asyncio
 import random
+import sys
 from typing import Optional, Protocol, Callable, Any, cast
 
 from aiokafka import AIOKafkaProducer  # type: ignore[import-not-found,import-untyped]
@@ -24,7 +25,7 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
 
@@ -281,8 +282,12 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         )
         start_time: Optional[float] = None
         end_err: Optional[Exception] = None
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         try:
-            with span.scoped():
+            try:
                 try:
                     handler_state = self._handler.begin_request(stream)
                 except Exception as err:
@@ -351,10 +356,14 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                     span_event(span, "consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     await self._handler.end_request(stream, err, handler_state)
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             if start_time is not None:
                 ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 def _make_tracer(stream: TypedSinkStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:

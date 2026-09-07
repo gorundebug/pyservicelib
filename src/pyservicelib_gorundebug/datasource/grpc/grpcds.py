@@ -18,6 +18,7 @@ The user passes the returned handler directly as the gRPC servicer method.
 """
 
 import asyncio
+import sys
 from abc import abstractmethod, ABC
 from collections.abc import Awaitable, Coroutine
 from typing import Optional, Protocol, Any, AsyncIterator, Callable, cast
@@ -26,7 +27,7 @@ import grpc
 import grpc.aio
 
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, span_attrs,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, span_attrs,
     string_attr, bool_attr, sampling_scope,
     data_source_endpoint_tracing_enabled,
 )
@@ -402,6 +403,10 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         eof_after_first: bool,
         request_iter: Optional[AsyncIterator[ReqT]] = None,
     ) -> Optional[Exception]:
+        if self._tracing is None:
+            return await self._handle_common_inner(
+                sid, req, sender, eof_after_first, request_iter
+            )
         trace_requested = bool(carrier.get('x-trace')) or (
             data_source_endpoint_tracing_enabled(
                 self._endpoint.environment, self._endpoint.id,
@@ -440,8 +445,10 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             self._sc.stream.name,
             self._endpoint.name,
         )
-        span_scope = span.scoped()
-        span_scope.__enter__()
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
 
         try:
             try:
@@ -580,8 +587,10 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             return cancel_err
 
         finally:
-            span_scope.__exit__(None, None, None)
-            span.end()
+            if span_scope is not None:
+                span_scope.__exit__(*sys.exc_info())
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 # ---------------------------------------------------------------------------

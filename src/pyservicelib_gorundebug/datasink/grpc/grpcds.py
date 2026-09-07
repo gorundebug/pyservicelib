@@ -15,7 +15,9 @@ per pipeline value.
 """
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator, Generator
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Optional, Protocol, Any, cast
 
@@ -30,7 +32,7 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    Tracer, Tracing, Span, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
     sampling_enabled,
 )
 from ...runtime.store.rotatingmap import RotatingMap
@@ -441,11 +443,15 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         _, span = start_endpoint_span(
             self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
         )
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         ep = self._endpoint
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            try:
                 try:
                     handler_state = await self._begin()
                 except Exception as err:
@@ -502,9 +508,13 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
 
                 span_event(span, "handle_response")
                 await self._end(None, handler_state)
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
@@ -531,7 +541,7 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 try:
                     handler_state = await self._begin()
                 except Exception as err:
@@ -591,7 +601,8 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                 await self._end(None, handler_state)
         finally:
             ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
@@ -633,14 +644,15 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             _, span = start_endpoint_span(
                 self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
             )
-            with span.scoped():
+            with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 try:
                     handler_state = await self._begin()
                 except Exception as err:
                     ep.on_begin_request_failed(err)
                     span_error(span, err)
                     span_event(span, "begin_request.error", string_attr("error", str(err)))
-                    span.end()
+                    if span is not NOOP_SPAN:
+                        span.end()
                     cell.error = err
                     cell.ready.set()
                     _drop_reservation(self._pending, stream_id, cell)
@@ -662,7 +674,8 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     span_event(span, "grpc_call.error", string_attr("error", str(e)))
                     await self._end(e, handler_state)
                     ep.on_request_end(start_time, e)
-                    span.end()
+                    if span is not NOOP_SPAN:
+                        span.end()
                     cell.error = e
                     cell.ready.set()
                     _drop_reservation(self._pending, stream_id, cell)
@@ -695,7 +708,11 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             if not still_pending or current is not cell:
                 ep.on_late_result(stream_id)
                 return
-            with session.span.scoped():
+            with (
+                session.span.scoped()
+                if session.span is not NOOP_SPAN
+                else nullcontext()
+            ):
                 try:
                     await self._handler.consume_message(
                         self._sc, session.handler_state, value, session.sender,
@@ -721,7 +738,7 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         span = session.span
         end_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 await session.done_ctx.wait()
                 async with session.lifetime.write_lock():
                     session.finished = True
@@ -755,7 +772,8 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     await self._end(None, session.handler_state)
         finally:
             ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
@@ -797,14 +815,15 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             _, span = start_endpoint_span(
                 self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
             )
-            with span.scoped():
+            with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 try:
                     handler_state = await self._begin()
                 except Exception as err:
                     ep.on_begin_request_failed(err)
                     span_error(span, err)
                     span_event(span, "begin_request.error", string_attr("error", str(err)))
-                    span.end()
+                    if span is not NOOP_SPAN:
+                        span.end()
                     cell.error = err
                     cell.ready.set()
                     _drop_reservation(self._pending, stream_id, cell)
@@ -826,7 +845,8 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     span_event(span, "grpc_call.error", string_attr("error", str(e)))
                     await self._end(e, handler_state)
                     ep.on_request_end(start_time, e)
-                    span.end()
+                    if span is not NOOP_SPAN:
+                        span.end()
                     cell.error = e
                     cell.ready.set()
                     _drop_reservation(self._pending, stream_id, cell)
@@ -862,7 +882,11 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
             if not still_pending or current is not cell:
                 ep.on_late_result(stream_id)
                 return
-            with session.span.scoped():
+            with (
+                session.span.scoped()
+                if session.span is not NOOP_SPAN
+                else nullcontext()
+            ):
                 try:
                     await self._handler.consume_message(
                         self._sc, session.handler_state, value, session.sender,
@@ -906,7 +930,7 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         span = session.span
         recv_err: Optional[Exception] = None
         try:
-            with span.scoped():
+            with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 await session.done_ctx.wait()
                 async with session.lifetime.write_lock():
                     session.finished = True
@@ -924,7 +948,8 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
                     await self._end(recv_err, session.handler_state)
         finally:
             ep.on_request_end(start_time, recv_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
 
 # ---------------------------------------------------------------------------

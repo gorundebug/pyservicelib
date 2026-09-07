@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from datetime import timezone
 from typing import Any, Optional, Protocol
 
@@ -31,6 +32,7 @@ from ...runtime.context import (
 )
 from ...runtime.datasink import DataSinkEndpoint, OutputDataSink
 from ...runtime.environment.tracing import (
+    NOOP_SPAN,
     Tracer,
     Tracing,
     span_error,
@@ -152,7 +154,9 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         )
         state: HandlerState
         try:
-            with span.scoped():
+            with ExitStack() as scopes:
+                if span is not NOOP_SPAN:
+                    scopes.enter_context(span.scoped())
                 state = await self._handler.begin_request(self._stream)
                 message_id = (
                     self._handler.get_message_id(self._stream, state, value)
@@ -191,7 +195,8 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         finally:
             if "state" in locals():
                 await self._handler.end_request(self._stream, error, state)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
             self.endpoint.on_request_end(started, error)
             self._datasink.leave(active_task)
 

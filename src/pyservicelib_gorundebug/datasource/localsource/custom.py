@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 import asyncio
+import sys
 from abc import ABC, abstractmethod
 from typing import Protocol, Optional, Any, cast
 
@@ -18,7 +19,7 @@ from ...runtime.context.request import (
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Span, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
     data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
 )
 
@@ -247,6 +248,9 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         await self._input_stream.consume(value)
 
     async def _endpoint_request(self, value: T) -> None:
+        if self._tracer is None:
+            await self._endpoint_request_inner(value)
+            return
         with sampling_scope(
             sampling_enabled()
             or data_source_endpoint_tracing_enabled(
@@ -267,8 +271,12 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
+        span_scope = None
+        if span is not NOOP_SPAN:
+            span_scope = span.scoped()
+            span_scope.__enter__()
         try:
-            with span.scoped():
+            try:
                 try:
                     handler_ctx, handler_state = await self._handler.begin_request(ctx, self._sc)
                 except Exception as err:
@@ -345,9 +353,13 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     await self._handler.end_request(
                         handler_ctx, self._sc, None, handler_state
                     )
+            finally:
+                if span_scope is not None:
+                    span_scope.__exit__(*sys.exc_info())
         finally:
             ep.on_request_end(start_time, end_err)
-            span.end()
+            if span is not NOOP_SPAN:
+                span.end()
 
     async def consume(self, value: T) -> None:
         """Entry point from data producer — applies concurrency control."""
