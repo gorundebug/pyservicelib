@@ -828,3 +828,34 @@ async def test_workflow_ownership_awaits_decoded_memo() -> None:
     await _validate_workflow_ownership(
         _Handle(), "servicelib.test", "owner-1", "message-1"
     )
+
+
+@pytest.mark.parametrize('pool_type', [_WorkflowTaskPool, _WorkflowPriorityTaskPool])
+async def test_workflow_pool_concurrent_stop_survives_waiter_cancellation(pool_type):
+    def reporter(error):
+        raise RuntimeError('reporter failed')
+    pool = pool_type('drain', 0, reporter, now=_fixed_workflow_time)
+    await pool.start(Context())
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    completed = []
+    async def callback():
+        started.set()
+        await gate.wait()
+        completed.append(1)
+        raise ValueError('callback failed')
+    if pool_type is _WorkflowTaskPool:
+        await pool.add_task(callback)
+    else:
+        await pool.add_task(0, callback)
+    await started.wait()
+    a = asyncio.create_task(pool.stop(Context()))
+    b = asyncio.create_task(pool.stop(Context()))
+    await asyncio.sleep(0)
+    assert not a.done() and not b.done()
+    a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    gate.set()
+    await asyncio.wait_for(b, 1)
+    assert completed == [1]

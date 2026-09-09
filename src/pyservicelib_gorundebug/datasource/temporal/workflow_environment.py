@@ -69,6 +69,7 @@ from .workflow_telemetry import WorkflowLogger, WorkflowMetrics, WorkflowTracing
 
 class _WorkflowPool:
     """Deterministic fixed-size task pool for one Workflow execution."""
+    _uses_priority = False
 
     def __init__(
         self,
@@ -81,10 +82,15 @@ class _WorkflowPool:
         now: Callable[[], datetime] = workflow.now,
     ) -> None:
         self._name = name
+        priority = priority or self._uses_priority
+        if executors_count < 0:
+            raise ValueError("executors_count must be non-negative")
+        # Replay cannot depend on the host CPU count.
         self._executors_count = max(1, executors_count)
-        self._queue: asyncio.PriorityQueue[
+        self._stop_task: asyncio.Task[None] | None = None
+        self._queue: asyncio.Queue[
             tuple[int, int, tuple[Callable[..., Awaitable[Any]], tuple[Any, ...], dict[str, Any], Any] | None]
-        ] = asyncio.PriorityQueue()
+        ] = asyncio.PriorityQueue() if priority else asyncio.Queue()
         self._on_error = on_error
         self._executors: list[asyncio.Task[None]] = []
         self._sequence = 0
@@ -117,9 +123,12 @@ class _WorkflowPool:
 
     async def stop(self, ctx: Context) -> None:
         del ctx
-        if self._stopped:
-            return
-        self._stopped = True
+        if self._stop_task is None:
+            self._stopped = True
+            self._stop_task = asyncio.create_task(self._drain())
+        await asyncio.shield(self._stop_task)
+
+    async def _drain(self) -> None:
         await self._idle.wait()
         for _ in self._executors:
             self._queue.put_nowait((2, self._next_sequence(), None))
@@ -181,7 +190,10 @@ class _WorkflowPool:
                 try:
                     await task
                 except BaseException as error:
-                    self._on_error(error)
+                    try:
+                        self._on_error(error)
+                    except Exception:
+                        pass
                 finally:
                     self._pool_metrics.executors_busy.dec()
                     self._pool_metrics.tasks_total.inc()
@@ -211,6 +223,8 @@ class _WorkflowTaskPool(_WorkflowPool, TaskPool):
 
 
 class _WorkflowPriorityTaskPool(_WorkflowPool, PriorityTaskPool):
+    _uses_priority = True
+
     async def add_task(
         self,
         priority: int,

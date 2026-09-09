@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 from pyservicelib_gorundebug.runtime.pool import (
     PoolAlreadyStartedError,
     PoolCancelledError,
-    PoolNotStartedError,
     PoolStoppedError,
     make_delay_pool,
 )
@@ -954,22 +953,30 @@ async def test_delay_pool_no_double_execution():
     assert count == 1
 
 
-# ========== TaskPool + PriorityTaskPool: PoolNotStartedError + shutdown waits ==========
+# ========== TaskPool + PriorityTaskPool: admission before start and shutdown waits ==========
 
 @pytest.mark.asyncio
-async def test_task_pool_add_before_start_raises():
-    env = _make_env()
-    pool = TaskPoolImpl("p", env)
-    with pytest.raises(PoolNotStartedError):
-        await pool.add_task(asyncio.sleep, 0)
+async def test_task_pool_accepts_before_start():
+    pool = TaskPoolImpl("p", _make_env())
+    completed = asyncio.Event()
+    async def callback():
+        completed.set()
+    await pool.add_task(callback)
+    await pool.start(default_context())
+    await pool.stop(default_context())
+    assert completed.is_set()
 
 
 @pytest.mark.asyncio
-async def test_priority_pool_add_before_start_raises():
-    env = _make_env()
-    pool = PriorityTaskPoolImpl("p", env)
-    with pytest.raises(PoolNotStartedError):
-        await pool.add_task(0, asyncio.sleep, 0)
+async def test_priority_pool_accepts_before_start():
+    pool = PriorityTaskPoolImpl("p", _make_env())
+    completed = asyncio.Event()
+    async def callback():
+        completed.set()
+    await pool.add_task(0, callback)
+    await pool.start(default_context())
+    await pool.stop(default_context())
+    assert completed.is_set()
 
 
 @pytest.mark.asyncio
@@ -1071,11 +1078,15 @@ async def test_priority_pool_rejects_expired_deadline_without_leaking_work():
 
 
 @pytest.mark.asyncio
-async def test_delay_pool_add_before_start_raises():
-    env = _make_env()
-    pool = DelayPoolImpl(env)
-    with pytest.raises(PoolNotStartedError):
-        await pool.add_task(timedelta(seconds=1), asyncio.sleep, 0)
+async def test_delay_pool_accepts_before_start():
+    pool = DelayPoolImpl(_make_env())
+    completed = asyncio.Event()
+    async def callback():
+        completed.set()
+    await pool.add_task(timedelta(milliseconds=1), callback)
+    await pool.start(default_context())
+    await pool.stop(default_context())
+    assert completed.is_set()
 
 
 @pytest.mark.asyncio
@@ -1119,3 +1130,189 @@ async def test_delay_pool_rejects_expired_deadline_without_leaking_work():
         request_deadline.reset(token)
 
     await pool.stop(ctx)
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'priority', 'delay'])
+async def test_pool_independent_context_and_shared_shutdown(kind):
+    from contextvars import ContextVar
+    local = ContextVar('pool_regression', default='missing')
+    env = _make_env(2)
+    env.log.warn.side_effect = RuntimeError('reporter failed')
+    pool = (DelayPoolImpl(env) if kind == 'delay' else
+            TaskPoolImpl('test', env) if kind == 'fifo' else PriorityTaskPoolImpl('test', env))
+    async def add(fn):
+        if kind == 'delay':
+            await pool.add_task(timedelta(), fn)
+        elif kind == 'priority':
+            await pool.add_task(0, fn)
+        else:
+            await pool.add_task(fn)
+    gate = asyncio.Event()
+    progress = asyncio.Event()
+    seen = []
+    tasks = []
+    async def first():
+        tasks.append(asyncio.current_task())
+        seen.append(local.get())
+        await gate.wait()
+        seen.append(local.get())
+    async def second():
+        tasks.append(asyncio.current_task())
+        await asyncio.sleep(0)
+        seen.append(local.get())
+        progress.set()
+        raise asyncio.CancelledError()
+    for value, fn in [('first', first), ('second', second)]:
+        token = local.set(value)
+        try:
+            await add(fn)
+        finally:
+            local.reset(token)
+    await pool.start(default_context())
+    a = asyncio.create_task(pool.stop(default_context()))
+    b = asyncio.create_task(pool.stop(default_context()))
+    await asyncio.wait_for(progress.wait(), 1)
+    assert not a.done() and not b.done()
+    a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    assert not b.done()
+    gate.set()
+    await asyncio.wait_for(b, 1)
+    assert seen == ['first', 'second', 'first']
+    assert tasks[0] is not tasks[1]
+    await pool.stop(default_context())
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'priority'])
+async def test_pool_zero_cpu_and_prestart_drain(kind, monkeypatch):
+    monkeypatch.setattr(os, 'cpu_count', lambda: 2)
+    env = _make_env(0)
+    pool = TaskPoolImpl('test', env) if kind == 'fifo' else PriorityTaskPoolImpl('test', env)
+    assert pool._target == 2
+    ran = asyncio.Event()
+    async def callback():
+        ran.set()
+    if kind == 'fifo':
+        await pool.add_task(callback)
+    else:
+        await pool.add_task(0, callback)
+    await asyncio.wait_for(pool.stop(default_context()), 1)
+    assert ran.is_set()
+    assert not pool._all_executors
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'priority', 'delay'])
+async def test_pool_shared_cancellation_has_no_duplicates(kind):
+    env = _make_env(1)
+    pool = (DelayPoolImpl(env) if kind == 'delay' else
+            TaskPoolImpl('test', env) if kind == 'fifo' else PriorityTaskPoolImpl('test', env))
+    event = asyncio.Event()
+    token = request_cancelled.set(event)
+    seen = []
+    async def callback(index):
+        seen.append(index)
+    try:
+        for n in range(200):
+            if kind == 'delay':
+                await pool.add_task(timedelta(days=1), callback, n)
+            elif kind == 'priority':
+                await pool.add_task(n, callback, n)
+            else:
+                await pool.add_task(callback, n)
+    finally:
+        request_cancelled.reset(token)
+    assert len(pool._watches.waiters) == 1
+    event.set()
+    assert not seen
+    await asyncio.sleep(0)
+    await asyncio.wait_for(pool.stop(default_context()), 1)
+    assert sorted(seen) == list(range(200))
+    assert not pool._queue
+    assert not pool._watches.callbacks
+    assert not pool._watches.groups
+    assert not pool._watches.waiters
+
+
+async def test_native_pool_cancelled_future_and_async_close():
+    pool = AsyncThreadPoolExecutor(1)
+    async def slow():
+        await asyncio.sleep(.03)
+        return 1
+    future = pool.add_task(slow)
+    waiter = asyncio.create_task(future.result())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    async def cancelled():
+        raise asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await pool.add_task(cancelled).result()
+    assert await pool.add_task(slow).result() == 1
+    closing = asyncio.create_task(pool.aclose())
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match='stopped'):
+        pool.add_task(slow)
+    await asyncio.wait_for(closing, 1)
+    assert all(thread._loop.is_closed() for thread in pool.threads)
+    assert all(not thread._thread.is_alive() for thread in pool.threads)
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'priority'])
+async def test_pool_hot_shrink_and_stop_keep_concurrency_bound(kind):
+    env = _make_env(3)
+    pool = TaskPoolImpl('test', env) if kind == 'fifo' else PriorityTaskPoolImpl('test', env)
+    gates = [asyncio.Event() for _ in range(3)]
+    started = []
+    queued = asyncio.Event()
+    async def block(index):
+        started.append(index)
+        await gates[index].wait()
+    async def callback():
+        queued.set()
+    async def add(fn, *args):
+        if kind == 'fifo':
+            await pool.add_task(fn, *args)
+        else:
+            await pool.add_task(0, fn, *args)
+    await pool.start(default_context())
+    for n in range(3):
+        await add(block, n)
+    await add(callback)
+    while len(started) < 3:
+        await asyncio.sleep(0)
+    env.config.get_pool_by_name.return_value.executors_count = 1
+    async with asyncio.timeout(2):
+        while pool._target != 1:
+            await asyncio.sleep(.01)
+    stop = asyncio.create_task(pool.stop(default_context()))
+    # Release the retained worker first: it must not start new work while retired
+    # workers are still executing callbacks.
+    gates[0].set()
+    await asyncio.sleep(.01)
+    assert not queued.is_set()
+    gates[1].set()
+    await asyncio.sleep(.01)
+    assert not queued.is_set()
+    gates[2].set()
+    await asyncio.wait_for(stop, 1)
+    assert queued.is_set()
+
+
+async def test_delay_stop_timeout_does_not_advance_scheduled_work():
+    pool = DelayPoolImpl(_make_env())
+    seen = []
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    async def callback():
+        seen.append(loop.time() - start)
+    await pool.add_task(timedelta(milliseconds=60), callback)
+    ctx = default_context()
+    ctx.cancel()
+    stop = asyncio.create_task(pool.stop(ctx))
+    await asyncio.sleep(.01)
+    assert not stop.done()
+    assert not seen
+    await asyncio.wait_for(stop, 1)
+    assert len(seen) == 1 and seen[0] >= .055
