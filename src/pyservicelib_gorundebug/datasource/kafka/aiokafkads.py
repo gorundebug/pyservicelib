@@ -4,6 +4,8 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+from collections import deque
+from contextvars import copy_context
 from contextlib import nullcontext, ExitStack
 from typing import Optional, Protocol, Any, Callable, cast
 
@@ -270,7 +272,9 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._active_count = 0
         self._concurrency_changed = asyncio.Condition()
         self._message_tasks = set()
-        self._partition_locks = {}
+        self._partition_queues = {}
+        self._paused_partitions = set()
+        self._partition_prefetch = 1
         self._marked_offsets = {}
         self._tracer = tracer
 
@@ -403,21 +407,63 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 self._marked_offsets.pop(partition, None)
 
     async def _process_record(self, record: ConsumerRecord) -> None:
-        async def _run() -> None:
-            lane = self._partition_locks.setdefault(
-                (record.topic, record.partition), asyncio.Lock()
+        if self._stopped:
+            return
+        partition = TopicPartition(record.topic, record.partition)
+        queue = self._partition_queues.get(partition)
+        new_partition = queue is None
+        if queue is None:
+            queue = deque()
+            self._partition_queues[partition] = queue
+        queue.append((record, copy_context()))
+        # Match Go's claim loop: do not admit another record in this partition
+        # while its request is active or waiting for endpoint concurrency.
+        if len(queue) >= self._partition_prefetch and self._kafka_consumer is not None:
+            self._kafka_consumer.pause(partition)
+            self._paused_partitions.add(partition)
+        if new_partition:
+            lane = asyncio.create_task(
+                self._run_partition(partition, queue), context=queue[0][1]
             )
-            async with lane:
-                if not await self._acquire_concurrency():
-                    return
-                try:
-                    await self._endpoint_request(record)
-                finally:
-                    await self._release_concurrency()
+            self._message_tasks.add(lane)
+            lane.add_done_callback(self._message_tasks.discard)
 
-        task = asyncio.create_task(_run())
-        self._message_tasks.add(task)
-        task.add_done_callback(self._message_tasks.discard)
+    def _resume_partition(self, partition) -> None:
+        if partition not in self._paused_partitions:
+            return
+        self._paused_partitions.discard(partition)
+        consumer = self._kafka_consumer
+        # A rebalance may revoke the partition while its callback is running.
+        if not self._stopped and consumer is not None and partition in consumer.assignment():
+            consumer.resume(partition)
+
+    async def _run_partition(self, partition, queue) -> None:
+        first = True
+        try:
+            while queue and not self._stopped:
+                record, context = queue.popleft()
+                if first:
+                    # The lane itself is already a separate task with this
+                    # record's context. Avoid a second task in the usual case.
+                    first = False
+                    await self._dispatch_record(record)
+                else:
+                    # Any queued request receives its own ContextVars and task.
+                    await asyncio.create_task(self._dispatch_record(record), context=context)
+                if not queue:
+                    self._resume_partition(partition)
+        finally:
+            self._partition_queues.pop(partition, None)
+            queue.clear()
+            self._resume_partition(partition)
+
+    async def _dispatch_record(self, record) -> None:
+        if not await self._acquire_concurrency():
+            return
+        try:
+            await self._endpoint_request(record)
+        finally:
+            await self._release_concurrency()
 
     async def _acquire_concurrency(self) -> bool:
         async with self._concurrency_changed:

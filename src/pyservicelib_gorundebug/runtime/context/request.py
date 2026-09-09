@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
-import uuid
+import os
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Optional
@@ -44,7 +44,10 @@ request_stream_id: ContextVar[Optional[str]] = ContextVar('request_stream_id', d
 
 
 def new_stream_id() -> str:
-    return str(uuid.uuid4())
+    raw = os.urandom(16)
+    value = raw.hex()
+    return (f"{value[:8]}-{value[8:12]}-4{value[13:16]}-"
+            f"{'89ab'[raw[8] & 3]}{value[17:20]}-{value[20:]}")
 
 
 def stream_id_from_context() -> Optional[str]:
