@@ -10,6 +10,7 @@ from ..runtime.common import (
     Caller,
     RuntimeHelpers,
     ServiceExecutionEnvironment,
+    Stream,
     TypedLinkStream,
     TypedStream,
     StreamConsumer,
@@ -53,6 +54,12 @@ class LinkStream[T](TypedLinkStream[T]):
     def consumer(self, value: StreamConsumer[T]):
         self._consumer = value
         self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
+
+    @property
+    def consumers(self) -> list[Stream]:
+        if self._consumer is None:
+            return []
+        return [self._consumer.stream]
 
     def set_source(self, stream: TypedStream[T]):
         self._source = stream

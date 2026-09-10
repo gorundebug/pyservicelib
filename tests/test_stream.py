@@ -229,6 +229,7 @@ async def test_cycle_link_uses_runtime_caller(monkeypatch):
     await link.consume(7)
 
     assert forwarded == [7]
+    assert [consumer.id for consumer in link.consumers] == [2]
 
 
 @pytest.mark.benchmark(group="slots")
