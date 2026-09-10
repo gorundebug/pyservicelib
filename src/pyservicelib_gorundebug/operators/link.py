@@ -6,7 +6,14 @@
 
 from typing import Optional
 
-from ..runtime.common import ServiceExecutionEnvironment, TypedLinkStream, TypedStream, StreamConsumer
+from ..runtime.common import (
+    Caller,
+    RuntimeHelpers,
+    ServiceExecutionEnvironment,
+    TypedLinkStream,
+    TypedStream,
+    StreamConsumer,
+)
 from ..runtime.config.stream_types import CycleLinkStreamConfig
 from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream_span
 
@@ -14,25 +21,27 @@ from ..runtime.environment.tracing import Tracer, sampling_enabled, start_stream
 class LinkStream[T](TypedLinkStream[T]):
     _source: Optional[TypedStream[T]]
     _consumer: Optional[StreamConsumer[T]]
+    _caller: Optional[Caller[T]]
     _tracer: Optional[Tracer]
 
     def __init__(self, cfg: CycleLinkStreamConfig, env: ServiceExecutionEnvironment):
         super().__init__(stream_id=cfg.id, env=env)
         self._source = None
         self._consumer = None
+        self._caller = None
         tracing = env.tracing
         self._tracer = tracing.tracer(env.service_config.name) if tracing is not None else None
 
     async def consume(self, value: T) -> None:
         if self._tracer is None or not sampling_enabled():
-            if self._consumer is not None:
-                await self._consumer.consume(value)
+            if self._caller is not None:
+                await self._caller.consume(value)
             return
         _, span = start_stream_span(self._tracer, "stream.link", self)
         try:
             with span.scoped():
-                if self._consumer is not None:
-                    await self._consumer.consume(value)
+                if self._caller is not None:
+                    await self._caller.consume(value)
         finally:
             span.end()
 
@@ -43,6 +52,7 @@ class LinkStream[T](TypedLinkStream[T]):
     @consumer.setter
     def consumer(self, value: StreamConsumer[T]):
         self._consumer = value
+        self._caller = RuntimeHelpers[T](self.environment).make_caller(self)
 
     def set_source(self, stream: TypedStream[T]):
         self._source = stream

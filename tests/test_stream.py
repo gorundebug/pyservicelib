@@ -22,6 +22,7 @@ from pyservicelib_gorundebug.runtime.common import (
 )
 from pyservicelib_gorundebug import transformation
 from pyservicelib_gorundebug.operators.map import MapStream
+from pyservicelib_gorundebug.operators.link import LinkStream
 from pyservicelib_gorundebug.operators.split import SplitLink, SplitStream
 
 from .mockservice import MockService, MockServiceConfig, MockServiceDependency
@@ -192,6 +193,42 @@ def test_terminal_transform_has_no_consumers_before_wiring():
 
     assert stream.consumer is None
     assert stream.consumers == []
+
+
+@pytest.mark.asyncio
+async def test_cycle_link_uses_runtime_caller(monkeypatch):
+    forwarded: list[int] = []
+
+    class Consumer:
+        stream = SimpleNamespace(name="merge", id=2)
+
+        async def consume(self, value: int) -> None:
+            raise AssertionError("CycleLink must forward through its caller")
+
+    class Caller:
+        async def consume(self, value: int) -> None:
+            forwarded.append(value)
+
+    environment = SimpleNamespace(
+        tracing=None,
+        config=SimpleNamespace(
+            get_stream_config_by_id=lambda _stream_id: SimpleNamespace(
+                name="cycle-link",
+                transformation_name="cycleLink",
+            ),
+        ),
+        runtime=SimpleNamespace(register_stream=lambda _stream: None),
+    )
+    link = LinkStream[int](SimpleNamespace(id=1), environment)
+    monkeypatch.setattr(
+        "pyservicelib_gorundebug.operators.link.RuntimeHelpers.make_caller",
+        lambda _helpers, source: Caller(),
+    )
+
+    link.consumer = Consumer()
+    await link.consume(7)
+
+    assert forwarded == [7]
 
 
 @pytest.mark.benchmark(group="slots")
