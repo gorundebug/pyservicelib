@@ -108,6 +108,8 @@ async def test_kafka_message_key_does_not_replace_request_stream_id() -> None:
     consumer._stream = SimpleNamespace(name="Kafka stream")
     consumer._handler = _Handler()
     consumer._partitioner = None
+    consumer._pipeline_name = ""
+    consumer._component_name = ""
     consumer._tracer = None
 
     with_stream_id("request-correlation-id")
@@ -144,6 +146,8 @@ async def test_kafka_custom_partitioner_receives_current_partition_count() -> No
     consumer._stream = SimpleNamespace(name="Kafka stream")
     consumer._handler = _SendingHandler()
     consumer._partitioner = partitioner
+    consumer._pipeline_name = ""
+    consumer._component_name = ""
     consumer._tracer = None
 
     await consumer.consume(value)
@@ -177,6 +181,8 @@ async def test_kafka_begin_failure_is_not_counted_as_active_request() -> None:
     consumer._stream = SimpleNamespace(name="Kafka stream")
     consumer._handler = _FailingBeginHandler()
     consumer._partitioner = None
+    consumer._pipeline_name = ""
+    consumer._component_name = ""
     consumer._tracer = None
 
     await consumer.consume(object())

@@ -15,6 +15,8 @@ own independent stream.
 import asyncio
 from datetime import datetime, timedelta, timezone
 import pytest
+from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
+from pyservicelib_gorundebug.runtime.config import StreamConfig
 
 from pyservicelib_gorundebug.datasink.grpc.grpcds import (
     _ClientStreamingSinkConsumer, _BidiStreamingSinkConsumer, _request_timeout,
@@ -33,6 +35,10 @@ class _FakeErrorStream:
 class _FakeStream:
     def __init__(self, name="test-stream"):
         self.name = name
+        self.config = StreamConfig(
+            id=1, name=name, idSource=0, type=TransformationType.Sink,
+            idService=1, xPos=0, yPos=0,
+        )
         self.error_stream = _FakeErrorStream()
         self.consumed_results = []
 

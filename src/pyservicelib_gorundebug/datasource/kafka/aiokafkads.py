@@ -23,6 +23,7 @@ from aiokafka.structs import (  # type: ignore[import-not-found,import-untyped]
     TopicPartition,
 )
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     TypedInputStream, ServiceExecutionEnvironment,
     Consumer, StreamContext, CollectFunc,
@@ -278,6 +279,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._marked_offsets = {}
         self._tracer = tracer
 
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._sc = StreamContext[T, R, E](
             stream=stream,
             result_stream=stream.get_result_stream(),
@@ -512,12 +514,16 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         with_stream_id(sid)
 
         ep = cast(DataSourceEndpoint, self._endpoint)
-        _, span = start_endpoint_span(
-            self._tracer,
-            "kafka.input",
-            self._input_stream.name,
-            ep.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "kafka.input",
+                self._input_stream.name,
+                ep.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         start_time: Optional[float] = None
         end_err: Optional[Exception] = None
         try:

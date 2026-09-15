@@ -7,6 +7,7 @@ import sys
 from typing import Protocol, Optional, Any, cast
 from abc import ABC, abstractmethod
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     TypedSinkStream, ServiceExecutionEnvironment,
     DataSink, SinkEndpoint, Consumer, Collect, CollectFunc,
@@ -14,6 +15,7 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
@@ -107,6 +109,7 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
 
     def __init__(self, endpoint: SinkEndpoint, sink_stream: TypedSinkStream[T, E],
                  handler: EndpointHandler[HandlerState, T, E]):
+        self._pipeline_name, self._component_name = stream_grouping(sink_stream)
         DataSinkEndpointConsumer.__init__(self, endpoint=endpoint, sink_stream=sink_stream)
         self._handler = handler
         self._ctx = None
@@ -119,12 +122,16 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
         stream = self.stream
         ep = cast(DataSinkEndpoint, self._endpoint)
 
-        _, span = start_endpoint_span(
-            self._tracer,
-            "local.output",
-            stream.name,
-            ep.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "local.output",
+                stream.name,
+                ep.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         span_scope = None

@@ -30,6 +30,7 @@ from .environment.tracing import (
     string_attr,
 )
 from .context import Context
+from .stream_grouping import stream_grouping
 from .datastruct import KeyValue
 from .config import EndpointConfig, DataConnectorConfig
 from .serde import BytesBuffer
@@ -95,9 +96,12 @@ class Caller[T](Consumer[T], ABC):
         self._tracer = tracer
         self._messages_counter = messages_counter if messages_counter is not None else NOOP_INT64_COUNTER
         self._record_messages = self._messages_counter is not NOOP_INT64_COUNTER
+        pipeline, component = stream_grouping(self._consumer.stream)
         self._trace_attrs = (
             string_attr("from", self._source.name),
             string_attr("to", self._consumer.stream.name),
+            string_attr("pipeline", pipeline),
+            string_attr("component", component),
         )
 
     @property
@@ -339,10 +343,13 @@ class RuntimeHelpers[T]:
             runtime.register_consume_statistics(LinkId(from_id=source.id, to_id=consumer.stream.id), statistics)
             runtime.register_link_info(RuntimeLinkInfo(from_id=source.id, to_id=consumer.stream.id, call_semantics=call_semantics))
 
+        pipeline, component = stream_grouping(consumer.stream)
         messages_counter = env.metrics.scope("stream", {
             "service": service_config.name,
             "from": source.name,
             "to": consumer.stream.name,
+            "pipeline": pipeline,
+            "component": component,
         }).counter("messages_total", "Total number of messages processed by stream link", {})
 
         tracing = env.tracing
@@ -703,7 +710,17 @@ class ServiceStream(Stream, ABC):
         stream_config = env.config.get_stream_config_by_id(stream_id)
         self._name = stream_config.name
         self._transformation_name = stream_config.transformation_name
+        self._trace_attributes = (
+            string_attr("stream", self._name),
+            string_attr("pipeline", stream_config.pipeline or ""),
+            string_attr("component", stream_config.component or ""),
+        )
         env.runtime.register_stream(self)
+
+    @property
+    def trace_attributes(self) -> tuple[Attribute, ...]:
+        """Immutable definition attributes, prepared once outside message processing."""
+        return self._trace_attributes
 
     @property
     def name(self) -> str:

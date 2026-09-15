@@ -14,9 +14,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
-from typing import Any, Final, NoReturn
+from typing import Any, Final, Literal, NoReturn
 
-from .environment.tracing import Span, StatusCode, string_attr
+from .environment.tracing import NOOP_SPAN, Span, StatusCode, string_attr
 from .execution_policy import recording_policy_scope
 
 
@@ -36,10 +36,19 @@ class TemporalContinueAsNewRequest(BaseException):
         self.next_input = next_input
 
 
-HEARTBEAT: Final = "heartbeat"
-SUCCESS: Final = "success"
-ERROR: Final = "error"
-LATE_HEARTBEAT: Final = "late_heartbeat"
+type DurableCallEvent = Literal["heartbeat", "success", "error", "late_heartbeat"]
+
+HEARTBEAT: Final[Literal["heartbeat"]] = "heartbeat"
+SUCCESS: Final[Literal["success"]] = "success"
+ERROR: Final[Literal["error"]] = "error"
+LATE_HEARTBEAT: Final[Literal["late_heartbeat"]] = "late_heartbeat"
+
+_ACTIVITY_EVENTS: Final[dict[DurableCallEvent, str]] = {
+    HEARTBEAT: "temporal.activity.heartbeat",
+    SUCCESS: "temporal.activity.success",
+    ERROR: "temporal.activity.error",
+    LATE_HEARTBEAT: "temporal.activity.late_heartbeat",
+}
 
 type DurableCallDiagnostics = Callable[[str, BaseException | None], None]
 type DurableCallHeartbeatRecorder = Callable[[Any], None]
@@ -94,24 +103,22 @@ class DurableCallContext:
 
     def bind_span(self, span: Span) -> None:
         with self._lock:
-            self._span = span
+            self._span = None if span is NOOP_SPAN else span
 
-    def _report(self, event: str, error: BaseException | None) -> None:
+    def _report(self, event: DurableCallEvent, error: BaseException | None) -> None:
         with self._lock:
             span = self._span
         if span is not None:
-            attrs = []
-            if error is not None:
-                attrs.append(string_attr("error", str(error)))
-            span.add_event(f"temporal.activity.{event}", *attrs)
+            if error is None:
+                description = event
+                span.add_event(_ACTIVITY_EVENTS[event])
+            else:
+                description = str(error)
+                span.add_event(_ACTIVITY_EVENTS[event], string_attr("error", description))
             if event == ERROR:
-                recorded = (
-                    error
-                    if isinstance(error, Exception)
-                    else RuntimeError(str(error or event))
-                )
+                recorded = error if isinstance(error, Exception) else RuntimeError(description)
                 span.record_error(recorded)
-                span.set_status(StatusCode.ERROR, str(error or event))
+                span.set_status(StatusCode.ERROR, description)
         if self._diagnostics is not None:
             self._diagnostics(event, error)
 

@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, cast
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     CollectFunc,
     Consumer,
@@ -102,6 +103,7 @@ class _TemporalEndpointConsumer[Input, T, R, E](
         invoke: Callable[[Input], Awaitable[None]],
     ) -> None:
         super().__init__(endpoint, stream)
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._connector = connector
         self._decode = decode
         self._invoke = invoke
@@ -165,12 +167,16 @@ class _TemporalEndpointConsumer[Input, T, R, E](
                             )
                         )
                     )
-                _, span = start_endpoint_span(
-                    self._tracer,
-                    "temporal.input",
-                    self.stream.name,
-                    self.endpoint.name,
-                )
+                span = NOOP_SPAN
+                if self._tracer is not None and sampling_enabled():
+                    _, span = start_endpoint_span(
+                        self._tracer,
+                        "temporal.input",
+                        self.stream.name,
+                        self.endpoint.name,
+                        pipeline_name=self._pipeline_name,
+                        component_name=self._component_name,
+                    )
                 durable_span = (
                     span is not NOOP_SPAN and bind_durable_call_span(span)
                 )

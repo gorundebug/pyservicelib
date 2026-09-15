@@ -12,6 +12,7 @@ from typing import cast, Optional, Any, Protocol
 import aiohttp.log
 from aiohttp import web
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     TypedInputStream, ServiceExecutionEnvironment,
     Consumer, StreamContext, CollectFunc,
@@ -21,6 +22,7 @@ from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
     sampling_scope,
     data_source_endpoint_tracing_enabled,
@@ -286,6 +288,7 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
             else None
         )
 
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._sc = StreamContext[T, R, E](
             stream=stream,
             result_stream=stream.get_result_stream(),
@@ -336,16 +339,20 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
 
         ep = cast(DataSourceEndpoint, self._endpoint)
 
-        _, span = start_endpoint_span(
-            self._tracer,
-            "http.input",
-            self._input_stream.name,
-            ep.name,
-            "method",
-            self._method,
-            "path",
-            self._path,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "http.input",
+                self._input_stream.name,
+                ep.name,
+                "method",
+                self._method,
+                "path",
+                self._path,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         span_scope = None
         if span is not NOOP_SPAN:
             span_scope = span.scoped()

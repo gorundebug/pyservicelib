@@ -331,6 +331,8 @@ def app_to_yaml(app: StreamApp) -> bytes:
                         "xPos": s.x_pos,
                         "yPos": s.y_pos,
                     }
+                    if s.component:
+                        s_node["component"] = s.component
                     if s.id_source != 0:
                         s_node["source"] = stream_key.get(s.id_source, str(s.id_source))
                     if s.id_sources:

@@ -14,6 +14,8 @@ from ...api.models.temporal_execution_type import TemporalExecutionType
 
 
 class EndpointConfig(ABC):
+    _tracing_enabled: bool = False
+
     @property
     @abstractmethod
     def id(self) -> int:
@@ -38,7 +40,7 @@ class EndpointConfig(ABC):
 
     @property
     def tracing_enabled(self) -> bool:
-        return getattr(self, "_tracing_enabled", False)
+        return self._tracing_enabled
 
 
 class HttpEndpointConfig(EndpointConfig):

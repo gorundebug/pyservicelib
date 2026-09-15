@@ -13,7 +13,8 @@ from types import SimpleNamespace
 from collections.abc import Iterable
 import pytest
 
-from pyservicelib_gorundebug.runtime.config import ConfigSettings
+from pyservicelib_gorundebug.runtime.config import ConfigSettings, StreamConfig
+from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader
 from pyservicelib_gorundebug.runtime.common import (
     CallerStatistics,
@@ -33,7 +34,10 @@ def test_function_call_async_flag_only_changes_caller_metadata():
         pass
 
     consumer = SimpleNamespace(
-        stream=SimpleNamespace(name="target"),
+        stream=SimpleNamespace(name="target", config=StreamConfig(
+            id=2, name="target", idSource=1, type=TransformationType.Map,
+            idService=1, xPos=0, yPos=0,
+        )),
         consume=consume,
     )
     source = SimpleNamespace(name="source", consumer=consumer)
@@ -176,9 +180,9 @@ def test_terminal_transform_has_no_consumers_before_wiring():
     stream = object.__new__(MapStream)
     environment = SimpleNamespace(
         config=SimpleNamespace(
-            get_stream_config_by_id=lambda _stream_id: SimpleNamespace(
-                name="terminal-map",
-                transformation_name="Map",
+            get_stream_config_by_id=lambda _stream_id: StreamConfig(
+                id=_stream_id, name="terminal-map", idSource=0,
+                type=TransformationType.Map, idService=1, xPos=0, yPos=0,
             ),
         ),
         runtime=SimpleNamespace(register_stream=lambda _stream: None),
@@ -212,9 +216,9 @@ async def test_cycle_link_uses_runtime_caller(monkeypatch):
     environment = SimpleNamespace(
         tracing=None,
         config=SimpleNamespace(
-            get_stream_config_by_id=lambda _stream_id: SimpleNamespace(
-                name="cycle-link",
-                transformation_name="cycleLink",
+            get_stream_config_by_id=lambda _stream_id: StreamConfig(
+                id=_stream_id, name="cycle-link", idSource=0,
+                type=TransformationType.CycleLink, idService=1, xPos=0, yPos=0,
             ),
         ),
         runtime=SimpleNamespace(register_stream=lambda _stream: None),

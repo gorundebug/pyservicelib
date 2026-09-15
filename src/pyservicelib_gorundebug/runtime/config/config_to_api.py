@@ -88,6 +88,7 @@ def stream_config_to_api(sc: StreamConfig) -> Stream:
         renewTTL=sc.renew_ttl,
         duration=sc.duration,
         pipeline=sc.pipeline,
+        component=sc.component,
     )
 
 

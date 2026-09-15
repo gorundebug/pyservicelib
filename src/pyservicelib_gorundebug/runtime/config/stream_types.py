@@ -31,6 +31,10 @@ class _TypedStreamConfig:
         return self._cfg.pipeline
 
     @property
+    def component(self) -> Optional[str]:
+        return self._cfg.component
+
+    @property
     def id_service(self) -> int:
         return self._cfg.id_service
 

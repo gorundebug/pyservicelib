@@ -18,6 +18,7 @@ from aiokafka.errors import (  # type: ignore[import-not-found,import-untyped]
     for_code,
 )
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     Consumer, TypedSinkStream, ServiceExecutionEnvironment, Stream,
     SinkEndpoint, OutputEndpointConsumer,
@@ -25,6 +26,7 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
@@ -245,6 +247,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         tracer: Optional[Tracer] = None,
     ):
         self._endpoint = endpoint
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
         self._partitioner = partitioner
@@ -272,14 +275,18 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         sid = self._handler.get_stream_id(value)
 
         ep = self._endpoint
-        _, span = start_endpoint_span(
-            self._tracer,
-            "kafka.output",
-            stream.name,
-            ep.name,
-            "stream_id",
-            sid,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "kafka.output",
+                stream.name,
+                ep.name,
+                "stream_id",
+                sid,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         start_time: Optional[float] = None
         end_err: Optional[Exception] = None
         span_scope = None

@@ -6,8 +6,28 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Any, ContextManager, Iterator, Mapping, MutableMapping, Optional, Tuple
+from dataclasses import dataclass
+from types import TracebackType
+from typing import TYPE_CHECKING, ContextManager, Iterator, Mapping, MutableMapping, Optional, Protocol
+
+if TYPE_CHECKING:
+    from ...config.endpoint_types import EndpointConfig
+
+type AttributeValue = str | int | float | bool
+
+
+class TracedStream(Protocol):
+    @property
+    def trace_attributes(self) -> tuple["Attribute", ...]: ...
+
+
+class EndpointConfigLookup(Protocol):
+    def get_endpoint_config_by_id(self, endpoint_id: int) -> "EndpointConfig": ...
+
+
+class EndpointTracingEnvironment(Protocol):
+    @property
+    def config(self) -> EndpointConfigLookup: ...
 
 
 # ── Attribute ─────────────────────────────────────────────────────────────────
@@ -15,7 +35,7 @@ from typing import Any, ContextManager, Iterator, Mapping, MutableMapping, Optio
 @dataclass(frozen=True, slots=True)
 class Attribute:
     key: str
-    value: Any
+    value: AttributeValue
 
 
 def string_attr(key: str, value: str) -> Attribute:
@@ -100,7 +120,7 @@ class _NoopSpan(Span):
     def __enter__(self) -> "_NoopSpan":
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None) -> None:
         pass
 
 
@@ -111,7 +131,7 @@ NOOP_SPAN: Span = _NoopSpan()
 
 class Tracer(ABC):
     @abstractmethod
-    def start(self, span_name: str, *attrs: Attribute) -> Tuple[Any, Span]: ...
+    def start(self, span_name: str, *attrs: Attribute) -> tuple[None, Span]: ...
 
 
 # ── Tracing ───────────────────────────────────────────────────────────────────
@@ -179,26 +199,26 @@ def sampling_requested_by_carrier(carrier: Mapping[str, str]) -> bool:
         return False
 
 
-def data_source_endpoint_tracing_enabled(environment: Any, endpoint_id: int) -> bool:
+def data_source_endpoint_tracing_enabled(environment: EndpointTracingEnvironment, endpoint_id: int) -> bool:
     """Read the current reloadable source-endpoint tracing policy."""
     endpoint = environment.config.get_endpoint_config_by_id(endpoint_id)
-    return bool(getattr(endpoint, "tracing_enabled", False))
+    return endpoint.tracing_enabled
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def start_span(tracer: Optional[Tracer], operation: str, *attrs: Attribute) -> Tuple[Any, Span]:
+def start_span(tracer: Optional[Tracer], operation: str, *attrs: Attribute) -> tuple[None, Span]:
     """Start a span. Returns (ctx, noop_span) when tracer is None or sampling is off."""
     if tracer is None or not sampling_enabled():
         return None, NOOP_SPAN
     return tracer.start(operation, *attrs)
 
 
-def start_stream_span(tracer: Optional[Tracer], operation: str, stream: Any) -> Tuple[Any, Span]:
-    """Start an operator span without resolving stream metadata when unsampled."""
+def start_stream_span(tracer: Optional[Tracer], operation: str, stream: TracedStream) -> tuple[None, Span]:
+    """Start an operator span using the stream's precomputed immutable attributes."""
     if tracer is None or not sampling_enabled():
         return None, NOOP_SPAN
-    return tracer.start(operation, string_attr("stream", stream.name))
+    return tracer.start(operation, *stream.trace_attributes)
 
 
 def start_endpoint_span(
@@ -210,30 +230,23 @@ def start_endpoint_span(
     attr1_value: str = "",
     attr2_key: Optional[str] = None,
     attr2_value: str = "",
-) -> Tuple[Any, Span]:
-    """Start a transport span without allocating attributes when unsampled."""
+    *,
+    pipeline_name: Optional[str] = None,
+    component_name: Optional[str] = None,
+) -> tuple[None, Span]:
+    """Start a transport span; fixed arguments avoid packing a variadic tuple."""
     if tracer is None or not sampling_enabled():
         return None, NOOP_SPAN
+    attrs = [string_attr("stream", stream_name), string_attr("endpoint", endpoint_name)]
+    if pipeline_name is not None:
+        attrs.append(string_attr("pipeline", pipeline_name))
+    if component_name is not None:
+        attrs.append(string_attr("component", component_name))
+    if attr1_key is not None or attr2_key is not None:
+        attrs.append(string_attr(attr1_key or "", attr1_value))
     if attr2_key is not None:
-        return tracer.start(
-            operation,
-            string_attr("stream", stream_name),
-            string_attr("endpoint", endpoint_name),
-            string_attr(attr1_key or "", attr1_value),
-            string_attr(attr2_key, attr2_value),
-        )
-    if attr1_key is not None:
-        return tracer.start(
-            operation,
-            string_attr("stream", stream_name),
-            string_attr("endpoint", endpoint_name),
-            string_attr(attr1_key, attr1_value),
-        )
-    return tracer.start(
-        operation,
-        string_attr("stream", stream_name),
-        string_attr("endpoint", endpoint_name),
-    )
+        attrs.append(string_attr(attr2_key, attr2_value))
+    return tracer.start(operation, *attrs)
 
 
 def span_event(span: Optional[Span], name: str, *attrs: Attribute) -> None:

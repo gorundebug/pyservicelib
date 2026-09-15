@@ -56,7 +56,8 @@ class Stream(BaseModel):
     renew_ttl: Optional[StrictBool] = Field(default=None, description="When true, the TTL is reset each time a new element arrives for a key, keeping the state alive as long as data keeps flowing. Applies to Join and MultiJoin. ", alias="renewTTL")
     duration: Optional[Annotated[int, Field(strict=True, ge=0)]] = Field(default=None, description="Fixed delay duration in milliseconds for the Delay operator. Used when the delay is not computed per-element. ")
     pipeline: Optional[StrictStr] = Field(default=None, description="Stream pipeline name ")
-    __properties: ClassVar[List[str]] = ["id", "name", "idSource", "idSources", "type", "valueType", "keyType", "idService", "idEndpoint", "joinType", "joinStorage", "pattern", "xPos", "yPos", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "ttl", "renewTTL", "duration", "pipeline"]
+    component: Optional[StrictStr] = Field(default=None, description="Optional visual component name for this concrete stream. Used only for observability; does not define a runtime wrapper or occurrence identity. ")
+    __properties: ClassVar[List[str]] = ["id", "name", "idSource", "idSources", "type", "valueType", "keyType", "idService", "idEndpoint", "joinType", "joinStorage", "pattern", "xPos", "yPos", "functionName", "functionPackage", "publicFunction", "functionDescription", "functionInitializerGroup", "functionModule", "ttl", "renewTTL", "duration", "pipeline", "component"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -132,7 +133,8 @@ class Stream(BaseModel):
             "ttl": obj.get("ttl"),
             "renewTTL": obj.get("renewTTL"),
             "duration": obj.get("duration"),
-            "pipeline": obj.get("pipeline")
+            "pipeline": obj.get("pipeline"),
+            "component": obj.get("component")
         })
         return _obj
 

@@ -4,13 +4,17 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping, MutableMapping, Tuple
+from collections.abc import Sequence
+from typing import Iterator, Mapping, MutableMapping
 
 from opentelemetry import context as otel_context
 from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SpanExporter
+from opentelemetry.util.types import Attributes
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.sdk.trace.sampling import (
     ALWAYS_ON, ALWAYS_OFF, ParentBased, SamplingResult, Decision, Sampler,
@@ -18,7 +22,7 @@ from opentelemetry.sdk.trace.sampling import (
 from temporalio.contrib.opentelemetry import create_tracer_provider
 
 from ...environment.tracing.tracing import (
-    Attribute, SpanContext, StatusCode,
+    Attribute, AttributeValue, SpanContext, StatusCode,
     Span, Tracer, Tracing, TracingEngine,
     sampling_enabled,
 )
@@ -26,13 +30,11 @@ from ...environment.tracing.tracing import (
 
 # ── OTel attribute conversion ─────────────────────────────────────────────────
 
-def _to_otel_attr(a: Attribute):
-    from opentelemetry import trace as otel_trace
-    from opentelemetry.util.types import Attributes
+def _to_otel_attr(a: Attribute) -> tuple[str, AttributeValue]:
     return (a.key, a.value)
 
 
-def _to_otel_attrs(attrs: tuple[Attribute, ...]) -> dict:
+def _to_otel_attrs(attrs: tuple[Attribute, ...]) -> dict[str, AttributeValue]:
     return {a.key: a.value for a in attrs}
 
 
@@ -41,11 +43,11 @@ def _to_otel_attrs(attrs: tuple[Attribute, ...]) -> dict:
 class _Span(Span):
     __slots__ = ('_span',)
 
-    def __init__(self, span):
+    def __init__(self, span: otel_trace.Span) -> None:
         self._span = span
 
     @contextmanager
-    def scoped(self):
+    def scoped(self) -> Iterator[Span]:
         ctx = otel_trace.set_span_in_context(self._span)
         token = otel_context.attach(ctx)
         try:
@@ -90,10 +92,10 @@ class _Span(Span):
 class _Tracer(Tracer):
     __slots__ = ('_tracer',)
 
-    def __init__(self, tracer):
+    def __init__(self, tracer: otel_trace.Tracer) -> None:
         self._tracer = tracer
 
-    def start(self, span_name: str, *attrs: Attribute) -> Tuple[Any, Span]:
+    def start(self, span_name: str, *attrs: Attribute) -> tuple[None, Span]:
         span = self._tracer.start_span(span_name, attributes=_to_otel_attrs(attrs))
         return None, _Span(span)
 
@@ -103,7 +105,7 @@ class _Tracer(Tracer):
 class _Tracing(Tracing):
     __slots__ = ('_provider',)
 
-    def __init__(self, provider: Any):
+    def __init__(self, provider: TracerProvider) -> None:
         self._provider = provider
 
     def tracer(self, name: str) -> Tracer:
@@ -128,7 +130,12 @@ class _Tracing(Tracing):
 class _ContextSampler(Sampler):
     """Records spans only when tracing.enable_sampling() was called in the current coroutine."""
 
-    def should_sample(self, parent_context, trace_id, name, kind=None, attributes=None, links=None, trace_state=None) -> SamplingResult:
+    def should_sample(
+        self, parent_context: otel_context.Context | None, trace_id: int, name: str,
+        kind: otel_trace.SpanKind | None = None, attributes: Attributes = None,
+        links: Sequence[otel_trace.Link] | None = None,
+        trace_state: otel_trace.TraceState | None = None,
+    ) -> SamplingResult:
         if sampling_enabled():
             return SamplingResult(Decision.RECORD_AND_SAMPLE)
         return SamplingResult(Decision.DROP)
@@ -141,7 +148,7 @@ class _ContextSampler(Sampler):
 
 class OtelTracingEngine(TracingEngine):
 
-    def __init__(self, provider: Any):
+    def __init__(self, provider: TracerProvider) -> None:
         self._provider = provider
         self._tracing = _Tracing(provider)
 
@@ -153,7 +160,7 @@ class OtelTracingEngine(TracingEngine):
         self._provider.shutdown()
 
 
-def _build_provider(exporter, service_name: str, context_sampler: bool, sync: bool) -> Any:
+def _build_provider(exporter: SpanExporter, service_name: str, context_sampler: bool, sync: bool) -> TracerProvider:
     sampler = ParentBased(_ContextSampler()) if context_sampler else ALWAYS_ON
     resource = Resource({'service.name': service_name})
     # The official Temporal provider uses deterministic span identifiers while

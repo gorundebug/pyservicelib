@@ -8,6 +8,7 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Protocol, Optional, Any, cast
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     Consume, Consumer, ServiceExecutionEnvironment, InputEndpoint, TypedInputStream,
     DataSource, StreamContext, CollectFunc,
@@ -233,6 +234,7 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
 
         error_collect = CollectFunc[E](input_stream.error_stream.consume)
         collect = CollectFunc[T](self.out)
+        self._pipeline_name, self._component_name = stream_grouping(input_stream)
         self._sc = StreamContext[T, R, E](
             stream=input_stream,
             result_stream=input_stream.get_result_stream(),
@@ -263,12 +265,16 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         ctx = self._ctx or Context()
         ep = cast(DataSourceEndpoint, self._endpoint)
 
-        _, span = start_endpoint_span(
-            self._tracer,
-            "local.input",
-            self._input_stream.name,
-            ep.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "local.input",
+                self._input_stream.name,
+                ep.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         span_scope = None

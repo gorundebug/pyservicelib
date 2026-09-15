@@ -26,7 +26,9 @@ from typing import Optional, Protocol, Any, AsyncIterator, Callable, cast
 import grpc
 import grpc.aio
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, span_attrs,
     string_attr, bool_attr, sampling_scope,
     data_source_endpoint_tracing_enabled,
@@ -341,6 +343,7 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         self._tracing = tracing
         self._tracer = tracer
 
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._sc = StreamContext[T, R, E](
             stream=stream,
             result_stream=stream.get_result_stream(),
@@ -439,12 +442,16 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         """Shared request lifecycle used by all streaming modes."""
         with_stream_id(sid)
 
-        _, span = start_endpoint_span(
-            self._tracer,
-            "grpc.input",
-            self._sc.stream.name,
-            self._endpoint.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "grpc.input",
+                self._sc.stream.name,
+                self._endpoint.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         span_scope = None
         if span is not NOOP_SPAN:
             span_scope = span.scoped()

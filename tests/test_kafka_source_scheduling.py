@@ -116,6 +116,8 @@ async def test_begin_failure_does_not_start_request_metrics() -> None:
     scheduler._handler = SimpleNamespace(begin_request=begin_request)
     scheduler._has_result = False
     scheduler._pending = None
+    scheduler._pipeline_name = ""
+    scheduler._component_name = ""
     scheduler._tracer = None
     scheduler._kafka_consumer = SimpleNamespace()
     scheduler._input_stream = SimpleNamespace(name="orders")

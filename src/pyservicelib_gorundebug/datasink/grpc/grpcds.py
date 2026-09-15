@@ -21,6 +21,7 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Optional, Protocol, Any, cast
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     Consumer, SinkStreamContext, CollectFunc, TypedSinkStreamWithResult,
     ServiceExecutionEnvironment, SinkEndpoint, OutputEndpointConsumer,
@@ -375,6 +376,7 @@ class _GrpcSinkEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](Consumer[T], 
         tracer: Optional[Tracer],
     ):
         self._endpoint = endpoint
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
         self._tracing = tracing
@@ -440,9 +442,13 @@ class _NoStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
-        _, span = start_endpoint_span(
-            self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         span_scope = None
         if span is not NOOP_SPAN:
             span_scope = span.scoped()
@@ -534,9 +540,13 @@ class _ServerStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         self._client_fn = client_fn
 
     async def consume(self, value: T) -> None:
-        _, span = start_endpoint_span(
-            self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         ep = self._endpoint
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
@@ -641,9 +651,13 @@ class _ClientStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         session: _ClientStreamingSession
 
         if not loaded:
-            _, span = start_endpoint_span(
-                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
-            )
+            span = NOOP_SPAN
+            if self._tracer is not None and sampling_enabled():
+                _, span = start_endpoint_span(
+                    self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
+                    pipeline_name=self._pipeline_name,
+                    component_name=self._component_name,
+                )
             with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 try:
                     handler_state = await self._begin()
@@ -812,9 +826,13 @@ class _BidiStreamingSinkConsumer[HandlerState, ReqT, ResR, T, R, E](
         session: _BidiStreamingSession
 
         if not loaded:
-            _, span = start_endpoint_span(
-                self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
-            )
+            span = NOOP_SPAN
+            if self._tracer is not None and sampling_enabled():
+                _, span = start_endpoint_span(
+                    self._tracer, "grpc.output", self._stream.name, self._endpoint.name,
+                    pipeline_name=self._pipeline_name,
+                    component_name=self._component_name,
+                )
             with span.scoped() if span is not NOOP_SPAN else nullcontext():
                 try:
                     handler_state = await self._begin()

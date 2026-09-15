@@ -10,6 +10,7 @@ from typing import Optional, Protocol, Any, cast
 
 import aiohttp
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     Consumer, SinkStreamContext, CollectFunc, TypedSinkStreamWithResult,
     ServiceExecutionEnvironment, SinkEndpoint, OutputEndpointConsumer,
@@ -20,6 +21,7 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
 )
 
@@ -229,6 +231,7 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         tracer: Optional[Tracer],
     ):
         self._endpoint = endpoint
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
         self._tracer = tracer
@@ -262,12 +265,16 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
             return
 
         ep = self._endpoint
-        _, span = start_endpoint_span(
-            self._tracer,
-            "http.output",
-            self._stream.name,
-            ep.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "http.output",
+                self._stream.name,
+                ep.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         start_time = ep.on_request_start()
         end_err: Optional[Exception] = None
         response_status: Optional[str] = None

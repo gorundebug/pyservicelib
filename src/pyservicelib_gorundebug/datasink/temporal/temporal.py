@@ -13,6 +13,7 @@ from contextlib import ExitStack
 from datetime import timezone
 from typing import Any, Optional, Protocol
 
+from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
     Consumer,
     DataSink,
@@ -32,6 +33,7 @@ from ...runtime.context import (
 )
 from ...runtime.datasink import DataSinkEndpoint, OutputDataSink
 from ...runtime.environment.tracing import (
+    sampling_enabled,
     NOOP_SPAN,
     Tracer,
     Tracing,
@@ -121,6 +123,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         self._endpoint = endpoint
         self._datasink = datasink
         self._connector = connector
+        self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
         self._input_serde = input_serde
@@ -146,12 +149,16 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         active_task = self._datasink.enter()
         started = self.endpoint.on_request_start()
         error: Optional[Exception] = None
-        _, span = start_endpoint_span(
-            self._tracer,
-            "temporal.output",
-            self._stream.name,
-            self.endpoint.name,
-        )
+        span = NOOP_SPAN
+        if self._tracer is not None and sampling_enabled():
+            _, span = start_endpoint_span(
+                self._tracer,
+                "temporal.output",
+                self._stream.name,
+                self.endpoint.name,
+                pipeline_name=self._pipeline_name,
+                component_name=self._component_name,
+            )
         state: HandlerState
         try:
             with ExitStack() as scopes:

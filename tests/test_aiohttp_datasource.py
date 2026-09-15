@@ -147,6 +147,8 @@ async def test_result_endpoint_returns_response_set_by_handler():
     consumer._sc = SimpleNamespace()
     consumer._endpoint = endpoint
     consumer._input_stream = SimpleNamespace(name="ResultInput")
+    consumer._pipeline_name = ""
+    consumer._component_name = ""
     consumer._tracer = None
     consumer._has_result = True
     consumer._pending = None
