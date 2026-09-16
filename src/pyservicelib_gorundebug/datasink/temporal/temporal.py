@@ -232,10 +232,14 @@ def _create_endpoint(
     environment = stream.environment
     cfg = environment.config.get_endpoint_config_by_id(stream.endpoint_id)
     datasink, connector = _get_or_create_datasink(cfg.id_data_connector, environment)
-    if datasink.get_endpoint(cfg.id) is not None:
-        raise ValueError(f"Temporal sink endpoint {cfg.name!r} already exists")
-    endpoint = DataSinkEndpoint(datasink, cfg.id)
-    datasink.add_endpoint(endpoint)
+    existing = datasink.get_endpoint(cfg.id)
+    if existing is not None and not isinstance(existing, DataSinkEndpoint):
+        raise ValueError(
+            f"Temporal sink endpoint {cfg.name!r} has an invalid runtime type"
+        )
+    endpoint = existing or DataSinkEndpoint(datasink, cfg.id)
+    if existing is None:
+        datasink.add_endpoint(endpoint)
     connector.register_endpoint_submission(cfg.id)
     return endpoint, datasink, connector
 

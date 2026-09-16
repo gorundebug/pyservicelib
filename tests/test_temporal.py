@@ -73,6 +73,7 @@ from pyservicelib_gorundebug.datasource.temporal.context_propagation import (
     _current_carrier,
     _encode_carrier,
 )
+from pyservicelib_gorundebug.datasink.temporal import temporal as temporal_sink
 
 
 def test_worker_stop_timeout_inherits_and_respects_service_boundary() -> None:
@@ -82,6 +83,59 @@ def test_worker_stop_timeout_inherits_and_respects_service_boundary() -> None:
         _resolve_worker_stop_timeout(-1, 30_000)
     with pytest.raises(ValueError, match="exceeds service shutdownTimeout"):
         _resolve_worker_stop_timeout(30_001, 30_000)
+
+
+def test_temporal_sink_shares_one_endpoint_between_independent_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DataSinkStub:
+        def __init__(self) -> None:
+            self.endpoints: dict[int, object] = {}
+
+        def get_endpoint(self, endpoint_id: int) -> object | None:
+            return self.endpoints.get(endpoint_id)
+
+        def add_endpoint(self, endpoint: object) -> None:
+            self.endpoints[endpoint.id] = endpoint  # type: ignore[attr-defined]
+
+    class ConnectorStub:
+        def __init__(self) -> None:
+            self.registrations: list[int] = []
+
+        def register_endpoint_submission(self, endpoint_id: int) -> None:
+            self.registrations.append(endpoint_id)
+
+    class EndpointStub:
+        def __init__(self, datasink: object, endpoint_id: int) -> None:
+            self.datasink = datasink
+            self.id = endpoint_id
+
+    datasink = DataSinkStub()
+    connector = ConnectorStub()
+    environment = SimpleNamespace(
+        config=SimpleNamespace(
+            get_endpoint_config_by_id=lambda endpoint_id: SimpleNamespace(
+                id=endpoint_id, id_data_connector=10, name="Shared"
+            )
+        )
+    )
+    monkeypatch.setattr(
+        temporal_sink,
+        "_get_or_create_datasink",
+        lambda connector_id, env: (datasink, connector),
+    )
+    monkeypatch.setattr(temporal_sink, "DataSinkEndpoint", EndpointStub)
+
+    first, _, _ = temporal_sink._create_endpoint(  # type: ignore[arg-type]
+        SimpleNamespace(environment=environment, endpoint_id=7)
+    )
+    second, _, _ = temporal_sink._create_endpoint(  # type: ignore[arg-type]
+        SimpleNamespace(environment=environment, endpoint_id=7)
+    )
+
+    assert first is second
+    assert list(datasink.endpoints) == [7]
+    assert connector.registrations == [7, 7]
 
 
 @pytest.mark.asyncio
