@@ -3,7 +3,10 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
-from typing import Any, Union, Self, cast, Optional, ClassVar
+from typing import Any, Union, Self, cast, Optional, ClassVar, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .stream_types import SubStreamConfig
 from pydantic import Field, ConfigDict, StrictStr
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
@@ -38,6 +41,7 @@ transformation_name_map = {
     TransformationType.FlatMapIterable: "flatMapIterable",
     TransformationType.Process: "process",
     TransformationType.Input: "input",
+    TransformationType.SubStream: "substream",
     TransformationType.Join: "join",
     TransformationType.KeyBy: "keyBy",
     TransformationType.Map: "map",
@@ -88,6 +92,7 @@ class StreamConfig(Stream):
     @property
     def is_type_transformation(self) -> bool:
         return (self.type == TransformationType.Input or
+                self.type == TransformationType.SubStream or
                 self.type == TransformationType.Map or
                 self.type == TransformationType.Join or
                 self.type == TransformationType.MultiJoin or
@@ -551,6 +556,11 @@ class ServiceAppConfig(StreamApp, Config):
     def get_link(self, from_id: int, to_id: int) -> Optional[LinkConfig]:
         link_id = LinkId(from_id=from_id, to_id=to_id)
         return self.runtime_config.links_by_id.get(link_id)
+
+    def get_substream_config(self, name: str) -> "Optional[SubStreamConfig]":
+        from .stream_types import SubStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return SubStreamConfig(cfg) if cfg is not None else None
 
     def get_input_stream_config(self, name: str):
         from .stream_types import InputStreamConfig

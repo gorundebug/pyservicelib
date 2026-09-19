@@ -73,6 +73,15 @@ class InputStreamConfig(_TypedStreamConfig):
         return self._require_int('id_endpoint', 'id_endpoint')
 
 
+class SubStreamConfig(_TypedStreamConfig):
+    @property
+    def value_type(self) -> str:
+        value = self._cfg.value_type
+        if value is None:
+            raise ValueError(f"SubStreamConfig '{self.name}': value_type is required")
+        return value
+
+
 class MapStreamConfig(_TypedStreamConfig):
     @property
     def value_type(self) -> str:

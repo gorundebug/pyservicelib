@@ -154,6 +154,6 @@ async def test_metrics_handler_bytes():
     assert "# TYPE python_info gauge" in rendered
     assert 'service_name="Test Service"' in rendered
     if sys.platform.startswith("linux"):
-        assert "# TYPE process_cpu_seconds counter" in rendered
+        assert "# TYPE process_cpu_seconds_total counter" in rendered
         assert "# TYPE process_resident_memory_bytes gauge" in rendered
     await engine.shutdown()

@@ -6,6 +6,7 @@
 from .config import *
 from .stream_types import (
     InputStreamConfig,
+    SubStreamConfig,
     MapStreamConfig,
     FilterStreamConfig,
     FlatMapStreamConfig,

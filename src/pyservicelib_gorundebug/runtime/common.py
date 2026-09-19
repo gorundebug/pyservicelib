@@ -8,8 +8,8 @@ from abc import ABC, abstractmethod
 import asyncio
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import timedelta
-from typing import Optional, Callable, Any, get_origin, Hashable, Protocol
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Callable, Awaitable, Any, get_origin, Hashable, Protocol
 from typing import cast, Iterable
 
 from ..api.models.call_semantics import CallSemantics
@@ -30,6 +30,7 @@ from .environment.tracing import (
     string_attr,
 )
 from .context import Context
+from .context.request import request_cancelled, request_deadline
 from .stream_grouping import stream_grouping
 from .datastruct import KeyValue
 from .config import EndpointConfig, DataConnectorConfig
@@ -45,6 +46,25 @@ class Consumer[T](ABC):
     @abstractmethod
     async def consume(self, value: T) -> None:
         pass
+
+
+class SubStreamCollector[R](Protocol):
+    async def out(self, value: R) -> bool:
+        """Return True when this invocation has received enough results."""
+        ...
+
+
+class SubStreamCollectorFunc[R]:
+    def __init__(self, fn: Callable[[R], Awaitable[bool]]) -> None:
+        self._fn = fn
+
+    async def out(self, value: R) -> bool:
+        return await self._fn(value)
+
+
+class SubStream[T, R](Protocol):
+    async def consume(self, value: T, collector: SubStreamCollector[R]) -> None:
+        ...
 
 
 
@@ -794,6 +814,16 @@ class TypedStream[T](ServiceStream):
         return genetic_type.__name__
 
 
+class TypedSubStream[T, R](TypedStream[T], ABC):
+    @abstractmethod
+    async def consume(self, value: T, collector: SubStreamCollector[R]) -> None:
+        pass
+
+    @abstractmethod
+    def set_source(self, source: TypedStream[R]) -> None:
+        pass
+
+
 class TypedLinkStream[T](TypedStream[T], StreamConsumer[T]):
 
     def __init__(self, stream_id: int, env: "ServiceExecutionEnvironment"):
@@ -1040,6 +1070,35 @@ class TypedMultiJoinConsumedStream[K: Hashable, T, R](TypedTransformConsumedStre
 
 
 class ServiceExecutionEnvironment(ServiceEnvironment):
+    def substream_now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    async def wait_substream_result(self, completion: asyncio.Event) -> None:
+        if completion.is_set():
+            return
+        cancelled = request_cancelled.get()
+        deadline = request_deadline.get()
+        timeout = None
+        if deadline is not None:
+            now = self.substream_now()
+            if deadline.tzinfo is None:
+                now = now.replace(tzinfo=None)
+            timeout = max(0.0, (deadline - now).total_seconds())
+        tasks = [asyncio.create_task(completion.wait())]
+        if cancelled is not None:
+            tasks.append(asyncio.create_task(cancelled.wait()))
+        try:
+            await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if completion.is_set():
+                return
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError("request cancelled")
+            raise TimeoutError("substream deadline exceeded")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     @abstractmethod
     def get_consume_timeout(self, from_value: int, to_value: int) -> timedelta:
         pass

@@ -44,6 +44,7 @@ class TransformationType(int, Enum):
     Error = 15
     Delay = 16
     When = 17
+    SubStream = 18
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

@@ -163,3 +163,46 @@ BSD-3-Clause. See [LICENSE](LICENSE).
 | Website | [gorundebug.com](https://www.gorundebug.com) |
 | Email | [serlex777@gmail.com](mailto:serlex777@gmail.com) |
 | Telegram | [t.me/+31qMliw-DeI3M2M6](https://t.me/+31qMliw-DeI3M2M6) |
+## Service-local SubStream
+
+A `SubStream[T, R]` is a callable graph belonging to one service, not a network
+endpoint. Generated services expose typed accessors such as
+`get_lookup_substream()`. A custom business maker can obtain that handle from
+the generated environment through a narrow `Protocol` and inject it into its
+function. Capture the handle during construction; call it after graph binding.
+
+```python
+from pyservicelib_gorundebug.runtime.common import SubStreamCollectorFunc
+
+results: list[str] = []
+
+async def collect(value: str) -> bool:
+    results.append(value)
+    return True  # False means keep collecting.
+
+await service.get_lookup_substream().consume("hello", SubStreamCollectorFunc(collect))
+```
+
+Unlike Go, Python passes request state through `ContextVar`s: neither `consume`
+nor the collector takes an explicit context parameter. The collector must be
+async. It executes in the caller's context, including an enclosing SubStream
+invocation. Concurrent and nested calls have independent collectors; callbacks
+within one call are serialized. Preserve runtime request context when dispatching
+work rather than creating a detached, empty context.
+
+The entry's `valueType` is its argument type. Its existing `source` names the
+reachable result producer and determines the result type. There is one body
+consumer; use ordinary Split for explicit branching. No extra result/error
+operator or message ID argument is needed.
+
+Returning `True` completes collection and drops late results, but does not kill
+running branches. With no completing result, cancel the call or provide a
+deadline; ordinary asyncio code can use `asyncio.timeout`. Cancellation drains
+an active callback, which must cooperate. Business failures must be modeled as
+results or ordinary error branches, not assumed to become a Consume exception.
+Shared Join keys and worker-pool semantics are unchanged.
+
+Temporal workflows use the workflow environment's cooperative execution and
+durable timers, not ordinary asyncio timing or external I/O. Keep workflow code
+deterministic and external effects in Activities. Local call state is rebuilt
+on replay; an ordinary local call is not made durable by using a Temporal Sink.

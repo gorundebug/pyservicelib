@@ -9,6 +9,8 @@ from ..operators.filter import FilterStream as Filter
 from ..operators.flatmap import FlatMapStream as FlatMap
 from ..operators.flatmapiterable import FlatMapIterableStream as FlatMapIterable
 from ..operators.input import InputStream as Input, InputKVStream as InputKV
+from ..operators.substream import SubStream
+from ..runtime.common import SubStreamCollector, SubStreamCollectorFunc
 from ..operators.join import JoinStream as Join, JoinLink
 from ..operators.keyby import KeyByStream as KeyBy
 from ..operators.link import LinkStream as Link
@@ -36,6 +38,7 @@ from ..operators.functions import (
 )
 from ..runtime.config.stream_types import (
     InputStreamConfig,
+    SubStreamConfig,
     MapStreamConfig,
     FilterStreamConfig,
     FlatMapStreamConfig,
@@ -76,6 +79,10 @@ __all__ = [
     "Input",
     "InputKV",
     "InputStreamConfig",
+    "SubStream",
+    "SubStreamConfig",
+    "SubStreamCollector",
+    "SubStreamCollectorFunc",
     "Join",
     "JoinFunction",
     "JoinHandler",

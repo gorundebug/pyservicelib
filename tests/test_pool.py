@@ -52,12 +52,13 @@ def _make_metrics_env(executors_count: int = 1) -> tuple[MagicMock, MetricsRecor
 
 
 @pytest.mark.asyncio
-async def test_delay_pool():
+async def test_delay_pool() -> None:
    config_dir = str(Path(__file__).parent / "mockservice" / "config")
    sys.argv = [sys.argv[0],
                "--config", f"{config_dir}/config.yaml"]
    delays: list[int] = [1000, 5000, 1200, 3000, 1500, 4000, 1350, 900, 100, 500, 500, 500, 500, 500, 500, 500]
-   recorded_delays: list[int] = []
+   recorded_delays: list[tuple[int, float]] = []
+   loop = asyncio.get_running_loop()
 
    service = await ServiceAppLoader[MockService, MockServiceConfig]().load(
       "IncomeService", MockServiceDependency(), ConfigSettings())
@@ -66,20 +67,21 @@ async def test_delay_pool():
    delay_pool = make_delay_pool(service)
    await delay_pool.start(ctx)
 
-   async def task_with_delay(value: int, start_time: datetime):
-      time_difference = int((datetime.now() - start_time).total_seconds() * 1000)
-      assert abs(time_difference - value) <= 5
-      recorded_delays.append(value)
+   async def task_with_delay(value: int, start_time: float) -> None:
+      recorded_delays.append((value, loop.time() - start_time))
 
    for delay in delays:
-      await delay_pool.add_task(timedelta(milliseconds=delay), task_with_delay, delay, datetime.now())
+      await delay_pool.add_task(timedelta(milliseconds=delay), task_with_delay, delay, loop.time())
 
-   await delay_pool.stop(ctx)
-   delays.sort()
-   assert recorded_delays == delays
-
-   await service.stop(ctx)
-   await service.release()
+   try:
+      await asyncio.wait_for(delay_pool.stop(ctx), timeout=15)
+      assert [value for value, _ in recorded_delays] == sorted(delays)
+      # Scheduling may be late under load, but never meaningfully early.
+      # Assert outside callbacks: the pool intentionally catches task errors.
+      assert all(elapsed + 0.001 >= value / 1000 for value, elapsed in recorded_delays)
+   finally:
+      await service.stop(ctx)
+      await service.release()
 
 @pytest.mark.asyncio
 async def test_async_pool():

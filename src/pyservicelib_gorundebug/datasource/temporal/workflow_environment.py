@@ -44,7 +44,7 @@ from ...runtime.config import (
     TypeConfig,
 )
 from ...runtime.context import Context
-from ...runtime.context.request import request_context_error
+from ...runtime.context.request import request_context_error, request_cancelled, request_deadline
 from ...runtime.environment import ServiceDependency
 from ...runtime.environment.log import Logger, str_field
 from ...runtime.environment.metrics import (
@@ -507,6 +507,43 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
         self._started = False
         if self._failure is not None:
             raise self._failure
+
+    def substream_now(self) -> datetime:
+        return workflow.now()
+
+    async def wait_substream_result(self, completion: asyncio.Event) -> None:
+        # Do not wait for graph quiescence: the caller can itself be a graph task.
+        if self._failure is not None:
+            raise self._failure
+        if completion.is_set():
+            return
+        cancelled = request_cancelled.get()
+        deadline = request_deadline.get()
+        timeout = None
+        if deadline is not None:
+            now = workflow.now()
+            if deadline.tzinfo is None:
+                now = now.replace(tzinfo=None)
+            timeout = max(0.0, (deadline - now).total_seconds())
+        tasks = [
+            asyncio.create_task(completion.wait()),
+            asyncio.create_task(self._failure_event.wait()),
+        ]
+        if cancelled is not None:
+            tasks.append(asyncio.create_task(cancelled.wait()))
+        try:
+            await workflow.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if self._failure is not None:
+                raise self._failure
+            if completion.is_set():
+                return
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError("request cancelled")
+            raise TimeoutError("substream deadline exceeded")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def wait_for_completion(
         self, result: asyncio.Future[Any] | None
