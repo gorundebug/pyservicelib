@@ -29,6 +29,13 @@ class HTTPMethodType(str, Enum):
     Undefined = ''
     GET = 'GET'
     POST = 'POST'
+    PUT = 'PUT'
+    PATCH = 'PATCH'
+    DELETE = 'DELETE'
+    HEAD = 'HEAD'
+    OPTIONS = 'OPTIONS'
+    TRACE = 'TRACE'
+    CONNECT = 'CONNECT'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

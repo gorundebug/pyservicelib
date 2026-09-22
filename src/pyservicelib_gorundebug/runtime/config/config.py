@@ -7,7 +7,7 @@ from typing import Any, Union, Self, cast, Optional, ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .stream_types import SubStreamConfig
-from pydantic import Field, ConfigDict, StrictStr
+from pydantic import Field, ConfigDict, StrictInt, StrictStr, field_validator
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import os
@@ -72,7 +72,18 @@ def _properties_getattr(obj: Any, item: str) -> Any:
 
 
 class StreamConfig(Stream):
+    # Runtime references use -owner_id for virtual error outputs. Graph-model
+    # Stream fields keep their original positive-ID constraints.
+    id_source: StrictInt = Field(alias="idSource")
+    id_sources: Optional[list[StrictInt]] = Field(default=None, alias="idSources")
     properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
+
+    @field_validator("id_sources")
+    @classmethod
+    def _nonzero_source_references(cls, values: Optional[list[int]]) -> Optional[list[int]]:
+        if values is not None and 0 in values:
+            raise ValueError("runtime idSources must contain nonzero stream references")
+        return values
 
     def __getattr__(self, item: str) -> Any:
         return _properties_getattr(self, item)
@@ -464,7 +475,7 @@ class ServiceAppConfig(StreamApp, Config):
         cfg.init_runtime_config()
         return cfg
 
-    def init_runtime_config(self):
+    def init_runtime_config(self) -> None:
         self.runtime_config = RuntimeConfig()
 
         for stream in self.streams:
@@ -545,6 +556,12 @@ class ServiceAppConfig(StreamApp, Config):
         return self.runtime_config.services_by_id[service_id]
 
     def get_stream_config_by_id(self,stream_id: int) -> StreamConfig:
+        if stream_id < 0:
+            owner = self.runtime_config.streams_by_id.get(-stream_id)
+            if owner is not None and owner.type in (
+                TransformationType.Input, TransformationType.Process, TransformationType.Sink
+            ):
+                return owner
         return self.runtime_config.streams_by_id[stream_id]
 
     def get_pool_by_name(self, name: str) -> Optional[PoolConfig]:

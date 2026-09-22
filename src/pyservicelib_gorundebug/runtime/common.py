@@ -342,7 +342,10 @@ class RuntimeHelpers[T]:
         if consumer is None:
             raise ValueError(f"The source stream named '{source.name}' does not have consumer in make_caller")
 
-        link = cfg.get_link(source.id, consumer.stream.id)
+        # ErrorStream retains its owner's config ID. Only its connection key
+        # is separate, so normal/error outputs can target the same consumer.
+        link_source_id = -source.id if getattr(source, "is_error_stream", False) else source.id
+        link = cfg.get_link(link_source_id, consumer.stream.id)
         stream_cfg = source.config
         call_semantics: Optional[CallSemantics] = None
         if link is not None:
