@@ -11,6 +11,7 @@ from ..api.models.stream import Stream as ApiStream
 from ..api.models.pool import Pool
 from ..api.models.link import Link
 from ..api.models.call_semantics import CallSemantics
+from ..api.models.transformation_type import TransformationType
 from .config.config import ServiceConfig, StreamConfig
 from .config.config_to_api import (
     service_config_to_api,
@@ -21,6 +22,28 @@ from .config.config_to_api import (
 
 if TYPE_CHECKING:
     from .serviceapp import ServiceApp
+
+
+def _runtime_stream_config_to_api(config: StreamConfig) -> ApiStream:
+    """Convert runtime config without weakening the public graph model.
+
+    Runtime error-output references use a negative owner ID.  The public API
+    intentionally rejects those IDs when parsing authored graphs, while the
+    live graph reconstruction needs the signed reference temporarily so
+    ``app_to_yaml`` can turn it back into an explicit Error node.
+    """
+    references = [config.id_source, *(config.id_sources or [])]
+    if all(reference >= 0 for reference in references):
+        return stream_config_to_api(config)
+    return ApiStream.model_construct(**config.model_dump())
+
+
+def _runtime_error_value_type(owner: object) -> str:
+    error_stream = getattr(owner, "error_stream", None)
+    serde = getattr(error_stream, "serde", None)
+    serializer = getattr(serde, "value_serializer", None)
+    type_name = getattr(serializer, "type_name", None)
+    return type_name if isinstance(type_name, str) and type_name else "error"
 
 
 def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
@@ -42,9 +65,39 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
     registered_streams: set[int] = set(app._streams.keys())
 
     streams: list[ApiStream] = []
+    virtual_error_ids: set[int] = set()
     for service_stream in app._streams.values():
-        s = stream_config_to_api(cast(StreamConfig, service_stream.config))
+        stream_config = cast(StreamConfig, service_stream.config)
+        s = _runtime_stream_config_to_api(stream_config)
         streams.append(s)
+        if stream_config.id_source < 0:
+            virtual_error_ids.add(stream_config.id_source)
+        if stream_config.id_sources:
+            virtual_error_ids.update(
+                source_id for source_id in stream_config.id_sources if source_id < 0
+            )
+
+    # Error outputs are virtual at runtime and share their owner's config.
+    # Recreate the explicit graph nodes exactly as Go does so the status YAML
+    # remains a valid authored graph.  ``model_construct`` above is confined to
+    # this runtime-only bridge; normal Stream validation still rejects signed
+    # source references supplied by users.
+    for virtual_id in sorted(virtual_error_ids):
+        owner = app._streams.get(-virtual_id)
+        if owner is None:
+            continue
+        owner_config = cast(StreamConfig, owner.config)
+        streams.append(ApiStream(
+            id=virtual_id,
+            name=f"{owner_config.name} Error",
+            idSource=owner_config.id,
+            type=TransformationType.Error,
+            valueType=_runtime_error_value_type(owner),
+            idService=owner_config.id_service,
+            xPos=0,
+            yPos=0,
+            pipeline=owner_config.pipeline,
+        ))
 
     data_connectors = []
     endpoints = []
