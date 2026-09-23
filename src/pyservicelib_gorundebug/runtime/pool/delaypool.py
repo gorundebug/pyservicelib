@@ -19,6 +19,7 @@ from ..environment.log import err_field
 class DelayPoolImpl(DelayPool):
     def __init__(self, env: ServiceEnvironment):
         self._environment = env
+        self._metrics_enabled = env.metrics.enabled
         self._queue = IndexedHeap()
         self._watches = ContextWatches()
         self._running_tasks = set()
@@ -54,7 +55,8 @@ class DelayPoolImpl(DelayPool):
         if task.deadline_ts is not None:
             when = min(when, task.deadline_ts)
         self._wg.add()
-        self._gauge_wait_queue_length.inc()
+        if self._metrics_enabled:
+            self._gauge_wait_queue_length.inc()
         self._queue.push(task, (when, self._counter))
         self._counter += 1
         self._watches.add(task, self._cancel, deadline=False)
@@ -95,7 +97,7 @@ class DelayPoolImpl(DelayPool):
         runner.add_done_callback(self._running_tasks.discard)
 
     async def _run_task(self, task):
-        start = time.monotonic()
+        start = time.monotonic() if self._metrics_enabled else None
         try:
             await task.fn(*task.args, **task.kwargs)
         except (Exception, asyncio.CancelledError) as error:
@@ -104,11 +106,12 @@ class DelayPoolImpl(DelayPool):
             except Exception:
                 pass
         finally:
-            if task.expedited:
-                self._task_cancelled_counter.inc()
-            self._tasks_total.inc()
-            self._execution_duration.observe(time.monotonic() - start)
-            self._gauge_wait_queue_length.dec()
+            if self._metrics_enabled:
+                if task.expedited:
+                    self._task_cancelled_counter.inc()
+                self._tasks_total.inc()
+                self._execution_duration.observe(time.monotonic() - start)
+                self._gauge_wait_queue_length.dec()
             self._wg.done()
 
     async def _shutdown(self):
@@ -122,7 +125,8 @@ class DelayPoolImpl(DelayPool):
             self._stop_task = asyncio.create_task(self._shutdown(), context=VariablesContext())
         def report():
             self._environment.log.warn("delay pool stopped by timeout")
-            self._stop_timeout_counter.inc()
+            if self._metrics_enabled:
+                self._stop_timeout_counter.inc()
         await await_drain(self._stop_task, ctx, report)
 
 

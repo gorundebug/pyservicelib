@@ -29,7 +29,7 @@ import grpc.aio
 from ...runtime.stream_grouping import stream_grouping
 from ...runtime.environment.tracing import (
     sampling_enabled,
-    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, span_attrs,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_error, span_attrs,
     string_attr, bool_attr, sampling_scope,
     data_source_endpoint_tracing_enabled,
 )
@@ -45,12 +45,17 @@ from ...runtime.store.rotatingmap import RotatingMap
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
 
-def _grpc_metadata(context: grpc.aio.ServicerContext[Any, Any]) -> dict[str, str]:
+def _grpc_metadata(
+    context: grpc.aio.ServicerContext[Any, Any], tracing_enabled: bool,
+) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in context.invocation_metadata() or ():  # type: ignore[union-attr]
         decoded_key = key.decode('utf-8') if isinstance(key, bytes) else key
+        name = decoded_key.lower()
+        if not tracing_enabled and name != 'x-stream-id':
+            continue
         decoded_value = value.decode('utf-8') if isinstance(value, bytes) else value
-        result[decoded_key.lower()] = decoded_value
+        result[name] = decoded_value
     return result
 
 
@@ -156,7 +161,8 @@ class _GrpcResult[HandlerState, T, ResR, R, E](ResultContext[HandlerState, T, Re
     def done(self) -> None:
         if not self._once:
             self._once = True
-            span_event(self._span, "done_called")
+            if self._span is not None and self._span is not NOOP_SPAN:
+                self._span.add_event("done_called")
         if not self._done.done():
             self._done.set_result(None)
 
@@ -256,11 +262,13 @@ class _UnarySender[ResR](Sender[ResR]):
     async def send(self, value: ResR) -> None:
         if not self._future.done():
             self._future.set_result(value)
-            span_event(self._span, "send")
+            if self._span is not None and self._span is not NOOP_SPAN:
+                self._span.add_event("send")
         else:
             err = RuntimeError("result already sent")
-            span_error(self._span, err)
-            span_event(self._span, "send.error", string_attr("error", str(err)))
+            if self._span is not None and self._span is not NOOP_SPAN:
+                span_error(self._span, err)
+                self._span.add_event("send.error", string_attr("error", str(err)))
             raise err
 
 
@@ -282,15 +290,18 @@ class _StreamSender[ResR](Sender[ResR]):
         async with self._lock:
             if not self._active:
                 err = grpc.RpcError("stream is closed")
-                span_error(self._span, err)
-                span_event(self._span, "send.error", string_attr("error", "stream is closed"))
+                if self._span is not None and self._span is not NOOP_SPAN:
+                    span_error(self._span, err)
+                    self._span.add_event("send.error", string_attr("error", "stream is closed"))
                 raise err
             try:
                 await self._send_fn(value)
-                span_event(self._span, "send")
+                if self._span is not None and self._span is not NOOP_SPAN:
+                    self._span.add_event("send")
             except Exception as e:
-                span_error(self._span, e)
-                span_event(self._span, "send.error", string_attr("error", str(e)))
+                if self._span is not None and self._span is not NOOP_SPAN:
+                    span_error(self._span, e)
+                    self._span.add_event("send.error", string_attr("error", str(e)))
                 raise
 
     def close(self) -> None:
@@ -385,16 +396,19 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
         cb = result._callbacks.get(message_id)
         if cb is None:
             ep.on_unknown_message_id(sid, message_id)
-            span_event(result._span, "unknown_message_id", string_attr("message_id", message_id))
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("unknown_message_id", string_attr("message_id", message_id))
             return
         remove = cb(self._sc, result.handler_state, value, result.sender)
         if isinstance(remove, Awaitable):
             remove = await remove
         if remove and result._callbacks.pop(message_id, None) is None:
             ep.on_duplicate_message_id(sid, message_id)
-            span_event(result._span, "duplicate_message_id", string_attr("message_id", message_id))
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("duplicate_message_id", string_attr("message_id", message_id))
 
-        span_event(result._span, "result_consumed", string_attr("message_id", message_id))
+        if result._span is not None and result._span is not NOOP_SPAN:
+            result._span.add_event("result_consumed", string_attr("message_id", message_id))
 
     async def _handle_common(
         self,
@@ -420,11 +434,6 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             return await self._handle_common_inner(
                 sid, req, sender, eof_after_first, request_iter
             )
-        if self._tracing is None:
-            with sampling_scope(trace_requested):
-                return await self._handle_common_inner(
-                    sid, req, sender, eof_after_first, request_iter
-                )
         with self._tracing.extract(carrier) as remote_sampled:
             with sampling_scope(trace_requested or remote_sampled):
                 return await self._handle_common_inner(
@@ -461,11 +470,13 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             try:
                 handler_state = await self._handler.begin_request(self._sc)
             except Exception as err:
-                span_error(span, err)
-                span_event(span, "begin_request.error", string_attr("error", str(err)))
+                if span is not None and span is not NOOP_SPAN:
+                    span_error(span, err)
+                    span.add_event("begin_request.error", string_attr("error", str(err)))
                 return err
 
-            span_event(span, "begin_request")
+            if span is not None and span is not NOOP_SPAN:
+                span.add_event("begin_request")
             ep: InputEndpoint = self._endpoint
             start_time = ep.on_request_start()
 
@@ -473,10 +484,12 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             if isinstance(sender, (_UnarySender, _StreamSender)):
                 sender._span = span
 
-            span_attrs(span,
-                string_attr("stream_id", sid),
-                bool_attr("has_result", self._has_result),
-            )
+            if span is not None and span is not NOOP_SPAN:
+                span_attrs(
+                    span,
+                    string_attr("stream_id", sid),
+                    bool_attr("has_result", self._has_result),
+                )
 
             result: Optional[_GrpcResult[HandlerState, T, ResR, R, E]] = None
             result_ctx: ResultContext[HandlerState, T, ResR, R, E]
@@ -498,8 +511,9 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                             self._sc, handler_state, r, result_ctx, sender
                         )
                     except Exception as err:
-                        span_error(span, err)
-                        span_event(span, "consume_message.error", string_attr("error", str(err)))
+                        if span is not None and span is not NOOP_SPAN:
+                            span_error(span, err)
+                            span.add_event("consume_message.error", string_attr("error", str(err)))
                         try:
                             if result is not None and self._pending is not None:
                                 self._pending.pop(sid)
@@ -514,7 +528,8 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                                     self._sc, err, handler_state
                                 )
                         except Exception as end_err:
-                            span_error(span, end_err)
+                            if span is not NOOP_SPAN:
+                                span_error(span, end_err)
                             ep.on_request_end(start_time, end_err)
                             return end_err
                         ep.on_request_end(start_time, err)
@@ -526,8 +541,9 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                         self._sc, handler_state, req, result_ctx, sender
                     )
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     try:
                         if result is not None and self._pending is not None:
                             self._pending.pop(sid)
@@ -542,21 +558,25 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                                 self._sc, err, handler_state
                             )
                     except Exception as end_err:
-                        span_error(span, end_err)
+                        if span is not NOOP_SPAN:
+                            span_error(span, end_err)
                         ep.on_request_end(start_time, end_err)
                         return end_err
                     ep.on_request_end(start_time, err)
                     return err
 
-            span_event(span, "consume_message")
+            if span is not None and span is not NOOP_SPAN:
+                span.add_event("consume_message")
             self._handler.eof(self._sc, handler_state)
-            span_event(span, "eof")
+            if span is not None and span is not NOOP_SPAN:
+                span.add_event("eof")
 
             if not self._has_result or result is None:
                 try:
                     await self._handler.end_request(self._sc, None, handler_state)
                 except Exception as end_err:
-                    span_error(span, end_err)
+                    if span is not NOOP_SPAN:
+                        span_error(span, end_err)
                     ep.on_request_end(start_time, end_err)
                     return end_err
                 ep.on_request_end(start_time, None)
@@ -566,19 +586,24 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
             try:
                 if isinstance(sender, _UnarySender):
                     await asyncio.shield(sender._future)
-                    span_event(span, "result_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("result_received")
                 else:
                     await asyncio.shield(result._done)
-                    span_event(span, "done_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("done_received")
             except asyncio.CancelledError:
                 if isinstance(sender, _UnarySender) and sender._future.done() and not sender._future.cancelled():
-                    span_event(span, "result_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("result_received")
                 elif not isinstance(sender, _UnarySender) and result._done.done() and not result._done.cancelled():
-                    span_event(span, "done_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("done_received")
                 else:
                     cancel_err = RuntimeError("gRPC request context cancelled")
-                    span_error(span, cancel_err)
-                    span_event(span, "context_cancelled", string_attr("error", "cancelled"))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, cancel_err)
+                        span.add_event("context_cancelled", string_attr("error", "cancelled"))
             if self._pending is not None:
                 self._pending.pop(sid)
                 ep.on_pending_remove(sid)
@@ -587,7 +612,8 @@ class _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](DataSourceEn
                     self._sc, cancel_err, handler_state
                 )
             except Exception as end_err:
-                span_error(span, end_err)
+                if span is not NOOP_SPAN:
+                    span_error(span, end_err)
                 ep.on_request_end(start_time, end_err)
                 return end_err
             ep.on_request_end(start_time, cancel_err)
@@ -642,12 +668,14 @@ def make_grpc_no_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E](
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
+    tracing = stream.environment.tracing
+    tracing_enabled = tracing is not None
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, stream.environment.tracing, tracer
+        ep, stream, handler, tracing, tracer
     )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> ResR:
-        carrier = _grpc_metadata(context)
+        carrier = _grpc_metadata(context, tracing_enabled)
         sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _UnarySender[ResR]()
         err = await ec._handle_common(context, carrier, sid, request, sender, eof_after_first=True)
@@ -666,12 +694,14 @@ def make_grpc_server_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
+    tracing = stream.environment.tracing
+    tracing_enabled = tracing is not None
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, stream.environment.tracing, tracer
+        ep, stream, handler, tracing, tracer
     )
 
     async def _handle(request: ReqT, context: grpc.aio.ServicerContext[ReqT, ResR]) -> None:
-        carrier = _grpc_metadata(context)
+        carrier = _grpc_metadata(context, tracing_enabled)
         sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _StreamSender[ResR](context.write)
         err = await ec._handle_common(context, carrier, sid, request, sender, eof_after_first=True)
@@ -690,15 +720,17 @@ def make_grpc_client_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R,
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
+    tracing = stream.environment.tracing
+    tracing_enabled = tracing is not None
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, stream.environment.tracing, tracer
+        ep, stream, handler, tracing, tracer
     )
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
         context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> ResR:
-        carrier = _grpc_metadata(context)
+        carrier = _grpc_metadata(context, tracing_enabled)
         sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _UnarySender[ResR]()
         err = await ec._handle_common(
@@ -720,15 +752,17 @@ def make_grpc_bidi_streaming_endpoint_consumer[HandlerState, ReqT, ResR, T, R, E
     ds = _get_or_create_datasource(stream.endpoint_id, stream.environment)
     ep = _get_or_create_endpoint(stream, ds)
     tracer = _make_tracer(stream, stream.environment)
+    tracing = stream.environment.tracing
+    tracing_enabled = tracing is not None
     ec = _GrpcTypedEndpointConsumer[HandlerState, ReqT, ResR, T, R, E](
-        ep, stream, handler, stream.environment.tracing, tracer
+        ep, stream, handler, tracing, tracer
     )
 
     async def _handle(
         request_iterator: AsyncIterator[ReqT],
         context: grpc.aio.ServicerContext[ReqT, ResR],
     ) -> None:
-        carrier = _grpc_metadata(context)
+        carrier = _grpc_metadata(context, tracing_enabled)
         sid = carrier.get('x-stream-id') or new_stream_id()
         sender = _StreamSender[ResR](context.write)
         err = await ec._handle_common(

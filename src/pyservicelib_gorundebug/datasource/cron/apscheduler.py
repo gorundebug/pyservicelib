@@ -213,6 +213,9 @@ class _CronEndpoint(DataSourceEndpoint):
     async def _fire(self, scheduled_at: datetime) -> None:
         if self._consumer is None:
             return
+        if self.environment.tracing is None:
+            await self._fire_inner(scheduled_at)
+            return
         with sampling_scope(
             sampling_enabled()
             or data_source_endpoint_tracing_enabled(self.environment, self.id)

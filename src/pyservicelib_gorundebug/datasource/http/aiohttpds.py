@@ -23,7 +23,7 @@ from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, D
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
     sampling_enabled,
-    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
     sampling_scope,
     data_source_endpoint_tracing_enabled,
 )
@@ -216,7 +216,8 @@ class _HttpResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E]):
     def done(self) -> None:
         if not self._once:
             self._once = True
-            span_event(self._span, "done_called")
+            if self._span is not None and self._span is not NOOP_SPAN:
+                self._span.add_event("done_called")
         if not self._done.done():
             self._done.set_result(None)
 
@@ -267,6 +268,7 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
     _pending: Optional[RotatingMap[str, _HttpResult[HandlerState, T, R, E]]]
     _tracer: Optional[Tracer]
     _tracing: Optional[Tracing]
+    _metrics_enabled: bool
 
     def __init__(
         self,
@@ -282,6 +284,7 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
         self._has_result = stream.get_result_stream() is not None
         self._pending = None
         self._tracing = tracing
+        self._metrics_enabled = endpoint.environment.metrics.enabled
         self._tracer = (
             tracing.tracer(stream.environment.service_config.name)
             if tracing is not None
@@ -322,9 +325,6 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
         has_remote_parent = bool(request.headers.get('traceparent'))
         if not trace_requested and not has_remote_parent:
             return await self._serve_http(request)
-        if self._tracing is None:
-            with sampling_scope(trace_requested):
-                return await self._serve_http(request)
         carrier = {key.lower(): value for key, value in request.headers.items()}
         with self._tracing.extract(carrier) as remote_sampled:
             with sampling_scope(
@@ -365,8 +365,9 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                     handler_data, handler_state = await self._handler.begin_request(self._sc, data)
                 except Exception as err:
                     ep.on_begin_request_failed(err)
-                    span_error(span, err)
-                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("begin_request.error", string_attr("error", str(err)))
                     end_err = err
                     if not data._response.done():
                         data.set_response(
@@ -375,7 +376,8 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                             else web.Response(status=500, text=str(err))
                         )
                     return await data.get_response()
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
 
                 result: Optional[_HttpResult[HandlerState, T, R, E]] = None
                 result_ctx: ResultContext[HandlerState, T, R, E]
@@ -392,8 +394,9 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 try:
                     await self._handler.consume_message(self._sc, handler_state, handler_data, result_ctx)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if not data._response.done():
                         data.set_response(
@@ -412,7 +415,8 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                             self._sc, err, handler_state, handler_data
                         )
                     return await data.get_response()
-                span_event(span, "consume_message")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("consume_message")
 
                 if not self._has_result:
                     await self._handler.end_request(self._sc, None, handler_state, handler_data)
@@ -425,14 +429,17 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
 
                 try:
                     await asyncio.shield(result._done)
-                    span_event(span, "done_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("done_received")
                 except asyncio.CancelledError:
                     if result._done.done() and not result._done.cancelled():
-                        span_event(span, "done_received")
+                        if span is not None and span is not NOOP_SPAN:
+                            span.add_event("done_received")
                     else:
                         end_err = RuntimeError("HTTP request context cancelled")
-                        span_error(span, end_err)
-                        span_event(span, "context_cancelled")
+                        if span is not None and span is not NOOP_SPAN:
+                            span_error(span, end_err)
+                            span.add_event("context_cancelled")
                 if self._pending is not None:
                     self._pending.pop(sid)
                     ep.on_pending_remove(sid)
@@ -446,31 +453,30 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
                 if span_scope is not None:
                     span_scope.__exit__(*sys.exc_info())
         finally:
-            response = (
-                data._response.result()
-                if data._response.done()
-                and not data._response.cancelled()
-                and data._response.exception() is None
-                else None
-            )
-            response_status = (
-                str(response.status)
-                if response is not None
-                else None
-            )
-            response_body_size = (
-                len(response.body)
-                if response is not None
-                and isinstance(response.body, (bytes, bytearray))
-                else response.content_length
-                if response is not None
-                else None
-            )
+            response_status = None
+            response_body_size = None
+            if self._metrics_enabled:
+                response = (
+                    data._response.result()
+                    if data._response.done()
+                    and not data._response.cancelled()
+                    and data._response.exception() is None
+                    else None
+                )
+                response_status = str(response.status) if response is not None else None
+                response_body_size = (
+                    len(response.body)
+                    if response is not None
+                    and isinstance(response.body, (bytes, bytearray))
+                    else response.content_length
+                    if response is not None
+                    else None
+                )
             ep.on_request_end(
                 start_time,
                 end_err,
                 response_status,
-                request.content_length,
+                request.content_length if self._metrics_enabled else None,
                 response_body_size,
             )
             if span is not NOOP_SPAN:
@@ -498,23 +504,17 @@ class _NetHTTPTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCon
         cb = result._callbacks.get(message_id)
         if cb is None:
             ep.on_unknown_message_id(sid, message_id)
-            span_event(
-                result._span, "unknown_message_id",
-                string_attr("message_id", message_id),
-            )
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("unknown_message_id", string_attr("message_id", message_id))
             return
         remove = cb(self._sc, result.handler_state, value, result.data)
         if remove:
             if result._callbacks.pop(message_id, None) is None:
                 ep.on_duplicate_message_id(sid, message_id)
-                span_event(
-                    result._span, "duplicate_message_id",
-                    string_attr("message_id", message_id),
-                )
-        span_event(
-            result._span, "result_consumed",
-            string_attr("message_id", message_id),
-        )
+                if result._span is not None and result._span is not NOOP_SPAN:
+                    result._span.add_event("duplicate_message_id", string_attr("message_id", message_id))
+        if result._span is not None and result._span is not NOOP_SPAN:
+            result._span.add_event("result_consumed", string_attr("message_id", message_id))
 
 
 def make_net_http_endpoint_consumer[HandlerState, T, R, E](

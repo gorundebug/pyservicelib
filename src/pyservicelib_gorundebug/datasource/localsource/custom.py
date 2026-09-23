@@ -20,7 +20,7 @@ from ...runtime.context.request import (
 from ...runtime.datasource import InputDataSource, DataSourceEndpoint, DataSourceEndpointConsumer
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Span, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
     data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
 )
 
@@ -135,7 +135,8 @@ class _CustomResult[HandlerState, T, R, E](ResultContext[HandlerState, T, R, E])
     def done(self) -> None:
         if not self._once:
             self._once = True
-            span_event(self._span, "done_called")
+            if self._span is not None and self._span is not NOOP_SPAN:
+                self._span.add_event("done_called")
         if not self._done.done():
             self._done.set_result(None)
 
@@ -287,11 +288,13 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     handler_ctx, handler_state = await self._handler.begin_request(ctx, self._sc)
                 except Exception as err:
                     ep.on_begin_request_failed(err)
-                    span_error(span, err)
-                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("begin_request.error", string_attr("error", str(err)))
                     end_err = err
                     return
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
 
                 result: Optional[_CustomResult[HandlerState, T, R, E]] = None
                 result_ctx: ResultContext[HandlerState, T, R, E]
@@ -313,8 +316,9 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     await self._handler.consume_message(
                         handler_ctx, self._sc, handler_state, value, result_ctx)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if self._has_result and self._pending is not None:
                         self._pending.pop(sid)
@@ -327,7 +331,8 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                             handler_ctx, self._sc, err, handler_state
                         )
                     return
-                span_event(span, "consume_message")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("consume_message")
 
                 if self._has_result:
                     if result is None:
@@ -335,13 +340,16 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
                     try:
                         time_left = ctx.time_left
                         await asyncio.wait_for(asyncio.shield(result._done), timeout=time_left)
-                        span_event(span, "done_received")
+                        if span is not None and span is not NOOP_SPAN:
+                            span.add_event("done_received")
                     except (asyncio.TimeoutError, TypeError):
                         if result._done.done() and not result._done.cancelled():
-                            span_event(span, "done_received")
+                            if span is not None and span is not NOOP_SPAN:
+                                span.add_event("done_received")
                         else:
                             end_err = TimeoutError("result wait timeout")
-                            span_error(span, end_err)
+                            if span is not NOOP_SPAN:
+                                span_error(span, end_err)
                             if self._pending is not None:
                                 self._pending.pop(sid)
                                 ep.on_pending_remove(sid)
@@ -444,24 +452,18 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         callback = result._message_callbacks.get(message_id)
         if callback is None:
             ep.on_unknown_message_id(sid, message_id)
-            span_event(
-                result._span, "unknown_message_id",
-                string_attr("message_id", message_id),
-            )
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("unknown_message_id", string_attr("message_id", message_id))
             return
         remove = callback(
             result._handler_ctx, self._sc, result._handler_state, value
         )
         if remove and result._message_callbacks.pop(message_id, None) is None:
             ep.on_duplicate_message_id(sid, message_id)
-            span_event(
-                result._span, "duplicate_message_id",
-                string_attr("message_id", message_id),
-            )
-        span_event(
-            result._span, "result_consumed",
-            string_attr("message_id", message_id),
-        )
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("duplicate_message_id", string_attr("message_id", message_id))
+        if result._span is not None and result._span is not NOOP_SPAN:
+            result._span.add_event("result_consumed", string_attr("message_id", message_id))
 
     @classmethod
     def _get_or_create_datasource(

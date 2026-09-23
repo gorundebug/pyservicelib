@@ -142,21 +142,22 @@ class DataSourceEndpoint(InputEndpoint):
             "pending_requests", "Number of requests awaiting a pipeline result", {},
         )
 
-        def _oldest_pending_age() -> float:
-            if not self._pending_start_times:
-                return 0.0
-            now = time.monotonic()
-            return max(now - t for t in self._pending_start_times.values())
+        if self._metrics_enabled:
+            def _oldest_pending_age() -> float:
+                if not self._pending_start_times:
+                    return 0.0
+                now = time.monotonic()
+                return max(now - t for t in self._pending_start_times.values())
 
-        scope.observable_float64_gauge(
-            "pending_oldest_age_seconds",
-            "Age in seconds of the oldest pending request awaiting a pipeline result",
-            _oldest_pending_age,
-        )
+            scope.observable_float64_gauge(
+                "pending_oldest_age_seconds",
+                "Age in seconds of the oldest pending request awaiting a pipeline result",
+                _oldest_pending_age,
+            )
 
         path = getattr(endpoint_config, "path", None)
         method_name = getattr(endpoint_config, "method_name", None)
-        if path:
+        if self._metrics_enabled and path:
             service = datasource.environment.service_config
             self._transport_metrics = TransportRequestMetrics.http_server(
                 datasource.environment.metrics,
@@ -165,7 +166,7 @@ class DataSourceEndpoint(InputEndpoint):
                 host=service.http_host,
                 port=service.http_port,
             )
-        elif method_name:
+        elif self._metrics_enabled and method_name:
             self._transport_metrics = TransportRequestMetrics.grpc_server(
                 datasource.environment.metrics,
                 method=f"{connector_name}/{method_name}",
@@ -209,7 +210,8 @@ class DataSourceEndpoint(InputEndpoint):
             "consume_result called without stream_id",
             str_field("endpoint", self.name),
         )
-        self._missing_stream_id_counter.inc()
+        if self._metrics_enabled:
+            self._missing_stream_id_counter.inc()
 
     def on_late_result(self, stream_id: str) -> None:
         self._datasource.environment.log.warn(
@@ -217,7 +219,8 @@ class DataSourceEndpoint(InputEndpoint):
             str_field("endpoint", self.name),
             str_field("session_id", stream_id),
         )
-        self._late_result_counter.inc()
+        if self._metrics_enabled:
+            self._late_result_counter.inc()
 
     def on_unknown_message_id(self, stream_id: str, message_id: str) -> None:
         self._datasource.environment.log.warn(
@@ -226,7 +229,8 @@ class DataSourceEndpoint(InputEndpoint):
             str_field("message_id", message_id),
             str_field("session_id", stream_id),
         )
-        self._unknown_message_id_counter.inc()
+        if self._metrics_enabled:
+            self._unknown_message_id_counter.inc()
 
     def on_duplicate_message_id(self, stream_id: str, message_id: str) -> None:
         self._datasource.environment.log.warn(
@@ -235,7 +239,8 @@ class DataSourceEndpoint(InputEndpoint):
             str_field("message_id", message_id),
             str_field("session_id", stream_id),
         )
-        self._duplicate_message_id_counter.inc()
+        if self._metrics_enabled:
+            self._duplicate_message_id_counter.inc()
 
     def on_pending_add(self, stream_id: str) -> None:
         if not self._metrics_enabled:
@@ -290,7 +295,8 @@ class DataSourceEndpoint(InputEndpoint):
             str_field("endpoint", self.name),
             str_field("method", method),
         )
-        self._invalid_http_method_counter.inc()
+        if self._metrics_enabled:
+            self._invalid_http_method_counter.inc()
 
     def on_begin_request_failed(self, err: Exception) -> None:
         self._datasource.environment.log.error(
@@ -298,7 +304,8 @@ class DataSourceEndpoint(InputEndpoint):
             str_field("endpoint", self.name),
             err_field(err),
         )
-        self._begin_request_failed_counter.inc()
+        if self._metrics_enabled:
+            self._begin_request_failed_counter.inc()
 
 
 class DataSourceEndpointConsumer[T, R, E](Consumer[T], InputEndpointConsumer):

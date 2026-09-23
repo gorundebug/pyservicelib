@@ -21,8 +21,8 @@ from ...runtime.context.request import (
 )
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
-    sampling_enabled,
-    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    sampling_enabled, Tracing,
+    Tracer, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
 )
 
 
@@ -221,20 +221,25 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
     _stream: TypedSinkStreamWithResult[T, R, E]
     _handler: EndpointHandler[HandlerState, T, R, E]
     _sc: SinkStreamContext[T, R, E]
+    _tracing: Optional[Tracing]
     _tracer: Optional[Tracer]
+    _metrics_enabled: bool
 
     def __init__(
         self,
         endpoint: _AIOHttpSinkEndpoint,
         stream: TypedSinkStreamWithResult[T, R, E],
         handler: EndpointHandler[HandlerState, T, R, E],
+        tracing: Optional[Tracing],
         tracer: Optional[Tracer],
     ):
         self._endpoint = endpoint
         self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
+        self._tracing = tracing
         self._tracer = tracer
+        self._metrics_enabled = endpoint.environment.metrics.enabled
 
         self._sc = SinkStreamContext[T, R, E](
             stream=stream,
@@ -290,54 +295,69 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                     handler_state = await self._handler.begin_request(self._sc)
                 except Exception as err:
                     ep.on_begin_request_failed(err)
-                    span_error(span, err)
-                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("begin_request.error", string_attr("error", str(err)))
                     end_err = err
                     return
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
                 req = Requester(session)
 
                 try:
                     await self._handler.consume_message(self._sc, handler_state, value, req)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     await self._handler.end_request(self._sc, err, handler_state)
                     return
-                span_event(span, "consume_message")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("consume_message")
 
                 stream_id_token = request_stream_id.set(new_stream_id())
                 try:
                     sid = stream_id_from_context()
                     assert sid is not None
                     req.set_header('x-stream-id', sid)
+                    if self._tracing is not None and sampling_enabled():
+                        carrier: dict[str, str] = {}
+                        self._tracing.inject(carrier)
+                        carrier['x-trace'] = '1'
+                        for name, header_value in carrier.items():
+                            req.set_header(name, header_value)
                     resp_raw = await req.execute()
-                    response_status = str(resp_raw.status)
-                    response_body_size = resp_raw.content_length
+                    if self._metrics_enabled:
+                        response_status = str(resp_raw.status)
+                        response_body_size = resp_raw.content_length
                 except Exception as e:
-                    span_error(span, e)
-                    span_event(span, "http_call.error", string_attr("error", str(e)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, e)
+                        span.add_event("http_call.error", string_attr("error", str(e)))
                     end_err = e
                     await self._handler.end_request(self._sc, e, handler_state)
                     return
                 finally:
                     request_stream_id.reset(stream_id_token)
                     stream_id_token = None
-                span_event(span, "http_call")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("http_call")
 
                 async with resp_raw:
                     try:
                         await self._handler.handle_response(
                             self._sc, handler_state, Response(resp_raw))
                     except Exception as err:
-                        span_error(span, err)
-                        span_event(span, "handle_response.error", string_attr("error", str(err)))
+                        if span is not None and span is not NOOP_SPAN:
+                            span_error(span, err)
+                            span.add_event("handle_response.error", string_attr("error", str(err)))
                         end_err = err
                         await self._handler.end_request(self._sc, err, handler_state)
                         return
 
-                span_event(span, "handle_response")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("handle_response")
                 await self._handler.end_request(self._sc, None, handler_state)
             finally:
                 if span_scope is not None:
@@ -347,7 +367,7 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                 start_time,
                 end_err,
                 response_status,
-                req.body_size if "req" in locals() else None,
+                req.body_size if self._metrics_enabled and "req" in locals() else None,
                 response_body_size,
             )
             if span is not NOOP_SPAN:
@@ -393,5 +413,6 @@ def make_net_http_endpoint_consumer[HandlerState, T, R, E](
         endpoint=cast(_AIOHttpSinkEndpoint, endpoint),
         stream=stream,
         handler=handler,
+        tracing=env.tracing,
         tracer=_make_tracer(stream, env),
     )

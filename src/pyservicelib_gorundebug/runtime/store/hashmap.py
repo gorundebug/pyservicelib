@@ -48,6 +48,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
 
     _gauge_count: Int64Gauge
     _evictions_total: Int64Counter
+    _metrics_enabled: bool
 
     def __init__(self, env: ServiceEnvironment, cfg: JoinStorageConfig):
         self._environment = env
@@ -59,6 +60,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         self._after_tasks = set()
         self._started = False
         self._stopped = False
+        self._metrics_enabled = env.metrics.enabled
 
         scope = env.metrics.scope('hashmap_join_storage', {
             'service': env.service_config.name,
@@ -90,7 +92,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
                     evicted = len(self._prev) - rescued
                     self._prev = self._current
                     self._current = new_current
-                    if evicted > 0:
+                    if self._metrics_enabled and evicted > 0:
                         self._gauge_count.sub(evicted)
                         self._evictions_total.add(evicted)
         except asyncio.CancelledError:
@@ -114,7 +116,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         # Remove from whichever bucket holds the item; decrement gauge once.
         removed = (self._current.pop(key, None) is not None
                    or self._prev.pop(key, None) is not None)
-        if removed:
+        if removed and self._metrics_enabled:
             self._gauge_count.dec()
             self._evictions_total.inc()
 
@@ -156,7 +158,8 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
                 deadline = (loop.time() + ttl_seconds) if ttl_seconds > 0.0 else float('inf')
                 item = Item[V](deadline, index + 1)
                 self._current[key] = item
-                self._gauge_count.inc()
+                if self._metrics_enabled:
+                    self._gauge_count.inc()
                 # Register after_func for finite deadlines — mirrors context.AfterFunc in Go
                 if deadline != float('inf'):
                     self._make_after_task(key, item)
@@ -178,7 +181,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
                             item.after_task.cancel()
                         removed = (self._current.pop(key, None) is not None
                                    or self._prev.pop(key, None) is not None)
-                        if removed:
+                        if removed and self._metrics_enabled:
                             self._gauge_count.dec()
                     elif self._config.renew_ttl and ttl_seconds > 0.0:
                         # Deadline extended: restart after_func with new deadline

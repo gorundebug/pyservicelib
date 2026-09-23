@@ -22,6 +22,7 @@ class QueuedPool:
         if cfg is None:
             raise ValueError(f"Task pool configuration named '{name}' not found")
         self._environment = env
+        self._metrics_enabled = env.metrics.enabled
         self._name = name
         self._priority = priority
         self._fallback_count = cfg.executors_count
@@ -96,15 +97,18 @@ class QueuedPool:
             if moved:
                 self._queue.move_to_end(id(task), last=False)
         if moved:
-            self._task_cancelled_counter.inc()
+            if self._metrics_enabled:
+                self._task_cancelled_counter.inc()
         self._changed.set()
 
     async def _add(self, priority, fn, args, kwargs):
         if request_context_error() is not None:
-            self._task_rejected_counter.inc()
+            if self._metrics_enabled:
+                self._task_rejected_counter.inc()
             raise PoolCancelledError()
         if self._stopped:
-            self._task_rejected_counter.inc()
+            if self._metrics_enabled:
+                self._task_rejected_counter.inc()
             raise PoolStoppedError()
         task = make_task(fn, args, kwargs)
         if self._priority:
@@ -113,12 +117,14 @@ class QueuedPool:
             self._queue[id(task)] = task
         self._counter += 1
         self._wg.add()
-        self._gauge_queue_length.inc()
+        if self._metrics_enabled:
+            self._gauge_queue_length.inc()
         self._watches.add(task, self._promote)
         self._changed.set()
 
     def _ensure_executors(self):
-        self._gauge_executors_target.set(self._target)
+        if self._metrics_enabled:
+            self._gauge_executors_target.set(self._target)
         for slot in range(self._target):
             current = self._executors.get(slot)
             if current is not None and not current.done():
@@ -126,10 +132,12 @@ class QueuedPool:
             worker = asyncio.create_task(self._executor(slot), context=VariablesContext())
             self._executors[slot] = worker
             self._all_executors.add(worker)
-            self._gauge_executors_allocated.inc()
+            if self._metrics_enabled:
+                self._gauge_executors_allocated.inc()
             def done(task, slot=slot):
                 self._all_executors.discard(task)
-                self._gauge_executors_allocated.dec()
+                if self._metrics_enabled:
+                    self._gauge_executors_allocated.dec()
                 if self._executors.get(slot) is task:
                     self._executors.pop(slot)
                 if not self._stopped and slot < self._target:
@@ -138,7 +146,7 @@ class QueuedPool:
         self._changed.set()
 
     async def _run_task(self, task):
-        start = time.monotonic()
+        start = time.monotonic() if self._metrics_enabled else None
         try:
             await task.fn(*task.args, **task.kwargs)
         except (Exception, asyncio.CancelledError) as error:
@@ -147,8 +155,9 @@ class QueuedPool:
             except Exception:
                 pass
         finally:
-            self._tasks_total.inc()
-            self._execution_duration.observe(time.monotonic() - start)
+            if start is not None:
+                self._tasks_total.inc()
+                self._execution_duration.observe(time.monotonic() - start)
             self._wg.done()
 
     async def _executor(self, slot):
@@ -167,8 +176,9 @@ class QueuedPool:
                 _, task = self._queue.popitem(last=False)
             task.state = "running"
             self._watches.remove(task)
-            self._gauge_queue_length.dec()
-            self._gauge_executors_busy.inc()
+            if self._metrics_enabled:
+                self._gauge_queue_length.dec()
+                self._gauge_executors_busy.inc()
             # Each request keeps its complete ContextVars state across awaits.
             runner = asyncio.create_task(self._run_task(task), context=task.context)
             self._running_tasks.add(runner)
@@ -176,7 +186,8 @@ class QueuedPool:
                 await runner
             finally:
                 self._running_tasks.discard(runner)
-                self._gauge_executors_busy.dec()
+                if self._metrics_enabled:
+                    self._gauge_executors_busy.dec()
                 self._changed.set()
             del task, runner
 
@@ -216,5 +227,6 @@ class QueuedPool:
             self._stop_task = asyncio.create_task(self._shutdown(), context=VariablesContext())
         def report():
             self._environment.log.warn("task pool stopped by timeout", str_field("pool", self._name), int_field("tasks_count", len(self._queue)))
-            self._stop_timeout_counter.inc()
+            if self._metrics_enabled:
+                self._stop_timeout_counter.inc()
         await await_drain(self._stop_task, ctx, report)

@@ -27,7 +27,7 @@ from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
     sampling_enabled,
-    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Tracing, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
 )
 
 
@@ -251,6 +251,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         self._stream = stream
         self._handler = handler
         self._partitioner = partitioner
+        self._tracing: Optional[Tracing] = stream.environment.tracing
         self._tracer = tracer
         self._enabled = False
 
@@ -299,14 +300,12 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                     handler_state = self._handler.begin_request(stream)
                 except Exception as err:
                     ep.on_begin_request_failed(err)
-                    span_error(span, err)
-                    span_event(
-                        span,
-                        "begin_request.error",
-                        string_attr("error", str(err)),
-                    )
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("begin_request.error", string_attr("error", str(err)))
                     return
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
                 start_time = ep.on_request_start()
 
                 ds = cast(_AIOKafkaSinkDataSink, ep.datasink)
@@ -320,14 +319,17 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                     val: Optional[bytes],
                     on_delivery: Callable,
                 ) -> None:
-                    carrier: dict[str, str] = {}
-                    tracing = getattr(ep.environment, "tracing", None)
+                    tracing = self._tracing
+                    headers: Optional[list[tuple[str, bytes]]] = None
                     if tracing is not None:
+                        carrier: dict[str, str] = {}
                         tracing.inject(carrier)
-                    headers = [
-                        (key, item.encode("utf-8"))
-                        for key, item in carrier.items()
-                    ]
+                        if sampling_enabled():
+                            carrier["x-trace"] = "1"
+                        headers = [
+                            (name, item.encode("utf-8"))
+                            for name, item in carrier.items()
+                        ]
                     async def _send_message() -> None:
                         try:
                             partitions = await ds.partitions_for(ep.topic)
@@ -356,11 +358,13 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
 
                 try:
                     await self._handler.consume_message(stream, handler_state, value, msg)
-                    span_event(span, "consume_message")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("consume_message")
                     await self._handler.end_request(stream, None, handler_state)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     await self._handler.end_request(stream, err, handler_state)
             finally:

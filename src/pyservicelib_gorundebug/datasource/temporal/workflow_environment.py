@@ -52,6 +52,7 @@ from ...runtime.environment.metrics import (
     Int64Counter,
     Int64Gauge,
     Metrics,
+    NoopMetrics,
 )
 from ...runtime.environment.tracing import Tracing
 from ...runtime.pool import PoolCancelledError, PriorityTaskPool, TaskPool
@@ -100,8 +101,9 @@ class _WorkflowPool:
         self._started = False
         self._stopped = False
         self._now = now
+        self._metrics_enabled = metrics is not None and metrics.enabled
         self._pool_metrics = _WorkflowPoolMetrics(
-            metrics, service, name, priority
+            metrics if self._metrics_enabled else None, service, name, priority
         )
 
     @property
@@ -115,8 +117,9 @@ class _WorkflowPool:
         if self._stopped:
             raise RuntimeError(f"workflow task pool {self._name!r} is stopped")
         self._started = True
-        self._pool_metrics.executors_target.set(self._executors_count)
-        self._pool_metrics.executors_allocated.set(self._executors_count)
+        if self._metrics_enabled:
+            self._pool_metrics.executors_target.set(self._executors_count)
+            self._pool_metrics.executors_allocated.set(self._executors_count)
         self._executors = [
             asyncio.create_task(self._run()) for _ in range(self._executors_count)
         ]
@@ -135,7 +138,8 @@ class _WorkflowPool:
         if self._executors:
             await asyncio.gather(*self._executors)
         self._executors.clear()
-        self._pool_metrics.executors_allocated.set(0)
+        if self._metrics_enabled:
+            self._pool_metrics.executors_allocated.set(0)
 
     async def _enqueue(
         self,
@@ -145,10 +149,12 @@ class _WorkflowPool:
         kwargs: dict[str, Any],
     ) -> None:
         if request_context_error() is not None:
-            self._pool_metrics.task_rejected.inc()
+            if self._metrics_enabled:
+                self._pool_metrics.task_rejected.inc()
             raise PoolCancelledError()
         if not self._started or self._stopped:
-            self._pool_metrics.task_rejected.inc()
+            if self._metrics_enabled:
+                self._pool_metrics.task_rejected.inc()
             raise RuntimeError(f"workflow task pool {self._name!r} is not running")
         self._pending += 1
         self._idle.clear()
@@ -156,7 +162,8 @@ class _WorkflowPool:
             self._queue.put_nowait(
                 (priority, self._next_sequence(), (fn, args, kwargs, copy_context()))
             )
-            self._pool_metrics.queue_length.inc()
+            if self._metrics_enabled:
+                self._pool_metrics.queue_length.inc()
         except BaseException:
             self._task_done()
             raise
@@ -177,9 +184,10 @@ class _WorkflowPool:
             try:
                 if item is None:
                     return
-                self._pool_metrics.queue_length.dec()
-                self._pool_metrics.executors_busy.inc()
-                started = self._now()
+                if self._metrics_enabled:
+                    self._pool_metrics.queue_length.dec()
+                    self._pool_metrics.executors_busy.inc()
+                started = self._now() if self._metrics_enabled else None
                 fn, args, kwargs, context = item
                 async def invoke() -> None:
                     await fn(*args, **kwargs)
@@ -195,11 +203,13 @@ class _WorkflowPool:
                     except Exception:
                         pass
                 finally:
-                    self._pool_metrics.executors_busy.dec()
-                    self._pool_metrics.tasks_total.inc()
-                    self._pool_metrics.execution_duration.observe(
-                        (self._now() - started).total_seconds()
-                    )
+                    if self._metrics_enabled:
+                        self._pool_metrics.executors_busy.dec()
+                        self._pool_metrics.tasks_total.inc()
+                    if started is not None:
+                        self._pool_metrics.execution_duration.observe(
+                            (self._now() - started).total_seconds()
+                        )
                     self._task_done()
             finally:
                 self._queue.task_done()
@@ -321,7 +331,10 @@ class _WorkflowPoolMetrics:
 class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     """One isolated ServiceLib graph execution inside a Temporal Workflow."""
 
-    def __init__(self, config: ServiceAppConfig, service_id: int) -> None:
+    def __init__(
+        self, config: ServiceAppConfig, service_id: int,
+        *, noop_metrics: bool = False, noop_tracing: bool = False,
+    ) -> None:
         service = config.get_service_config_by_id(service_id)
         if service is None:
             raise ValueError(f"service config {service_id} not found")
@@ -340,8 +353,8 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
         self._failure: BaseException | None = None
         self._failure_event = asyncio.Event()
         self._log = WorkflowLogger()
-        self._metrics = WorkflowMetrics()
-        self._tracing = WorkflowTracing()
+        self._metrics = NoopMetrics() if noop_metrics else WorkflowMetrics()
+        self._tracing = None if noop_tracing else WorkflowTracing()
         self._task_pools: dict[str, _WorkflowTaskPool] = {}
         self._priority_task_pools: dict[str, _WorkflowPriorityTaskPool] = {}
         self._started = False
@@ -503,7 +516,8 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
         for storage in self._storages:
             await storage.stop(context)
-        self._metrics.flush_observables()
+        if isinstance(self._metrics, WorkflowMetrics):
+            self._metrics.flush_observables()
         self._started = False
         if self._failure is not None:
             raise self._failure

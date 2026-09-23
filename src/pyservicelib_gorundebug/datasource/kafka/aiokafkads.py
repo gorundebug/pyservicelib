@@ -33,8 +33,9 @@ from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
-    Tracer, Span, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, Tracing, Span, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
     data_source_endpoint_tracing_enabled, sampling_enabled, sampling_scope,
+    sampling_requested_by_carrier,
 )
 
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
@@ -119,7 +120,8 @@ class ResultContext[HandlerState, T, R, E]:
     def done(self) -> None:
         if not self._once:
             self._once = True
-            span_event(self._span, "done_called")
+            if self._span is not None and self._span is not NOOP_SPAN:
+                self._span.add_event("done_called")
         if not self._done.done():
             self._done.set_result(None)
 
@@ -253,6 +255,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
     _message_tasks: set[asyncio.Task[None]]
     _partition_locks: dict[tuple[str, int], asyncio.Lock]
     _marked_offsets: dict[TopicPartition, int]
+    _tracing: Optional[Tracing]
     _tracer: Optional[Tracer]
 
     def __init__(
@@ -277,6 +280,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._paused_partitions = set()
         self._partition_prefetch = 1
         self._marked_offsets = {}
+        self._tracing = stream.environment.tracing
         self._tracer = tracer
 
         self._pipeline_name, self._component_name = stream_grouping(stream)
@@ -484,23 +488,21 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             self._concurrency_changed.notify_all()
 
     async def _endpoint_request(self, record: ConsumerRecord) -> None:
-        env = getattr(self._input_stream, "environment", None)
-        if env is None or self._tracer is None:
+        tracing = self._tracing
+        if tracing is None:
             await self._endpoint_request_inner(record)
             return
         carrier = {
             key.lower(): value.decode("utf-8")
             for key, value in (getattr(record, "headers", None) or [])
-            if value is not None and key.lower() in ("traceparent", "tracestate")
+            if value is not None and key.lower() in ("x-trace", "traceparent", "tracestate")
         }
-        tracing = env.tracing
         with (
-            tracing.extract(carrier)
-            if tracing is not None and carrier
-            else nullcontext(False)
+            tracing.extract(carrier) if carrier else nullcontext(False)
         ) as remote_sampled:
             with sampling_scope(
                 sampling_enabled()
+                or sampling_requested_by_carrier(carrier)
                 or remote_sampled
                 or data_source_endpoint_tracing_enabled(
                     self._endpoint.environment, self._endpoint.id,
@@ -537,11 +539,13 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     handler_state = await self._handler.begin_request(self._sc)
                 except Exception as err:
                     ep.on_begin_request_failed(err)
-                    span_error(span, err)
-                    span_event(span, "begin_request.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("begin_request.error", string_attr("error", str(err)))
                     end_err = err
                     return
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
                 start_time = ep.on_request_start()
 
                 result: Optional[ResultContext[HandlerState, T, R, E]] = None
@@ -559,8 +563,9 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 try:
                     await self._handler.consume_message(self._sc, handler_state, msg, result_ctx)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     if self._has_result and self._pending is not None:
                         self._pending.pop(sid)
@@ -573,7 +578,8 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                             self._sc, err, handler_state
                         )
                     return
-                span_event(span, "consume_message")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("consume_message")
 
                 if not self._has_result:
                     await self._handler.end_request(self._sc, None, handler_state)
@@ -584,14 +590,18 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
 
                 try:
                     await asyncio.shield(result._done)
-                    span_event(span, "done_received")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("done_received")
                 except asyncio.CancelledError:
                     if result._done.done() and not result._done.cancelled():
-                        span_event(span, "done_received")
+                        if span is not None and span is not NOOP_SPAN:
+                            span.add_event("done_received")
                     else:
-                        span_event(span, "context_cancelled")
+                        if span is not None and span is not NOOP_SPAN:
+                            span.add_event("context_cancelled")
                         end_err = RuntimeError("Kafka endpoint request cancelled")
-                        span_error(span, end_err)
+                        if span is not NOOP_SPAN:
+                            span_error(span, end_err)
                 if self._pending is not None:
                     self._pending.pop(sid)
                     ep.on_pending_remove(sid)
@@ -623,22 +633,16 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         cb = result._callbacks.get(message_id)
         if cb is None:
             ep.on_unknown_message_id(sid, message_id)
-            span_event(
-                result._span, "unknown_message_id",
-                string_attr("message_id", message_id),
-            )
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("unknown_message_id", string_attr("message_id", message_id))
             return
         remove = cb(self._sc, result._handler_state, value)
         if remove and result._callbacks.pop(message_id, None) is None:
             ep.on_duplicate_message_id(sid, message_id)
-            span_event(
-                result._span, "duplicate_message_id",
-                string_attr("message_id", message_id),
-            )
-        span_event(
-            result._span, "result_consumed",
-            string_attr("message_id", message_id),
-        )
+            if result._span is not None and result._span is not NOOP_SPAN:
+                result._span.add_event("duplicate_message_id", string_attr("message_id", message_id))
+        if result._span is not None and result._span is not NOOP_SPAN:
+            result._span.add_event("result_consumed", string_attr("message_id", message_id))
 
 
 def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:

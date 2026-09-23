@@ -267,6 +267,7 @@ class Connector(ManagedDataConnector):
         self._client: Optional[Client] = None
         self._workers: list[Worker] = []
         self._worker_tasks: list[asyncio.Task[None]] = []
+        self._metrics_enabled = environment.metrics.enabled
         self._activity_events = environment.metrics.scope(
             "temporal_activity", {"connector": self._name}
         ).counter_vec(
@@ -289,12 +290,13 @@ class Connector(ManagedDataConnector):
         self, boundary: str, target: str
     ) -> DurableCallDiagnostics:
         def report(event: str, error: BaseException | None) -> None:
-            self._activity_events.with_({
-                "connector": self._name,
-                "boundary": boundary,
-                "target": target,
-                "event": event,
-            }).inc()
+            if self._metrics_enabled:
+                self._activity_events.with_({
+                    "connector": self._name,
+                    "boundary": boundary,
+                    "target": target,
+                    "event": event,
+                }).inc()
             if error is None:
                 return
             fields = (
@@ -428,7 +430,10 @@ class Connector(ManagedDataConnector):
             api_key=getattr(cfg, "api_key", None) or None,
             tls=tls,
             runtime=_sdk_runtime(),
-            plugins=_opentelemetry_plugins(),
+            plugins=(
+                _opentelemetry_plugins()
+                if self._environment.tracing is not None else []
+            ),
             interceptors=[context_interceptor],
         )
         self._client = await (
@@ -634,6 +639,8 @@ class Connector(ManagedDataConnector):
                 envelope=envelope,
                 endpoints=self._workflow_endpoint_snapshot(),
                 runtime_config=self._runtime_config_snapshot(),
+                noop_metrics=not self._environment.metrics.enabled,
+                noop_tracing=self._environment.tracing is None,
             )
         workflow_id = _endpoint_workflow_id(
             self._name, cfg.name, envelope.message_id
@@ -692,6 +699,8 @@ class Connector(ManagedDataConnector):
                 envelope=envelope,
                 endpoints=self._workflow_endpoint_snapshot(),
                 runtime_config=self._runtime_config_snapshot(),
+                noop_metrics=not self._environment.metrics.enabled,
+                noop_tracing=self._environment.tracing is None,
             )
         overlap = ScheduleOverlapPolicy.ALLOW_ALL
         if getattr(cfg, "overlap_policy", None) == ApiOverlapPolicy.SKIP:

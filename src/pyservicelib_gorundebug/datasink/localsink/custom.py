@@ -16,7 +16,7 @@ from ...runtime.context import Context
 from ...runtime.datasink import OutputDataSink, DataSinkEndpointConsumer, DataSinkEndpoint
 from ...runtime.environment.tracing import (
     sampling_enabled,
-    Tracer, NOOP_SPAN, start_endpoint_span, span_event, span_error, string_attr,
+    Tracer, NOOP_SPAN, start_endpoint_span, span_error, string_attr,
 )
 
 
@@ -141,17 +141,20 @@ class _TypedCustomEndpointConsumer[HandlerState, T, E](
         try:
             try:
                 handler_ctx, handler_state = await self._handler.begin_request(ctx, stream)
-                span_event(span, "begin_request")
+                if span is not None and span is not NOOP_SPAN:
+                    span.add_event("begin_request")
 
                 rs: Collect[E] = CollectFunc[E](stream.error_stream.consume)
                 try:
                     await self._handler.consume_message(
                         handler_ctx, stream, handler_state, value, rs)
-                    span_event(span, "consume_message")
+                    if span is not None and span is not NOOP_SPAN:
+                        span.add_event("consume_message")
                     await self._handler.end_request(handler_ctx, stream, None, handler_state)
                 except Exception as err:
-                    span_error(span, err)
-                    span_event(span, "consume_message.error", string_attr("error", str(err)))
+                    if span is not None and span is not NOOP_SPAN:
+                        span_error(span, err)
+                        span.add_event("consume_message.error", string_attr("error", str(err)))
                     end_err = err
                     await self._handler.end_request(handler_ctx, stream, err, handler_state)
             finally:

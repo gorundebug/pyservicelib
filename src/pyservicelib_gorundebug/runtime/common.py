@@ -116,13 +116,16 @@ class Caller[T](Consumer[T], ABC):
         self._tracer = tracer
         self._messages_counter = messages_counter if messages_counter is not None else NOOP_INT64_COUNTER
         self._record_messages = self._messages_counter is not NOOP_INT64_COUNTER
-        pipeline, component = stream_grouping(self._consumer.stream)
-        self._trace_attrs = (
-            string_attr("from", self._source.name),
-            string_attr("to", self._consumer.stream.name),
-            string_attr("pipeline", pipeline),
-            string_attr("component", component),
-        )
+        if tracer is not None:
+            pipeline, component = stream_grouping(self._consumer.stream)
+            self._trace_attrs = (
+                string_attr("from", self._source.name),
+                string_attr("to", self._consumer.stream.name),
+                string_attr("pipeline", pipeline),
+                string_attr("component", component),
+            )
+        else:
+            self._trace_attrs = ()
 
     @property
     def is_async(self) -> bool:
@@ -166,10 +169,11 @@ class TaskPoolCaller[T](Caller[T]):
                  messages_counter: Optional[Int64Counter] = None):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._task_pool = task_pool
-        self._trace_attrs += (
-            string_attr("type", "taskpool"),
-            string_attr("taskpoolname", task_pool.name),
-        )
+        if tracer is not None:
+            self._trace_attrs += (
+                string_attr("type", "taskpool"),
+                string_attr("taskpoolname", task_pool.name),
+            )
 
     async def consume(self, value: T):
         self._statistics.inc()
@@ -219,10 +223,11 @@ class PriorityTaskPoolCaller[T](Caller[T]):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
         self._priority_task_pool = priority_task_pool
         self._priority = priority
-        self._trace_attrs += (
-            string_attr("type", "prioritytaskpool"),
-            string_attr("taskpoolname", priority_task_pool.name),
-        )
+        if tracer is not None:
+            self._trace_attrs += (
+                string_attr("type", "prioritytaskpool"),
+                string_attr("taskpoolname", priority_task_pool.name),
+            )
 
     async def consume(self, value: T):
         from .context import priority_from_context
@@ -269,7 +274,8 @@ class ParallelCaller[T](Caller[T]):
                  tracer: Optional[Tracer] = None,
                  messages_counter: Optional[Int64Counter] = None):
         super().__init__(source=source, statistics=statistics, tracer=tracer, messages_counter=messages_counter)
-        self._trace_attrs += (string_attr("type", "parallel"),)
+        if tracer is not None:
+            self._trace_attrs += (string_attr("type", "parallel"),)
 
     async def consume(self, value: T):
         self._statistics.inc()
@@ -366,14 +372,16 @@ class RuntimeHelpers[T]:
             runtime.register_consume_statistics(LinkId(from_id=source.id, to_id=consumer.stream.id), statistics)
             runtime.register_link_info(RuntimeLinkInfo(from_id=source.id, to_id=consumer.stream.id, call_semantics=call_semantics))
 
-        pipeline, component = stream_grouping(consumer.stream)
-        messages_counter = env.metrics.scope("stream", {
-            "service": service_config.name,
-            "from": source.name,
-            "to": consumer.stream.name,
-            "pipeline": pipeline,
-            "component": component,
-        }).counter("messages_total", "Total number of messages processed by stream link", {})
+        messages_counter = None
+        if env.metrics.enabled:
+            pipeline, component = stream_grouping(consumer.stream)
+            messages_counter = env.metrics.scope("stream", {
+                "service": service_config.name,
+                "from": source.name,
+                "to": consumer.stream.name,
+                "pipeline": pipeline,
+                "component": component,
+            }).counter("messages_total", "Total number of messages processed by stream link", {})
 
         tracing = env.tracing
         tracer = tracing.tracer(service_config.name) if tracing is not None else None

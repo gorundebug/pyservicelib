@@ -203,7 +203,8 @@ class _TemporalEndpointConsumer[Input, T, R, E](
                         bytes(result_stream.serde.serialize(result))
                     )
                 except Exception as exc:
-                    span_error(span, exc)
+                    if span is not NOOP_SPAN:
+                        span_error(span, exc)
                     raise
         except asyncio.CancelledError:
             cancelled.set()

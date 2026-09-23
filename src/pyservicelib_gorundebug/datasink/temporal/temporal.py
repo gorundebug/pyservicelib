@@ -197,7 +197,8 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
                     await self._emit_result(result_value)
         except Exception as exc:
             error = exc
-            span_error(span, exc)
+            if span is not NOOP_SPAN:
+                span_error(span, exc)
             raise
         finally:
             if "state" in locals():

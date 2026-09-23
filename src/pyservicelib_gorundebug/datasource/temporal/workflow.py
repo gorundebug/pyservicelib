@@ -49,7 +49,10 @@ from ...runtime.environment.tracing import (
     sampling_requested_by_carrier,
     sampling_scope,
 )
-from .context_propagation import current_workflow_carrier
+from .context_propagation import (
+    current_workflow_carrier,
+    workflow_tracing_enabled,
+)
 
 
 ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
@@ -186,6 +189,8 @@ class DirectEndpointWorkflowRequest:
     envelope: EndpointEnvelope
     endpoints: tuple[WorkflowEndpointConfig, ...]
     runtime_config: dict[str, Any] = field(default_factory=dict)
+    noop_metrics: bool = False
+    noop_tracing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +198,8 @@ class WorkflowSubmission:
     connector_name: str
     endpoints: dict[int, WorkflowEndpointConfig]
     runtime_config: dict[str, Any] = field(default_factory=dict)
+    noop_metrics: bool = False
+    noop_tracing: bool = False
 
 
 WORKFLOW_SUBMISSION: ContextVar[WorkflowSubmission | None] = ContextVar(
@@ -257,6 +264,8 @@ def direct_workflow_request(
             _workflow_endpoint_config(item) for item in value.get("endpoints", ())
         ),
         runtime_config=dict(value.get("runtime_config", {})),
+        noop_metrics=bool(value.get("noop_metrics", False)),
+        noop_tracing=bool(value.get("noop_tracing", False)),
     )
 
 
@@ -360,6 +369,8 @@ async def submit_endpoint_from_workflow(
                 submission.endpoints[key] for key in sorted(submission.endpoints)
             ),
             runtime_config=submission.runtime_config,
+            noop_metrics=submission.noop_metrics,
+            noop_tracing=submission.noop_tracing,
         )
         return cast(
             EndpointResult,
@@ -428,14 +439,18 @@ async def execute_direct_endpoint_workflow(
             connector_name=parsed.connector_name,
             endpoints={item.endpoint_id: item for item in parsed.endpoints},
             runtime_config=parsed.runtime_config,
+            noop_metrics=parsed.noop_metrics,
+            noop_tracing=parsed.noop_tracing,
         )
     )
+    tracing_token = workflow_tracing_enabled.set(not parsed.noop_tracing)
     try:
         try:
             return await run_durable_call_workflow(
                 durable, lambda: handler(envelope)
             )
         finally:
+            workflow_tracing_enabled.reset(tracing_token)
             WORKFLOW_SUBMISSION.reset(submission_token)
     except TemporalContinueAsNewRequest as continuation:
         next_envelope = replace(
@@ -479,23 +494,22 @@ async def execute_workflow_graph_endpoint(
     priority_token = request_priority.set(envelope.priority)
     deadline_token = request_deadline.set(deadline)
     cancelled_token = request_cancelled.set(asyncio.Event())
-    carrier = current_workflow_carrier()
     tracing = getattr(environment, "tracing", None)
     with ExitStack() as scopes:
-        remote_sampled = scopes.enter_context(
-            tracing.extract(carrier)
-            if tracing is not None and carrier
-            else nullcontext(False)
-        )
-        scopes.enter_context(
-            sampling_scope(
-                data_source_endpoint_tracing_enabled(
-                    environment, stream.endpoint_id
-                )
-                or sampling_requested_by_carrier(carrier)
-                or remote_sampled
+        if tracing is not None:
+            carrier = current_workflow_carrier()
+            remote_sampled = scopes.enter_context(
+                tracing.extract(carrier) if carrier else nullcontext(False)
             )
-        )
+            scopes.enter_context(
+                sampling_scope(
+                    data_source_endpoint_tracing_enabled(
+                        environment, stream.endpoint_id
+                    )
+                    or sampling_requested_by_carrier(carrier)
+                    or remote_sampled
+                )
+            )
         await environment.start(Context())
         execution_error: BaseException | None = None
         try:

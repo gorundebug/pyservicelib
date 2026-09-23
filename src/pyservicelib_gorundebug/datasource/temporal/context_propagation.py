@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, nullcontext
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -54,13 +55,25 @@ TEMPORAL_CARRIER_KEYS = (
     TEMPORAL_HEADER_DEADLINE_UNIX_NANO,
 )
 
+# The request carries this policy into replay. Keep x-trace and W3C headers
+# intact whenever a tracing engine is present, including per-request sampling.
+workflow_tracing_enabled: ContextVar[bool] = ContextVar(
+    "servicelib_temporal_workflow_tracing_enabled", default=True
+)
+_TRACE_CARRIER_KEYS = frozenset(("traceparent", "tracestate", "baggage", "x-trace"))
+_NON_TRACING_CARRIER_KEYS = (
+    TEMPORAL_HEADER_STREAM_ID,
+    TEMPORAL_HEADER_PRIORITY,
+    TEMPORAL_HEADER_DEADLINE_UNIX_NANO,
+)
+
 
 def _current_carrier(tracing: Optional[Tracing]) -> dict[str, str]:
     carrier: dict[str, str] = {}
     if tracing is not None:
         tracing.inject(carrier)
-    if sampling_enabled():
-        carrier["x-trace"] = "1"
+        if sampling_enabled():
+            carrier["x-trace"] = "1"
     stream_id = request_stream_id.get()
     if stream_id:
         carrier[TEMPORAL_HEADER_STREAM_ID] = stream_id
@@ -87,10 +100,13 @@ def _encode_carrier(carrier: dict[str, str]) -> dict[str, Payload]:
     }
 
 
-def _decode_carrier(headers: Mapping[str, Payload]) -> dict[str, str]:
+def _decode_carrier(
+    headers: Mapping[str, Payload], *, tracing_enabled: bool,
+) -> dict[str, str]:
     converter = DefaultPayloadConverter.default
     carrier: dict[str, str] = {}
-    for key in TEMPORAL_CARRIER_KEYS:
+    keys = TEMPORAL_CARRIER_KEYS if tracing_enabled else _NON_TRACING_CARRIER_KEYS
+    for key in keys:
         payload = headers.get(key)
         if payload is None:
             continue
@@ -103,14 +119,23 @@ def _decode_carrier(headers: Mapping[str, Payload]) -> dict[str, str]:
 def current_workflow_carrier() -> dict[str, str]:
     """Decode the canonical carrier attached to the current Workflow start."""
 
-    return _decode_carrier(workflow.info().headers)
+    return _decode_carrier(
+        workflow.info().headers,
+        tracing_enabled=workflow_tracing_enabled.get(),
+    )
 
 
 def _merge_headers(
     existing: Mapping[str, Payload],
     carrier_headers: dict[str, Payload],
+    *,
+    tracing_enabled: bool,
 ) -> dict[str, Payload]:
-    merged = dict(existing)
+    merged = (
+        dict(existing)
+        if tracing_enabled
+        else {key: value for key, value in existing.items() if key not in _TRACE_CARRIER_KEYS}
+    )
     merged.update(carrier_headers)
     return merged
 
@@ -124,6 +149,7 @@ class _ClientOutbound(ClientOutboundInterceptor):
         headers = _merge_headers(
             input.headers,
             _encode_carrier(_current_carrier(self._tracing)),
+            tracing_enabled=self._tracing is not None,
         )
         return await self.next.start_workflow(replace(input, headers=headers))
 
@@ -131,17 +157,23 @@ class _ClientOutbound(ClientOutboundInterceptor):
 class _WorkflowOutbound(WorkflowOutboundInterceptor):
     @staticmethod
     def _root_headers() -> dict[str, Payload]:
+        tracing_enabled = workflow_tracing_enabled.get()
         return {
             key: payload
             for key, payload in workflow.info().headers.items()
             if key in TEMPORAL_CARRIER_KEYS
+            and (tracing_enabled or key not in _TRACE_CARRIER_KEYS)
         }
 
     def start_activity(self, input: StartActivityInput) -> Any:
         return self.next.start_activity(
             replace(
                 input,
-                headers=_merge_headers(input.headers, self._root_headers()),
+                headers=_merge_headers(
+                    input.headers,
+                    self._root_headers(),
+                    tracing_enabled=workflow_tracing_enabled.get(),
+                ),
             )
         )
 
@@ -149,7 +181,11 @@ class _WorkflowOutbound(WorkflowOutboundInterceptor):
         return await self.next.start_child_workflow(
             replace(
                 input,
-                headers=_merge_headers(input.headers, self._root_headers()),
+                headers=_merge_headers(
+                    input.headers,
+                    self._root_headers(),
+                    tracing_enabled=workflow_tracing_enabled.get(),
+                ),
             )
         )
 
@@ -165,7 +201,9 @@ class _ActivityInbound(ActivityInboundInterceptor):
         self._tracing = tracing
 
     async def execute_activity(self, input: ExecuteActivityInput) -> Any:
-        carrier = _decode_carrier(input.headers)
+        carrier = _decode_carrier(
+            input.headers, tracing_enabled=self._tracing is not None
+        )
         stream_id = carrier.get(TEMPORAL_HEADER_STREAM_ID) or None
         raw_priority = carrier.get(TEMPORAL_HEADER_PRIORITY)
         priority = int(raw_priority) if raw_priority is not None else None
@@ -179,6 +217,8 @@ class _ActivityInbound(ActivityInboundInterceptor):
         priority_token = request_priority.set(priority)
         deadline_token = request_deadline.set(deadline)
         try:
+            if self._tracing is None:
+                return await self.next.execute_activity(input)
             with ExitStack() as scopes:
                 remote_sampled = scopes.enter_context(
                     self._tracing.extract(carrier)

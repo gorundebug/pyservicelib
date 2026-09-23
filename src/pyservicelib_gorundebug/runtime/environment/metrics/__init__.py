@@ -11,7 +11,7 @@ from .metrics import (
     Float64Gauge, Float64GaugeVec,
     Float64Histogram, Float64HistogramVec,
     Int64Histogram, Int64HistogramVec,
-    MetricsScope, Metrics, MetricsEngine,
+    MetricsScope, Metrics, MetricsEngine, NoopMetrics,
     NOOP_INT64_COUNTER, NOOP_FLOAT64_COUNTER,
     NOOP_INT64_GAUGE, NOOP_FLOAT64_GAUGE,
     NOOP_FLOAT64_HISTOGRAM, NOOP_INT64_HISTOGRAM,

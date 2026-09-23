@@ -118,7 +118,7 @@ class DataSinkEndpoint(SinkEndpoint):
 
         path = getattr(endpoint_config, "path", None)
         method_name = getattr(endpoint_config, "method_name", None)
-        if path:
+        if self._metrics_enabled and path:
             connector_config = data_sink.data_connector
             host = getattr(connector_config, "host", None) or connector_name
             port = getattr(connector_config, "port", None)
@@ -136,7 +136,7 @@ class DataSinkEndpoint(SinkEndpoint):
                 server_address=host,
                 server_port=port,
             )
-        elif method_name:
+        elif self._metrics_enabled and method_name:
             self._transport_metrics = TransportRequestMetrics.grpc_client(
                 data_sink.environment.metrics,
                 method=f"{connector_name}/{method_name}",
@@ -181,7 +181,8 @@ class DataSinkEndpoint(SinkEndpoint):
             str_field("endpoint", self.name),
             err_field(err),
         )
-        self._begin_request_failed_counter.inc()
+        if self._metrics_enabled:
+            self._begin_request_failed_counter.inc()
 
     def on_late_result(self, stream_id: str) -> None:
         self._data_sink.environment.log.warn(
@@ -189,7 +190,8 @@ class DataSinkEndpoint(SinkEndpoint):
             str_field("endpoint", self.name),
             str_field("stream_id", stream_id),
         )
-        self._late_result_counter.inc()
+        if self._metrics_enabled:
+            self._late_result_counter.inc()
 
     def on_request_start(self) -> float:
         if not self._metrics_enabled:
