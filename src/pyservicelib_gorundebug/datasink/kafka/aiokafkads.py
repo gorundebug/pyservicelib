@@ -31,6 +31,11 @@ from ...runtime.environment.tracing import (
 )
 
 
+class _CreateTopicsResponse(Protocol):
+    # aiokafka builds these response fields dynamically from protocol schemas.
+    topic_errors: list[tuple[str, int] | tuple[str, int, str | None]]
+
+
 class Partitioner[T](Protocol):
     """Controls which Kafka partition a message lands on. Equivalent to Go's Partitioner."""
     def partition(self, value: T, num_partitions: int) -> int: ...
@@ -210,13 +215,11 @@ class _AIOKafkaSinkDataSink(OutputDataSink):
 
 
 class _AIOKafkaSinkEndpoint(DataSinkEndpoint):
-    _consumer_obj: Optional["_AIOKafkaEndpointConsumer"]
     topic: str
     enabled: bool
 
     def __init__(self, data_sink: _AIOKafkaSinkDataSink, id_endpoint: int):
         super().__init__(data_sink=data_sink, id_endpoint=id_endpoint)
-        self._consumer_obj = None
         self.enabled = False
         cfg = data_sink.environment.config.get_endpoint_config_by_id(id_endpoint)
         self.topic = getattr(cfg, 'topic', '') or ''
@@ -224,12 +227,10 @@ class _AIOKafkaSinkEndpoint(DataSinkEndpoint):
     async def start(self, ctx: Context) -> None:
         cfg = self.environment.config.get_endpoint_config_by_id(self.id)
         self.enabled = bool(getattr(cfg, 'enabled', False))
-        if self._consumer_obj is not None:
-            await self._consumer_obj.start(ctx)
+        await self.start_endpoint_consumers(ctx)
 
     async def stop(self, ctx: Context) -> None:
-        if self._consumer_obj is not None:
-            await self._consumer_obj.stop(ctx)
+        await self.stop_endpoint_consumers(ctx)
 
 class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointConsumer):
     _endpoint: _AIOKafkaSinkEndpoint
@@ -256,7 +257,6 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         self._enabled = False
 
         stream.set_sink_consumer(self)
-        endpoint._consumer_obj = self
         endpoint.add_endpoint_consumer(self)
 
     @property
@@ -435,7 +435,7 @@ async def _create_topics(
     )
     await admin.start()
     try:
-        response = await admin.create_topics(topics)
+        response = cast(_CreateTopicsResponse, await admin.create_topics(topics))
         for topic_error in response.topic_errors:
             topic, error_code, *messages = topic_error
             if error_code in (0, TopicAlreadyExistsError.errno):

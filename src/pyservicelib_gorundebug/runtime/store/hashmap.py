@@ -8,8 +8,11 @@ from typing import Any, Callable, Optional, Hashable, Awaitable
 from datetime import datetime
 
 from ..common import ServiceEnvironment
-from ..context import Context, request_deadline
+from .._background import terminate_background_failure
+from ..context import Context, request_cancelled, request_deadline
 from ..environment.metrics import Int64Gauge, Int64Counter
+from ..pool.pool import PoolCancelledError
+from ..utils.asyncrwlock import AsyncRWLock
 from .storage import JoinStorageConfig, JoinStorage, StoreAlreadyStartedError, StoreStoppedError
 
 # Rotation fires only when live entry count has dropped below 1/SHRINK_FACTOR of the peak,
@@ -32,6 +35,11 @@ class Item[V]:
         self.lock = asyncio.Lock()
         self.after_task = None
         self.callback = None
+        # The creation context owns expiration even when later messages renew
+        # the group's logical TTL. Cancellation without a deadline is not a
+        # context.AfterFunc path in the Go implementation.
+        self.context_deadline = deadline if request_deadline.get() is not None else None
+        self.cancelled = request_cancelled.get() if self.context_deadline is not None else None
 
 
 class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
@@ -60,6 +68,7 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         self._after_tasks = set()
         self._started = False
         self._stopped = False
+        self._rotation_lock = AsyncRWLock()
         self._metrics_enabled = env.metrics.enabled
 
         scope = env.metrics.scope('hashmap_join_storage', {
@@ -74,27 +83,30 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         try:
             while True:
                 await asyncio.sleep(self._config.ttl.total_seconds())
-                total = len(self._current) + len(self._prev)
-                should_rotate = (
-                    self._high_water_mark == 0
-                    or total * _SHRINK_FACTOR < self._high_water_mark
-                )
-                if total > self._high_water_mark:
-                    self._high_water_mark = total
-                if should_rotate:
-                    self._high_water_mark = total
-                    new_current: dict[K, Item[V]] = {}
-                    rescued = 0
-                    for k, v in self._prev.items():
-                        if k not in self._current:
-                            self._current[k] = v
-                            rescued += 1
-                    evicted = len(self._prev) - rescued
-                    self._prev = self._current
-                    self._current = new_current
-                    if self._metrics_enabled and evicted > 0:
-                        self._gauge_count.sub(evicted)
-                        self._evictions_total.add(evicted)
+                async with self._rotation_lock.write_lock():
+                    if self._stopped:
+                        return
+                    total = len(self._current) + len(self._prev)
+                    should_rotate = (
+                        self._high_water_mark == 0
+                        or total * _SHRINK_FACTOR < self._high_water_mark
+                    )
+                    if total > self._high_water_mark:
+                        self._high_water_mark = total
+                    if should_rotate:
+                        self._high_water_mark = total
+                        new_current: dict[K, Item[V]] = {}
+                        rescued = 0
+                        for k, v in self._prev.items():
+                            if k not in self._current:
+                                self._current[k] = v
+                                rescued += 1
+                        evicted = len(self._prev) - rescued
+                        self._prev = self._current
+                        self._current = new_current
+                        if self._metrics_enabled and evicted > 0:
+                            self._gauge_count.sub(evicted)
+                            self._evictions_total.add(evicted)
         except asyncio.CancelledError:
             pass
 
@@ -102,33 +114,69 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         """Fires at request deadline: calls callback with accumulated values, then removes item.
         Mirrors context.AfterFunc in Go pools — ensures items don't linger after context expiry.
         """
-        try:
-            await asyncio.sleep(max(0.0, item.deadline - asyncio.get_running_loop().time()))
-        except asyncio.CancelledError:
-            return  # join_value processed item before deadline — stopFn equivalent
-        async with item.lock:
-            if item.processed:
+        loop = asyncio.get_running_loop()
+        while True:
+            expiration = item.context_deadline if item.context_deadline is not None else item.deadline
+            remaining = max(0.0, expiration - loop.time())
+            try:
+                if item.cancelled is None:
+                    await asyncio.sleep(remaining)
+                else:
+                    try:
+                        async with asyncio.timeout(remaining):
+                            await item.cancelled.wait()
+                    except TimeoutError:
+                        pass
+            except asyncio.CancelledError:
                 return
-            item.processed = True  # claim execution before releasing lock
-        # Call callback outside lock (it may await); item.processed=True prevents re-entry
-        if item.callback is not None:
-            await item.callback(item.values)
-        # Remove from whichever bucket holds the item; decrement gauge once.
-        removed = (self._current.pop(key, None) is not None
-                   or self._prev.pop(key, None) is not None)
-        if removed and self._metrics_enabled:
+            async with item.lock:
+                if item.processed:
+                    return
+                # A timer may already be queued when a callback renews TTL.
+                # Recheck under the item lock; context deadlines stay absolute.
+                if item.context_deadline is None and item.deadline > loop.time():
+                    continue
+                item.processed = True
+                break
+        try:
+            # Callback ownership and task ContextVars remain those of the
+            # first message, not those of a later renewal.
+            if item.callback is not None:
+                await item.callback(item.values)
+        finally:
+            async with self._rotation_lock.read_lock():
+                removed = self._remove_item(key, item)
+                if removed and self._metrics_enabled:
+                    self._evictions_total.inc()
+
+    def _remove_item(self, key: K, item: Item[V]) -> bool:
+        # An expired callback may finish after a new generation was admitted.
+        if self._current.get(key) is item:
+            del self._current[key]
+        elif self._prev.get(key) is item:
+            del self._prev[key]
+        else:
+            return False
+        if self._metrics_enabled:
             self._gauge_count.dec()
-            self._evictions_total.inc()
+        return True
 
     def _make_after_task(self, key: K, item: Item[V]) -> None:
         after_task = asyncio.create_task(self._after_func(key, item))
         item.after_task = after_task
         self._after_tasks.add(after_task)
-        after_task.add_done_callback(self._after_tasks.discard)
+        after_task.add_done_callback(self._after_task_complete)
+
+    def _after_task_complete(self, task: asyncio.Task[Any]) -> None:
+        self._after_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and not isinstance(error, PoolCancelledError):
+            terminate_background_failure(error)
 
     async def join_value(self, key: K, index: int, value: V, callback: Callable[[list[list[V]]], Awaitable[bool]]):
         # Mirrors Go's: if ctxDeadline, ok := ctx.Deadline(); ok { ttl = time.Until(ctxDeadline) }
-        loop = asyncio.get_running_loop()
         req_deadline = request_deadline.get()
         if req_deadline is not None:
             now = datetime.now(tz=req_deadline.tzinfo)
@@ -137,6 +185,16 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         else:
             ttl_seconds = self._config.ttl.total_seconds()
 
+        if ttl_seconds > 0:
+            async with self._rotation_lock.read_lock():
+                await self._join_value(key, index, value, callback, ttl_seconds)
+        else:
+            await self._join_value(key, index, value, callback, ttl_seconds)
+
+    async def _join_value(self, key: K, index: int, value: V,
+                          callback: Callable[[list[list[V]]], Awaitable[bool]],
+                          ttl_seconds: float) -> None:
+        loop = asyncio.get_running_loop()
         while True:
             # All dict operations below have no await, so they're atomic in asyncio.
             now_ts = loop.time()
@@ -151,46 +209,43 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
                 else:
                     if item_prev is not None:
                         del self._prev[key]
+                        if self._metrics_enabled:
+                            self._gauge_count.dec()
                     item = None
 
             if item is None:
                 # ttl_seconds == 0 → float('inf') mirrors Go's zero time.Time (no individual expiry)
                 deadline = (loop.time() + ttl_seconds) if ttl_seconds > 0.0 else float('inf')
                 item = Item[V](deadline, index + 1)
+                item.callback = callback
+                replacing = key in self._current
                 self._current[key] = item
-                if self._metrics_enabled:
+                if self._metrics_enabled and not replacing:
                     self._gauge_count.inc()
                 # Register after_func for finite deadlines — mirrors context.AfterFunc in Go
                 if deadline != float('inf'):
                     self._make_after_task(key, item)
-
-            # Store callback so after_func can invoke it if deadline fires first
-            item.callback = callback
 
             assert item is not None
             async with item.lock:
                 now_ts = loop.time()
                 if not item.processed and item.deadline > now_ts:
                     if len(item.values) <= index:
-                        item.values.extend([[]] * (index - len(item.values) + 1))
+                        item.values.extend([] for _ in range(index - len(item.values) + 1))
                     item.values[index].append(value)
                     item.processed = await callback(item.values)
                     if item.processed:
                         # Cancel after_func — item handled, no need to fire at deadline (stopFn)
                         if item.after_task is not None:
                             item.after_task.cancel()
-                        removed = (self._current.pop(key, None) is not None
-                                   or self._prev.pop(key, None) is not None)
-                        if removed and self._metrics_enabled:
-                            self._gauge_count.dec()
+                        self._remove_item(key, item)
                     elif self._config.renew_ttl and ttl_seconds > 0.0:
-                        # Deadline extended: restart after_func with new deadline
-                        if item.after_task is not None:
-                            item.after_task.cancel()
+                        if (self._current.get(key) is not item
+                                and self._prev.get(key) is not item):
+                            break
                         item.deadline = loop.time() + ttl_seconds
                         self._current[key] = item
                         self._prev.pop(key, None)
-                        self._make_after_task(key, item)
                     break
             # Retry: item was already processed or expired under lock
 
@@ -200,19 +255,21 @@ class HashMapJoinStorage[K: Hashable, V](JoinStorage[K]):
         if self._started:
             raise StoreAlreadyStartedError()
         self._started = True
-        self._timer_task = asyncio.create_task(self._rotate())
+        if self._config.ttl.total_seconds() > 0:
+            self._timer_task = asyncio.create_task(self._rotate())
 
     async def stop(self, ctx: Context) -> None:
-        if self._stopped:
-            return
-        self._stopped = True
-        for t in list(self._after_tasks):
-            t.cancel()
-        self._after_tasks.clear()
-        if self._timer_task is not None:
-            self._timer_task.cancel()
+        async with self._rotation_lock.write_lock():
+            if self._stopped:
+                return
+            self._stopped = True
+            # Like Go, stop maintenance, not already accepted expiry callbacks.
+            timer = self._timer_task
+            if timer is not None:
+                timer.cancel()
+        if timer is not None:
             try:
-                await self._timer_task
+                await timer
             except asyncio.CancelledError:
                 pass
 

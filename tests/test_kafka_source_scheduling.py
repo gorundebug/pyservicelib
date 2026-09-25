@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -13,7 +13,7 @@ from pyservicelib_gorundebug.datasource.kafka.aiokafkads import (
 
 def _scheduler(limit: int) -> Any:
     scheduler = object.__new__(_AIOKafkaTypedEndpointConsumer)
-    scheduler._handler = SimpleNamespace(concurrency=lambda _sc: limit)
+    scheduler._handler = Mock(concurrency=lambda _sc: limit)
     scheduler._sc = cast(Any, object())
     scheduler._stopped = False
     scheduler._active_count = 0
@@ -84,8 +84,8 @@ async def test_concurrency_limit_applies_across_partitions() -> None:
 async def test_mark_message_is_committed_by_managed_offset_flush() -> None:
     scheduler = _scheduler(0)
     scheduler._marked_offsets = {}
-    scheduler._kafka_consumer = SimpleNamespace(commit=AsyncMock())
-    record = SimpleNamespace(
+    scheduler._kafka_consumer = Mock(commit=AsyncMock())
+    record = Mock(
         key=b"order-1",
         value=b"{}",
         topic="events",
@@ -119,6 +119,7 @@ async def test_begin_failure_does_not_start_request_metrics() -> None:
     scheduler._pipeline_name = ""
     scheduler._component_name = ""
     scheduler._tracer = None
+    scheduler._tracing = None
     scheduler._kafka_consumer = SimpleNamespace()
     scheduler._input_stream = SimpleNamespace(name="orders")
     scheduler._endpoint = SimpleNamespace(
@@ -146,7 +147,7 @@ async def test_partition_read_is_paused_until_callback_finishes() -> None:
     from contextvars import ContextVar
     scheduler = _scheduler(1)
     scheduler._partition_prefetch = 1
-    from aiokafka.structs import TopicPartition
+    from pyservicelib_gorundebug.datasource.kafka.aiokafkads import TopicPartition
     scheduler._kafka_consumer = SimpleNamespace(
         pause=Mock(), resume=Mock(),
         assignment=lambda: {TopicPartition("events", 0)},
@@ -182,7 +183,7 @@ async def test_partition_backlog_does_not_allocate_a_task_per_record() -> None:
     scheduler = _scheduler(2)
     gates = [asyncio.Event(), asyncio.Event()]
     started = [asyncio.Event(), asyncio.Event()]
-    seen = [[], []]
+    seen: list[list[int]] = [[], []]
     async def request(record):
         started[record.partition].set()
         await gates[record.partition].wait()
@@ -206,7 +207,7 @@ async def test_partition_backlog_does_not_allocate_a_task_per_record() -> None:
 @pytest.mark.parametrize("revoked", [False, True])
 async def test_partition_cleanup_on_stop_or_rebalance(revoked: bool) -> None:
     from unittest.mock import Mock
-    from aiokafka.structs import TopicPartition
+    from pyservicelib_gorundebug.datasource.kafka.aiokafkads import TopicPartition
 
     scheduler = _scheduler(1)
     scheduler._partition_prefetch = 1
@@ -241,7 +242,7 @@ async def test_partition_cleanup_on_stop_or_rebalance(revoked: bool) -> None:
 
 @pytest.mark.asyncio
 async def test_consume_loop_does_not_read_ahead_of_slow_partitions() -> None:
-    from aiokafka.structs import TopicPartition
+    from pyservicelib_gorundebug.datasource.kafka.aiokafkads import TopicPartition
 
     class Consumer:
         def __init__(self):

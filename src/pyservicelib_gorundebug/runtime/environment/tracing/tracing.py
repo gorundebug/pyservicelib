@@ -11,7 +11,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, ContextManager, Iterator, Mapping, MutableMapping, Optional, Protocol
 
 if TYPE_CHECKING:
-    from ...config.endpoint_types import EndpointConfig
+    from ...config.config import EndpointConfig
 
 type AttributeValue = str | int | float | bool
 
@@ -202,7 +202,7 @@ def sampling_requested_by_carrier(carrier: Mapping[str, str]) -> bool:
 def data_source_endpoint_tracing_enabled(environment: EndpointTracingEnvironment, endpoint_id: int) -> bool:
     """Read the current reloadable source-endpoint tracing policy."""
     endpoint = environment.config.get_endpoint_config_by_id(endpoint_id)
-    return endpoint.tracing_enabled
+    return bool(endpoint.tracing_enabled)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

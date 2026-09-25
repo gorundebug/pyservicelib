@@ -106,7 +106,7 @@ class ContextWatches:
         if event is not None:
             group = self.groups.get(event)
             if group is None:
-                tasks = set()
+                tasks: set[int] = set()
                 waiter = asyncio.create_task(self._wait(event, tasks), context=VariablesContext())
                 self.waiters.add(waiter)
                 waiter.add_done_callback(self.waiters.discard)
@@ -156,7 +156,7 @@ class ContextWatches:
         self.armed_at = None
         self.timer = None
         now = asyncio.get_running_loop().time()
-        while self.deadlines.peek() is not None and self.deadlines.peek()[0][0] <= now:
+        while (entry := self.deadlines.peek()) is not None and entry[0][0] <= now:
             _, task = self.deadlines.pop()
             self._notify(id(task))
         self._arm()

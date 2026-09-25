@@ -201,19 +201,11 @@ class AIOHttpDataSink(OutputDataSink):
 
 
 class _AIOHttpSinkEndpoint(DataSinkEndpoint):
-    _consumer: Optional["_NetHTTPSinkEndpointConsumer"]
-
-    def __init__(self, data_sink: AIOHttpDataSink, id_endpoint: int):
-        super().__init__(data_sink=data_sink, id_endpoint=id_endpoint)
-        self._consumer = None
-
     async def start(self, ctx: Context) -> None:
-        if self._consumer is not None:
-            await self._consumer.start(ctx)
+        await self.start_endpoint_consumers(ctx)
 
     async def stop(self, ctx: Context) -> None:
-        if self._consumer is not None:
-            await self._consumer.stop(ctx)
+        await self.stop_endpoint_consumers(ctx)
 
 
 class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEndpointConsumer):
@@ -248,7 +240,6 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         )
 
         stream.set_sink_consumer(self)
-        endpoint._consumer = self
         endpoint.add_endpoint_consumer(self)
 
     @property
@@ -284,6 +275,7 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
         end_err: Optional[Exception] = None
         response_status: Optional[str] = None
         response_body_size: Optional[int] = None
+        req: Optional[Requester] = None
         stream_id_token = None
         span_scope = None
         if span is not NOOP_SPAN:
@@ -318,19 +310,23 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
 
                 stream_id_token = request_stream_id.set(new_stream_id())
                 try:
-                    sid = stream_id_from_context()
-                    assert sid is not None
-                    req.set_header('x-stream-id', sid)
-                    if self._tracing is not None and sampling_enabled():
-                        carrier: dict[str, str] = {}
-                        self._tracing.inject(carrier)
-                        carrier['x-trace'] = '1'
-                        for name, header_value in carrier.items():
-                            req.set_header(name, header_value)
-                    resp_raw = await req.execute()
-                    if self._metrics_enabled:
-                        response_status = str(resp_raw.status)
-                        response_body_size = resp_raw.content_length
+                    try:
+                        sid = stream_id_from_context()
+                        assert sid is not None
+                        req.set_header('x-stream-id', sid)
+                        if self._tracing is not None and sampling_enabled():
+                            carrier: dict[str, str] = {}
+                            self._tracing.inject(carrier)
+                            carrier['x-trace'] = '1'
+                            for name, header_value in carrier.items():
+                                req.set_header(name, header_value)
+                        resp_raw = await req.execute()
+                        if self._metrics_enabled:
+                            response_status = str(resp_raw.status)
+                            response_body_size = resp_raw.content_length
+                    finally:
+                        request_stream_id.reset(stream_id_token)
+                        stream_id_token = None
                 except Exception as e:
                     if span is not None and span is not NOOP_SPAN:
                         span_error(span, e)
@@ -338,9 +334,6 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                     end_err = e
                     await self._handler.end_request(self._sc, e, handler_state)
                     return
-                finally:
-                    request_stream_id.reset(stream_id_token)
-                    stream_id_token = None
                 if span is not None and span is not NOOP_SPAN:
                     span.add_event("http_call")
 
@@ -367,7 +360,7 @@ class _NetHTTPSinkEndpointConsumer[HandlerState, T, R, E](Consumer[T], OutputEnd
                 start_time,
                 end_err,
                 response_status,
-                req.body_size if self._metrics_enabled and "req" in locals() else None,
+                req.body_size if self._metrics_enabled and req is not None else None,
                 response_body_size,
             )
             if span is not NOOP_SPAN:

@@ -12,6 +12,9 @@ consume_message calls), rather than each Consume() opening and closing its
 own independent stream.
 """
 
+from typing import Any, AsyncIterator, cast
+from pyservicelib_gorundebug.runtime.common import TypedSinkStreamWithResult
+from pyservicelib_gorundebug.datasink.grpc.grpcds import _GrpcSinkEndpoint
 import asyncio
 from datetime import datetime, timedelta, timezone
 import pytest
@@ -102,6 +105,7 @@ class _FakeBidiStreamingCall:
         self.writes = []
         self.done_writing_called = False
         self._responses = list(responses)
+        self._iterator: AsyncIterator[Any] | None = None
 
     async def write(self, req):
         self.writes.append(req)
@@ -110,7 +114,12 @@ class _FakeBidiStreamingCall:
         self.done_writing_called = True
 
     def __aiter__(self):
-        return self._iter()
+        return self
+
+    async def __anext__(self):
+        if self._iterator is None:
+            self._iterator = self._iter()
+        return await anext(self._iterator)
 
     async def _iter(self):
         for r in self._responses:
@@ -176,7 +185,7 @@ async def test_client_streaming_single_message():
         return call
 
     consumer = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler, None, None, client_fn,
     )
     with_stream_id("s1")
     await consumer.consume("v1")
@@ -208,7 +217,7 @@ async def test_client_streaming_multiple_messages_reuse_one_stream():
         return call
 
     consumer = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler, None, None, client_fn,
     )
     with_stream_id("order-1")
     await consumer.consume("item1")
@@ -239,13 +248,13 @@ async def test_client_streaming_different_stream_ids_independent():
     stream = _FakeStream()
 
     consumer_a = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler_a, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler_a, None, None, client_fn,
     )
     with_stream_id("stream-a")
     await consumer_a.consume("a1")
 
     consumer_b = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler_b, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler_b, None, None, client_fn,
     )
     with_stream_id("stream-b")
     await consumer_b.consume("b1")
@@ -266,7 +275,7 @@ async def test_client_streaming_begin_request_failure():
         raise AssertionError("must not be called when begin_request fails")
 
     consumer = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler, None, None, client_fn,
     )
     with_stream_id("s-fail")
     await consumer.consume("v1")
@@ -283,7 +292,7 @@ async def test_client_streaming_begin_request_failure():
 
     handler2 = _RecordingHandler(done_after=1)
     consumer2 = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler2, None, None, client_fn2,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler2, None, None, client_fn2,
     )
     with_stream_id("s-fail")
     await consumer2.consume("v2")
@@ -303,7 +312,7 @@ async def test_client_streaming_grpc_call_failure_drops_reservation():
         raise RuntimeError("dial failed")
 
     consumer = _ClientStreamingSinkConsumer(
-        endpoint, stream, handler, None, None, failing_client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler, None, None, failing_client_fn,
     )
     with_stream_id("s-dial-fail")
     await consumer.consume("v1")
@@ -335,7 +344,7 @@ async def test_bidi_streaming_multiple_messages_reuse_one_stream():
         return call
 
     consumer = _BidiStreamingSinkConsumer(
-        endpoint, stream, handler, None, None, client_fn,
+        cast(_GrpcSinkEndpoint, endpoint), cast(TypedSinkStreamWithResult[Any, Any, Any], stream), handler, None, None, client_fn,
     )
     with_stream_id("bidi-1")
     await consumer.consume("m1")

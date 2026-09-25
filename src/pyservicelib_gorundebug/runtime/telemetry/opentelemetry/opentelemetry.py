@@ -12,7 +12,7 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExp
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.metrics import Observation, CallbackOptions
+from opentelemetry.metrics import Observation, CallbackOptions, ObservableGauge
 
 from ...environment.metrics.metrics import (
     Labels, MetricsHandler,
@@ -264,7 +264,7 @@ class _ObservableFloat64GaugeVec:
     def __init__(self) -> None:
         self._callbacks: dict[str, tuple[dict[str, str], Callable[[], float]]] = {}
         self._lock = threading.Lock()
-        self._obs = None
+        self._obs: ObservableGauge | None = None
 
     def add(self, labels: Labels, fn: Callable[[], float]) -> None:
         key = _labels_key(labels)

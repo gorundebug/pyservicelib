@@ -4,9 +4,12 @@ from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
-from temporalio.worker import ExecuteActivityInput
+from temporalio.worker import ExecuteActivityInput, Worker
+from pyservicelib_gorundebug.runtime.common import TypedSinkStream
+from pyservicelib_gorundebug.runtime.common import ServiceStream
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
@@ -32,8 +35,9 @@ from pyservicelib_gorundebug.runtime.environment.tracing import (
     sampling_enabled,
     sampling_scope,
 )
+from pyservicelib_gorundebug.runtime.environment.tracing.tracing import Tracer
 from pyservicelib_gorundebug.runtime.pool import PoolCancelledError
-from pyservicelib_gorundebug.runtime.config import TypeConfig
+from pyservicelib_gorundebug.runtime.config import TypeConfig, ServiceAppConfig
 from pyservicelib_gorundebug.runtime.serde import StringSerde
 from pyservicelib_gorundebug.datasource.temporal.connector import (
     Connector,
@@ -126,11 +130,11 @@ def test_temporal_sink_shares_one_endpoint_between_independent_streams(
     )
     monkeypatch.setattr(temporal_sink, "DataSinkEndpoint", EndpointStub)
 
-    first, _, _ = temporal_sink._create_endpoint(  # type: ignore[arg-type]
-        SimpleNamespace(environment=environment, endpoint_id=7)
+    first, _, _ = temporal_sink._create_endpoint(
+        cast(TypedSinkStream[object, object], SimpleNamespace(environment=environment, endpoint_id=7))
     )
-    second, _, _ = temporal_sink._create_endpoint(  # type: ignore[arg-type]
-        SimpleNamespace(environment=environment, endpoint_id=7)
+    second, _, _ = temporal_sink._create_endpoint(
+        cast(TypedSinkStream[object, object], SimpleNamespace(environment=environment, endpoint_id=7))
     )
 
     assert first is second
@@ -158,9 +162,9 @@ async def test_worker_shutdown_joins_every_worker_before_reporting_error() -> No
         raise RuntimeError("worker run failed")
 
     connector = object.__new__(Connector)
-    connector._workers = [  # type: ignore[attr-defined]
-        WorkerStub("first", RuntimeError("shutdown failed")),
-        WorkerStub("second"),
+    connector._workers = [
+        cast(Worker, WorkerStub("first", RuntimeError("shutdown failed"))),
+        cast(Worker, WorkerStub("second")),
     ]
     connector._worker_tasks = [asyncio.create_task(failed_run())]  # type: ignore[attr-defined]
 
@@ -365,8 +369,8 @@ def test_workflow_stream_registry_matches_service_virtual_stream_semantics() -> 
     virtual = SimpleNamespace(id=9)
     canonical = SimpleNamespace(id=9)
 
-    environment.register_stream(virtual)
-    environment.register_stream(canonical)
+    environment.register_stream(cast(ServiceStream, virtual))
+    environment.register_stream(cast(ServiceStream, canonical))
 
     assert environment._streams[9] is canonical  # type: ignore[attr-defined]
 
@@ -375,11 +379,11 @@ def test_workflow_named_primitive_uses_its_underlying_serde() -> None:
     environment = TemporalWorkflowEnvironment.__new__(TemporalWorkflowEnvironment)
     environment._serdes = {}  # type: ignore[attr-defined]
     automation_job = TypeConfig(name="AutomationJob", type=DataType.string)
-    environment._config = SimpleNamespace(  # type: ignore[attr-defined]
+    environment._config = cast(ServiceAppConfig, SimpleNamespace(
         get_type_by_name=lambda name: (
             automation_job if name == "AutomationJob" else None
         )
-    )
+    ))
 
     serde = environment.get_type_serde("AutomationJob")
 
@@ -433,16 +437,28 @@ async def test_workflow_result_waits_for_async_graph_quiescence() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("endpoint_enabled", "carrier"),
-    ((True, {}), (False, {"x-trace": "1"})),
+    ("endpoint_enabled", "carrier", "provider_enabled", "expected_sampling"),
+    (
+        (True, {}, True, True),
+        (False, {"x-trace": "1"}, True, True),
+        (False, {}, True, False),
+        (True, {"x-trace": "1"}, False, False),
+    ),
 )
 async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
     monkeypatch: pytest.MonkeyPatch,
     endpoint_enabled: bool,
     carrier: dict[str, str],
+    provider_enabled: bool,
+    expected_sampling: bool,
 ) -> None:
+    class TestTracing(Tracing):
+        def tracer(self, name: str) -> Tracer:
+            raise AssertionError("This test only uses carrier extraction")
+
     class Environment:
         def __init__(self) -> None:
+            self.tracing = TestTracing() if provider_enabled else None
             endpoint = SimpleNamespace(tracing_enabled=endpoint_enabled)
             self.config = SimpleNamespace(
                 get_endpoint_config_by_id=lambda endpoint_id: endpoint
@@ -476,7 +492,7 @@ async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
     async def activate(_envelope: EndpointEnvelope) -> None:
         nonlocal activated
         activated = True
-        assert sampling_enabled()
+        assert sampling_enabled() is expected_sampling
 
     result = await execute_workflow_graph_endpoint(
         environment=Environment(),  # type: ignore[arg-type]

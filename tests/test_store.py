@@ -513,7 +513,7 @@ async def test_after_func_not_created_for_infinite_deadline():
 
 
 @pytest.mark.asyncio
-async def test_after_func_renew_ttl_restarts_timer():
+async def test_after_func_renew_ttl_preserves_original_context_timer():
     s = make_storage(ttl_seconds=3600, renew_ttl=True)
     call_count = 0
 
@@ -528,7 +528,7 @@ async def test_after_func_renew_ttl_restarts_timer():
         await s.join_value("k1", 0, "v1", cb)
         first_task = s._current["k1"].after_task
 
-        # Renew TTL: old after_task cancelled, new one created
+        # Renew logical TTL without replacing the creation context's timer.
         request_deadline.reset(token)
         token = request_deadline.set(datetime.now() + timedelta(milliseconds=80))
         await s.join_value("k1", 0, "v2", cb)
@@ -536,10 +536,10 @@ async def test_after_func_renew_ttl_restarts_timer():
     finally:
         request_deadline.reset(token)
 
-    assert first_task is not second_task
-    await asyncio.sleep(0)  # yield so event loop processes the cancellation
+    assert first_task is second_task
+    await asyncio.sleep(0)
     assert first_task is not None
-    assert first_task.cancelled()
+    assert not first_task.cancelled()
 
 
 # ---------- deadline override via ContextVar (mirrors Go's ctx.Deadline()) ----------
@@ -657,3 +657,235 @@ def test_join_storage_factory_invalid_type_raises():
     cfg = MockJoinStorageConfig(ttl=timedelta(hours=1))
     with pytest.raises(ValueError):
         JoinStorageFactory.make_storage("InvalidType", env=None, cfg=cfg)  # type: ignore
+
+
+@pytest.mark.asyncio
+async def test_join_sparse_slots_do_not_alias():
+    s = make_storage(ttl_seconds=0)
+
+    async def keep(values):
+        return False
+
+    await s.join_value("key", 0, "zero", keep)
+    await s.join_value("key", 3, "three", keep)
+    await s.join_value("key", 2, "two", keep)
+    assert s._current["key"].values == [["zero"], [], ["two"], ["three"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("processed", [True, False])
+async def test_old_join_callback_cannot_remove_or_republish_replacement(processed):
+    s = make_storage(ttl_seconds=3600, renew_ttl=True)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def old_callback(values):
+        entered.set()
+        await release.wait()
+        return processed
+
+    async def keep(values):
+        return False
+
+    task = asyncio.create_task(s.join_value("key", 0, "old", old_callback))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        old = s._current["key"]
+        old.deadline = asyncio.get_running_loop().time() - 1
+        await s.join_value("key", 0, "new", keep)
+        replacement = s._current["key"]
+        release.set()
+        await asyncio.wait_for(task, 1)
+        assert s._current.get("key") is replacement
+        assert replacement.values == [["new"]]
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)
+        for timer in list(s._after_tasks):
+            timer.cancel()
+        await s.stop(default_context())
+
+
+@pytest.mark.asyncio
+async def test_join_expiry_keeps_original_callback():
+    s = make_storage(ttl_seconds=3600)
+    calls = []
+
+    async def first(values):
+        calls.append("first")
+        return False
+
+    async def second(values):
+        calls.append("second")
+        return False
+
+    try:
+        await s.join_value("key", 0, "one", first)
+        await s.join_value("key", 1, "two", second)
+        item = s._current["key"]
+        item.deadline = asyncio.get_running_loop().time() - 1
+        await s._after_func("key", item)
+        assert calls == ["first", "second", "first"]
+    finally:
+        for timer in list(s._after_tasks):
+            timer.cancel()
+        await s.stop(default_context())
+
+
+@pytest.mark.asyncio
+async def test_join_stop_preserves_accepted_expiration():
+    s = make_storage(ttl_seconds=0.03)
+    expired = asyncio.Event()
+    calls = 0
+
+    async def callback(values):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            expired.set()
+        return False
+
+    await s.join_value("key", 0, "value", callback)
+    await s.stop(default_context())
+    await asyncio.wait_for(expired.wait(), 1)
+    assert "key" not in s._current
+
+
+@pytest.mark.asyncio
+async def test_join_zero_ttl_does_not_start_rotation():
+    s = make_storage(ttl_seconds=0)
+    await s.start(default_context())
+    try:
+        assert s._timer_task is None
+    finally:
+        await s.stop(default_context())
+
+
+@pytest.mark.asyncio
+async def test_join_stop_waits_active_callback_but_other_keys_run_concurrently():
+    s = make_storage(ttl_seconds=3600)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked(values):
+        entered.set()
+        await release.wait()
+        return True
+
+    async def complete(values):
+        return True
+
+    task = asyncio.create_task(s.join_value("first", 0, "value", blocked))
+    stop = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(s.join_value("second", 0, "value", complete), 1)
+        stop = asyncio.create_task(s.stop(default_context()))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not stop.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)
+        if stop is not None:
+            await asyncio.wait_for(stop, 1)
+        for timer in list(s._after_tasks):
+            timer.cancel()
+
+
+@pytest.mark.asyncio
+async def test_join_renewal_does_not_extend_original_request_deadline():
+    s = make_storage(ttl_seconds=3600, renew_ttl=True)
+    expired = asyncio.Event()
+    calls = 0
+
+    async def callback(values):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            expired.set()
+        return False
+
+    token = request_deadline.set(datetime.now() + timedelta(milliseconds=50))
+    try:
+        await s.join_value("key", 0, "first", callback)
+    finally:
+        request_deadline.reset(token)
+    token = request_deadline.set(datetime.now() + timedelta(hours=1))
+    try:
+        await s.join_value("key", 1, "second", callback)
+        await asyncio.wait_for(expired.wait(), 1)
+        assert "key" not in s._current
+    finally:
+        request_deadline.reset(token)
+        for timer in list(s._after_tasks):
+            timer.cancel()
+        await s.stop(default_context())
+
+
+@pytest.mark.asyncio
+async def test_join_request_cancellation_delivers_accepted_expiry_callback():
+    from pyservicelib_gorundebug.runtime.context import request_cancelled
+
+    s = make_storage(ttl_seconds=3600)
+    cancelled = asyncio.Event()
+    expired = asyncio.Event()
+    calls = 0
+
+    async def callback(values):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            expired.set()
+        return False
+
+    deadline_token = request_deadline.set(datetime.now() + timedelta(hours=1))
+    cancel_token = request_cancelled.set(cancelled)
+    try:
+        await s.join_value("key", 0, "value", callback)
+        cancelled.set()
+        await asyncio.wait_for(expired.wait(), 1)
+        assert "key" not in s._current
+    finally:
+        request_cancelled.reset(cancel_token)
+        request_deadline.reset(deadline_token)
+        for timer in list(s._after_tasks):
+            timer.cancel()
+        await s.stop(default_context())
+
+
+@pytest.mark.asyncio
+async def test_old_expiry_callback_cannot_remove_replacement():
+    s = make_storage(ttl_seconds=3600)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def first(values):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            await release.wait()
+        return False
+
+    async def second(values):
+        return False
+
+    await s.join_value("key", 0, "old", first)
+    item = s._current["key"]
+    item.deadline = asyncio.get_running_loop().time() - 1
+    expiration = asyncio.create_task(s._after_func("key", item))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await s.join_value("key", 0, "new", second)
+        replacement = s._current["key"]
+        release.set()
+        await asyncio.wait_for(expiration, 1)
+        assert s._current.get("key") is replacement
+    finally:
+        release.set()
+        await asyncio.wait_for(expiration, 1)
+        for timer in list(s._after_tasks):
+            timer.cancel()
+        await s.stop(default_context())

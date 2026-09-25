@@ -1,10 +1,10 @@
-from pyservicelib_gorundebug.runtime.config.endpoint_types import EndpointConfig, HttpEndpointConfig
+from pyservicelib_gorundebug.runtime.config.config import EndpointConfig
 from pyservicelib_gorundebug.runtime.environment.tracing import data_source_endpoint_tracing_enabled
 
 
 class _ReloadableConfig:
     def __init__(self) -> None:
-        self.endpoint: EndpointConfig = HttpEndpointConfig(100, "Route", 1)
+        self.endpoint: EndpointConfig = EndpointConfig(id=100, name="Route", idDataConnector=1, functionName="Source")
 
     def get_endpoint_config_by_id(self, endpoint_id: int) -> EndpointConfig:
         assert endpoint_id == 100
@@ -24,7 +24,7 @@ def test_data_source_endpoint_tracing_reads_current_config_snapshot() -> None:
     config = _ReloadableConfig()
     environment = _Environment(config)
     assert not data_source_endpoint_tracing_enabled(environment, 100)
-    config.endpoint = HttpEndpointConfig(100, "Route", 1, tracing_enabled=True)
+    config.endpoint = EndpointConfig(id=100, name="Route", idDataConnector=1, functionName="Source", tracingEnabled=True)
     assert data_source_endpoint_tracing_enabled(environment, 100)
-    config.endpoint = HttpEndpointConfig(100, "Route", 1, tracing_enabled=False)
+    config.endpoint = EndpointConfig(id=100, name="Route", idDataConnector=1, functionName="Source", tracingEnabled=False)
     assert not data_source_endpoint_tracing_enabled(environment, 100)

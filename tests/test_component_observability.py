@@ -1,3 +1,9 @@
+from typing import cast
+from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream
+from pyservicelib_gorundebug.runtime.environment.tracing import Tracer
+from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
+from pyservicelib_gorundebug.api.models.programming_language import ProgrammingLanguage
+from pyservicelib_gorundebug.api.models.kubernetes_workload_type import KubernetesWorkloadType
 from types import SimpleNamespace
 
 import pytest
@@ -18,16 +24,16 @@ from pyservicelib_gorundebug.api.models.call_semantics import CallSemantics
 
 
 def config(component="Customer Pricing"):
-    return StreamConfig(id=2, name="Calculate Price", idSource=1, type=2, idService=1,
+    return StreamConfig(id=2, name="Calculate Price", idSource=1, type=TransformationType(2), idService=1,
                         xPos=0, yPos=0, valueType="Amount", pipeline="pricing", component=component)
 
 
-class RecordingTracer:
+class RecordingTracer(Tracer):
     def __init__(self):
         self.spans = []
 
-    def start(self, name, *attrs):
-        self.spans.append((name, {attr.key: attr.value for attr in attrs}))
+    def start(self, span_name, *attrs):
+        self.spans.append((span_name, {attr.key: attr.value for attr in attrs}))
         return None, NOOP_SPAN
 
 
@@ -58,7 +64,7 @@ async def test_existing_link_counter_and_span_use_receiving_grouping(semantics):
                                   create_task=lambda fn, *args: tasks.append(fn(*args)))
     source = SimpleNamespace(id=1, name="Input", consumer=consumer, environment=environment,
                              config=SimpleNamespace(id_service=1, pipeline="entry", component="Request"))
-    caller = RuntimeHelpers(environment).make_caller(source)
+    caller = RuntimeHelpers[int](cast(ServiceExecutionEnvironment, environment)).make_caller(cast(TypedStream[int], source))
     with sampling_scope(True):
         await caller.consume(42)
         for task in tasks:
@@ -76,9 +82,12 @@ async def test_existing_link_counter_and_span_use_receiving_grouping(semantics):
 
 def test_operator_and_endpoint_grouping_respects_sampling_fast_path():
     tracer = RecordingTracer()
-    stream = SimpleNamespace(name="Calculate Price", config=config())
-    stream.trace_attributes = (string_attr("stream", stream.name), string_attr("pipeline", "pricing"),
-                               string_attr("component", "Customer Pricing"))
+    class Traced:
+        name = "Calculate Price"
+        trace_attributes = (string_attr("stream", name), string_attr("pipeline", "pricing"),
+                            string_attr("component", "Customer Pricing"))
+
+    stream = Traced()
     with sampling_scope(True):
         start_stream_span(tracer, "stream.map", stream)
         start_endpoint_span(tracer, "http.output", stream.name, "Route", "method", "POST",
@@ -90,6 +99,10 @@ def test_operator_and_endpoint_grouping_respects_sampling_fast_path():
     assert tracer.spans[1][1]["method"] == "POST"
 
     class Unresolved:
+        @property
+        def trace_attributes(self):
+            raise AssertionError("unsampled stream attributes must not be read")
+
         @property
         def config(self):
             raise AssertionError("unsampled path must not resolve grouping")
@@ -105,12 +118,14 @@ def test_config_api_and_yaml_preserve_optional_component(component):
     assert MapStreamConfig(cfg).component == component
     api = stream_config_to_api(cfg)
     assert api.component == component
-    assert type(api).from_dict(api.to_dict()).component == component
-    service = Service(id=1, name="Booking", defaultCallSemantics=2, programmingLanguage=3,
+    restored = type(api).from_dict(api.to_dict())
+    assert restored is not None
+    assert restored.component == component
+    service = Service(id=1, name="Booking", defaultCallSemantics=CallSemantics(2), programmingLanguage=ProgrammingLanguage(3),
                       modulePath="booking", httpHost="", httpPort=0, grpcHost="", grpcPort=9200,
                       shutdownTimeout=1000, environment=next(iter(Environment)), color="#000000",
                       statusHandler="", metricsHandler="", startupHandler="", readinessHandler="",
-                      livenessHandler="", kubernetesWorkloadType="Deployment", defaultGrpcTimeout=0)
+                      livenessHandler="", kubernetesWorkloadType=KubernetesWorkloadType("Deployment"), defaultGrpcTimeout=0)
     app = StreamApp(settings=ProjectSettings(name="Booking"), services=[service], streams=[api],
                     links=[], types=[], dataConnectors=[], endpoints=[], pools=[])
     doc = yaml.safe_load(app_to_yaml(app))
@@ -154,7 +169,7 @@ def test_disabled_endpoint_tracing_creates_neither_attributes_nor_spans(monkeypa
     helpers = importlib.import_module("pyservicelib_gorundebug.runtime.environment.tracing.tracing")
     def unexpected(*args, **kwargs):
         raise AssertionError("disabled tracing must not create attributes or start spans")
-    tracer = SimpleNamespace(start=unexpected) if tracer_present else None
+    tracer = cast(Tracer, SimpleNamespace(start=unexpected)) if tracer_present else None
     monkeypatch.setattr(helpers, "string_attr", unexpected)
     with sampling_scope(sampled):
         assert start_endpoint_span(
@@ -181,13 +196,13 @@ def test_operator_spans_reuse_attributes_without_reading_config(monkeypatch):
         return cfg
     environment = SimpleNamespace(config=SimpleNamespace(get_stream_config_by_id=read_config),
                                   runtime=SimpleNamespace(register_stream=lambda stream: None))
-    stream = ConcreteStream(2, environment)
+    stream = ConcreteStream(2, cast(ServiceExecutionEnvironment, environment))
     attributes = stream.trace_attributes
     assert stream.trace_attributes is attributes
 
-    class IdentityTracer:
-        def start(self, operation, *attrs):
-            assert operation == "stream.map"
+    class IdentityTracer(Tracer):
+        def start(self, span_name, *attrs):
+            assert span_name == "stream.map"
             assert all(actual is cached for actual, cached in zip(attrs, attributes, strict=True))
             return None, NOOP_SPAN
 

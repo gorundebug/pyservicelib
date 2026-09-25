@@ -77,7 +77,7 @@ async def test_delay_pool() -> None:
       await asyncio.wait_for(delay_pool.stop(ctx), timeout=15)
       assert [value for value, _ in recorded_delays] == sorted(delays)
       # Scheduling may be late under load, but never meaningfully early.
-      # Assert outside callbacks: the pool intentionally catches task errors.
+      # Keep timing assertions in the test rather than the detached callback.
       assert all(elapsed + 0.001 >= value / 1000 for value, elapsed in recorded_delays)
    finally:
       await service.stop(ctx)
@@ -280,7 +280,8 @@ async def test_task_pool_executor_metrics():
 
 
 @pytest.mark.asyncio
-async def test_task_pool_exception_does_not_crash():
+@pytest.mark.parametrize("cancellation", [asyncio.CancelledError, PoolCancelledError])
+async def test_task_pool_expected_cancellation_does_not_crash(cancellation):
     env = _make_env()
     pool = TaskPoolImpl("p", env)
     ctx = default_context()
@@ -289,7 +290,7 @@ async def test_task_pool_exception_does_not_crash():
     results = []
 
     async def bad_job():
-        raise RuntimeError("oops")
+        raise cancellation()
 
     async def good_job():
         results.append("ok")
@@ -1143,9 +1144,9 @@ async def test_pool_independent_context_and_shared_shutdown(kind):
     pool = (DelayPoolImpl(env) if kind == 'delay' else
             TaskPoolImpl('test', env) if kind == 'fifo' else PriorityTaskPoolImpl('test', env))
     async def add(fn):
-        if kind == 'delay':
+        if isinstance(pool, DelayPoolImpl):
             await pool.add_task(timedelta(), fn)
-        elif kind == 'priority':
+        elif isinstance(pool, PriorityTaskPoolImpl):
             await pool.add_task(0, fn)
         else:
             await pool.add_task(fn)
@@ -1195,7 +1196,7 @@ async def test_pool_zero_cpu_and_prestart_drain(kind, monkeypatch):
     ran = asyncio.Event()
     async def callback():
         ran.set()
-    if kind == 'fifo':
+    if isinstance(pool, TaskPoolImpl):
         await pool.add_task(callback)
     else:
         await pool.add_task(0, callback)
@@ -1216,9 +1217,9 @@ async def test_pool_shared_cancellation_has_no_duplicates(kind):
         seen.append(index)
     try:
         for n in range(200):
-            if kind == 'delay':
+            if isinstance(pool, DelayPoolImpl):
                 await pool.add_task(timedelta(days=1), callback, n)
-            elif kind == 'priority':
+            elif isinstance(pool, PriorityTaskPoolImpl):
                 await pool.add_task(n, callback, n)
             else:
                 await pool.add_task(callback, n)
@@ -1274,7 +1275,7 @@ async def test_pool_hot_shrink_and_stop_keep_concurrency_bound(kind):
     async def callback():
         queued.set()
     async def add(fn, *args):
-        if kind == 'fifo':
+        if isinstance(pool, TaskPoolImpl):
             await pool.add_task(fn, *args)
         else:
             await pool.add_task(0, fn, *args)

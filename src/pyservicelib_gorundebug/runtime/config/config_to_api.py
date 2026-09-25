@@ -145,7 +145,7 @@ def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:
         partitions=ep.partitions or None,
         replicationFactor=ep.replication_factor or None,
         methodName=ep.method_name or None,
-        functionName=ep.function_name or None,
+            functionName=ep.function_name,
         functionPackage=ep.function_package or None,
         publicFunction=ep.public_function or None,
         functionDescription=ep.function_description or None,

@@ -3,6 +3,7 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
+from pyservicelib_gorundebug.runtime.environment.tracing import Span
 import contextvars
 
 import pytest
@@ -52,7 +53,7 @@ def test_start_span_sampling_off_returns_noop():
     eng = create_stdout_tracing_engine('test-service')
     tracer = eng.tracing.tracer('test')
 
-    result = {}
+    result: dict[str, Span | None] = {}
 
     def task():
         result['ctx'], result['span'] = start_span(tracer, 'op')
@@ -65,7 +66,7 @@ def test_start_span_sampling_on():
     eng = create_stdout_tracing_engine('test-service', context_sampler=False)
     tracer = eng.tracing.tracer('test')
 
-    result = {}
+    result: dict[str, Span | None] = {}
 
     def task():
         enable_sampling()
@@ -74,6 +75,7 @@ def test_start_span_sampling_on():
     _run_isolated(task)
 
     span = result['span']
+    assert span is not None
     assert span is not NOOP_SPAN
     sc = span.span_context()
     assert sc.is_valid

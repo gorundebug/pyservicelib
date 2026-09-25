@@ -1,3 +1,5 @@
+from typing import cast
+from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream
 from types import SimpleNamespace
 
 import pytest
@@ -76,7 +78,7 @@ async def test_normal_and_error_outputs_to_same_target_use_independent_links():
             id=1, name="Owner", is_error_stream=error_output,
             consumer=consumer, environment=environment, config=SimpleNamespace(id_service=1),
         )
-        await RuntimeHelpers(environment).make_caller(source).consume(value)
+        await RuntimeHelpers[str](cast(ServiceExecutionEnvironment, environment)).make_caller(cast(TypedStream[str], source)).consume(value)
         assert source.id == 1
     assert lookups == [(1, 2), (-1, 2)]
     assert received == ["result", "failure"]

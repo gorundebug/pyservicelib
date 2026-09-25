@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from datetime import timezone
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, cast
 
 from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
@@ -159,12 +159,14 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
                 pipeline_name=self._pipeline_name,
                 component_name=self._component_name,
             )
-        state: HandlerState
+        state: HandlerState | None = None
+        begun = False
         try:
             with ExitStack() as scopes:
                 if span is not NOOP_SPAN:
                     scopes.enter_context(span.scoped())
                 state = await self._handler.begin_request(self._stream)
+                begun = True
                 message_id = (
                     self._handler.get_message_id(self._stream, state, value)
                     or new_stream_id()
@@ -201,8 +203,8 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
                 span_error(span, exc)
             raise
         finally:
-            if "state" in locals():
-                await self._handler.end_request(self._stream, error, state)
+            if begun:
+                await self._handler.end_request(self._stream, error, cast(HandlerState, state))
             if span is not NOOP_SPAN:
                 span.end()
             self.endpoint.on_request_end(started, error)

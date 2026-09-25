@@ -5,14 +5,13 @@
 
 from contextlib import contextmanager
 from collections.abc import Sequence
-from typing import Iterator, Mapping, MutableMapping
+from typing import Iterator, Mapping, MutableMapping, Protocol
 
 from opentelemetry import context as otel_context
 from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.util.types import Attributes
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
@@ -102,10 +101,18 @@ class _Tracer(Tracer):
 
 # ── Tracing ───────────────────────────────────────────────────────────────────
 
+class _ShutdownTracerProvider(Protocol):
+    """Operations shared by the SDK and Temporal replay-safe providers."""
+
+    def get_tracer(self, instrumenting_module_name: str) -> otel_trace.Tracer: ...
+
+    def shutdown(self) -> None: ...
+
+
 class _Tracing(Tracing):
     __slots__ = ('_provider',)
 
-    def __init__(self, provider: TracerProvider) -> None:
+    def __init__(self, provider: _ShutdownTracerProvider) -> None:
         self._provider = provider
 
     def tracer(self, name: str) -> Tracer:
@@ -148,7 +155,7 @@ class _ContextSampler(Sampler):
 
 class OtelTracingEngine(TracingEngine):
 
-    def __init__(self, provider: TracerProvider) -> None:
+    def __init__(self, provider: _ShutdownTracerProvider) -> None:
         self._provider = provider
         self._tracing = _Tracing(provider)
 
@@ -160,7 +167,7 @@ class OtelTracingEngine(TracingEngine):
         self._provider.shutdown()
 
 
-def _build_provider(exporter: SpanExporter, service_name: str, context_sampler: bool, sync: bool) -> TracerProvider:
+def _build_provider(exporter: SpanExporter, service_name: str, context_sampler: bool, sync: bool) -> _ShutdownTracerProvider:
     sampler = ParentBased(_ContextSampler()) if context_sampler else ALWAYS_ON
     resource = Resource({'service.name': service_name})
     # The official Temporal provider uses deterministic span identifiers while

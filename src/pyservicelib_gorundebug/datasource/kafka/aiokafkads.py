@@ -41,6 +41,11 @@ from ...runtime.environment.tracing import (
 _PENDING_ROTATION_INTERVAL = 30.0  # seconds
 
 
+class _CreateTopicsResponse(Protocol):
+    # aiokafka builds these response fields dynamically from protocol schemas.
+    topic_errors: list[tuple[str, int] | tuple[str, int, str | None]]
+
+
 class ConsumerMessage:
     """
     Wraps an aiokafka ConsumerRecord with Commit/MarkMessage helpers.
@@ -703,7 +708,7 @@ async def _create_topics(
     )
     await admin.start()
     try:
-        response = await admin.create_topics(topics)
+        response = cast(_CreateTopicsResponse, await admin.create_topics(topics))
         for topic_error in response.topic_errors:
             topic, error_code, *messages = topic_error
             if error_code in (0, TopicAlreadyExistsError.errno):

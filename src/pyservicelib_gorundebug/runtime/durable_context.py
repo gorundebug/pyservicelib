@@ -110,7 +110,7 @@ class DurableCallContext:
             span = self._span
         if span is not None:
             if error is None:
-                description = event
+                description: str = event
                 span.add_event(_ACTIVITY_EVENTS[event])
             else:
                 description = str(error)

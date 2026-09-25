@@ -15,7 +15,6 @@ from apscheduler.events import (  # type: ignore[import-untyped]
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
-from apscheduler.triggers.base import BaseTrigger  # type: ignore[import-untyped]
 
 from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
@@ -114,20 +113,11 @@ class _CronDataSource(InputDataSource):
             task.exception()
 
 
-class _PortableCronTrigger(BaseTrigger):
-    """Delegates the portable UTC-only cron contract to APScheduler."""
-
-    def __init__(self, expression: str, timezone_name: str):
-        if timezone_name != "UTC":
-            raise ValueError("scheduled endpoint timezone must be UTC")
-        self._delegate = CronTrigger.from_crontab(
-            expression, timezone=timezone_name
-        )
-
-    def get_next_fire_time(
-        self, previous_fire_time: datetime | None, now: datetime
-    ) -> datetime | None:
-        return self._delegate.get_next_fire_time(previous_fire_time, now)
+def _portable_cron_trigger(expression: str, timezone_name: str) -> CronTrigger:
+    """Use APScheduler's trigger with the portable UTC-only contract."""
+    if timezone_name != "UTC":
+        raise ValueError("scheduled endpoint timezone must be UTC")
+    return CronTrigger.from_crontab(expression, timezone=timezone_name)
 
 
 class _CronEndpoint(DataSourceEndpoint):
@@ -152,7 +142,7 @@ class _CronEndpoint(DataSourceEndpoint):
         self._accepting = True
         schedule = str(getattr(cfg, "schedule"))
         timezone_name = str(getattr(cfg, "timezone"))
-        trigger = _PortableCronTrigger(schedule, timezone_name)
+        trigger = _portable_cron_trigger(schedule, timezone_name)
         scheduler.add_listener(self._on_submission, EVENT_JOB_SUBMITTED)
         scheduler.add_job(
             self._scheduled_fire,

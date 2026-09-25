@@ -64,25 +64,25 @@ def test_api_connections_count_is_not_defaulted_for_every_connector() -> None:
         id=1,
         name="http",
         type=DataConnectorType.HTTP,
-        implementation="net/http",
+        implementation=DataConnectorImplementation("net/http"),
     )
     grpc_config = DataConnectorConfig(
         id=2,
         name="grpc",
         type=DataConnectorType.gRPC,
-        implementation="google/grpc",
+        implementation=DataConnectorImplementation("google/grpc"),
     )
     assert "connectionsCount" not in data_connector_config_to_api(http_config).to_dict()
     assert data_connector_config_to_api(grpc_config).to_dict()["connectionsCount"] == 1
 
 
 def test_runtime_connector_implementation_serializes_as_a_typed_enum() -> None:
-    config = DataConnectorConfig(
-        id=1,
-        name="temporal",
-        type=DataConnectorType.Temporal,
-        implementation="temporal/python",
-    )
+    config = DataConnectorConfig.model_validate({
+        "id": 1,
+        "name": "temporal",
+        "type": DataConnectorType.Temporal,
+        "implementation": "temporal/python",
+    })
 
     assert config.implementation is DataConnectorImplementation.TemporalPython
     with warnings.catch_warnings():

@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from typing import cast
+
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
@@ -21,10 +24,11 @@ from pyservicelib_gorundebug.runtime.statusweb import (
 
 @pytest.mark.asyncio
 async def test_status_page_uses_route_relative_assets_and_data() -> None:
-    response = await status_handler(object(), make_mocked_request("GET", "/status"))
+    response = await status_handler(cast(ServiceApp, object()), make_mocked_request("GET", "/status"))
 
     assert response.status == 200
     assert response.content_type == "text/html"
+    assert isinstance(response.body, (bytes, bytearray))
     body = response.body.decode()
     assert "const statusBase = window.location.href" in body
     assert "statusBase + '/data'" in body
@@ -37,18 +41,20 @@ async def test_status_page_uses_route_relative_assets_and_data() -> None:
 @pytest.mark.asyncio
 async def test_status_assets_are_embedded_in_python_package() -> None:
     js = await vis_js_handler(
-        object(), make_mocked_request("GET", "/status/vis.min.js")
+        cast(ServiceApp, object()), make_mocked_request("GET", "/status/vis.min.js")
     )
     css = await vis_css_handler(
-        object(), make_mocked_request("GET", "/status/vis.min.css")
+        cast(ServiceApp, object()), make_mocked_request("GET", "/status/vis.min.css")
     )
 
     assert js.status == 200
     assert js.content_type == "application/javascript"
+    assert isinstance(js.body, (bytes, bytearray))
     assert len(js.body) > 100_000
     assert js.headers["Cache-Control"] == "public, max-age=31536000, immutable"
     assert css.status == 200
     assert css.content_type == "text/css"
+    assert isinstance(css.body, (bytes, bytearray))
     assert len(css.body) > 10_000
     assert css.headers["Cache-Control"] == "public, max-age=31536000, immutable"
 
@@ -65,7 +71,7 @@ async def test_graph_handler_sets_yaml_charset_separately(monkeypatch) -> None:
     )
 
     response = await graph_handler(
-        object(), make_mocked_request("GET", "/status/graph")
+        cast(ServiceApp, object()), make_mocked_request("GET", "/status/graph")
     )
 
     assert response.status == 200
@@ -79,7 +85,7 @@ def test_http_and_grpc_endpoints_use_graph_designer_icons() -> None:
         get_endpoint_config_by_id=lambda _: SimpleNamespace(id_data_connector=3),
         get_data_connector_by_id=lambda _: SimpleNamespace(type=DataConnectorType.HTTP),
     )
-    app = SimpleNamespace(config=config)
+    app = cast(ServiceApp, SimpleNamespace(config=config))
 
     assert (
         _stream_icon_path(

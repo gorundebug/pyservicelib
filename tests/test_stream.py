@@ -5,6 +5,10 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
+from typing import cast
+from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream, StreamConsumer
+from pyservicelib_gorundebug.runtime.serde import TypedStreamSerde
+from pyservicelib_gorundebug.runtime.config.stream_types import CycleLinkStreamConfig
 import os
 import sys
 from pathlib import Path
@@ -42,8 +46,8 @@ def test_function_call_async_flag_only_changes_caller_metadata():
     )
     source = SimpleNamespace(name="source", consumer=consumer)
 
-    sync_caller = DirectCaller(source, CallerStatistics(), async_=False)
-    async_caller = DirectCaller(source, CallerStatistics(), async_=True)
+    sync_caller = DirectCaller[int](cast(TypedStream[int], source), CallerStatistics(), async_=False)
+    async_caller = DirectCaller[int](cast(TypedStream[int], source), CallerStatistics(), async_=True)
 
     assert sync_caller.is_async is False
     assert async_caller.is_async is True
@@ -158,7 +162,7 @@ async def test_input_stream():
 
 def test_split_link_type_name_does_not_depend_on_orig_class():
     link = object.__new__(SplitLink)
-    link._split_stream = SimpleNamespace(type_name="int")
+    link._split_stream = cast(SplitStream[Any], SimpleNamespace(type_name="int"))
 
     assert not hasattr(link, "__orig_class__")
     assert link.type_name == "int"
@@ -167,13 +171,13 @@ def test_split_link_type_name_does_not_depend_on_orig_class():
 def test_split_build_orders_async_links_once():
     split = object.__new__(SplitStream)
     split._links = [
-        SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=False)),
-        SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=True)),
+        cast(SplitLink[Any], SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=False))),
+        cast(SplitLink[Any], SimpleNamespace(consumer=object(), _caller=SimpleNamespace(is_async=True))),
     ]
 
     split.build()
 
-    assert [link._caller.is_async for link in split._links] == [True, False]
+    assert [caller.is_async for link in split._links if (caller := link._caller) is not None] == [True, False]
 
 
 def test_terminal_transform_has_no_consumers_before_wiring():
@@ -191,8 +195,8 @@ def test_terminal_transform_has_no_consumers_before_wiring():
     TypedTransformConsumedStream.__init__(
         stream,
         stream_id=1,
-        env=environment,
-        serde=SimpleNamespace(),
+        env=cast(ServiceExecutionEnvironment, environment),
+        serde=cast(TypedStreamSerde[Any], SimpleNamespace()),
     )
 
     assert stream.consumer is None
@@ -223,13 +227,13 @@ async def test_cycle_link_uses_runtime_caller(monkeypatch):
         ),
         runtime=SimpleNamespace(register_stream=lambda _stream: None),
     )
-    link = LinkStream[int](SimpleNamespace(id=1), environment)
+    link = LinkStream[int](cast(CycleLinkStreamConfig, SimpleNamespace(id=1)), cast(ServiceExecutionEnvironment, environment))
     monkeypatch.setattr(
         "pyservicelib_gorundebug.operators.link.RuntimeHelpers.make_caller",
         lambda _helpers, source: Caller(),
     )
 
-    link.consumer = Consumer()
+    link.consumer = cast(StreamConsumer[int], Consumer())
     await link.consume(7)
 
     assert forwarded == [7]

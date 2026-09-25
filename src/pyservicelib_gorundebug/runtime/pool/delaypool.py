@@ -9,11 +9,11 @@ import time
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
 from ..common import ServiceEnvironment
+from .._background import terminate_background_failure
 from ..context import Context
 from .pool import DelayPool, PoolAlreadyStartedError, PoolStoppedError, PoolCancelledError, _AsyncWaitGroup
 from ._scheduling import IndexedHeap, ContextWatches, make_task, await_drain
 from ..context.request import request_context_error
-from ..environment.log import err_field
 
 
 class DelayPoolImpl(DelayPool):
@@ -22,13 +22,13 @@ class DelayPoolImpl(DelayPool):
         self._metrics_enabled = env.metrics.enabled
         self._queue = IndexedHeap()
         self._watches = ContextWatches()
-        self._running_tasks = set()
-        self._timer = None
-        self._armed_at = None
+        self._running_tasks: set[asyncio.Task[Any]] = set()
+        self._timer: asyncio.TimerHandle | None = None
+        self._armed_at: float | None = None
         self._counter = 0
         self._started = False
         self._stopped = False
-        self._stop_task = None
+        self._stop_task: asyncio.Task[Any] | None = None
         self._wg = _AsyncWaitGroup()
         scope = env.metrics.scope('delay_pool', {'service': env.service_config.name})
         self._gauge_wait_queue_length = scope.gauge('wait_queue_length', 'Delay pool wait queue length', {})
@@ -81,7 +81,7 @@ class DelayPoolImpl(DelayPool):
         self._armed_at = None
         self._timer = None
         now = asyncio.get_running_loop().time()
-        while self._queue.peek() is not None and self._queue.peek()[0][0] <= now:
+        while (entry := self._queue.peek()) is not None and entry[0][0] <= now:
             _, task = self._queue.pop()
             self._dispatch(task)
         self._arm()
@@ -100,13 +100,12 @@ class DelayPoolImpl(DelayPool):
         start = time.monotonic() if self._metrics_enabled else None
         try:
             await task.fn(*task.args, **task.kwargs)
-        except (Exception, asyncio.CancelledError) as error:
-            try:
-                self._environment.log.warn("delay pool task error", err_field(error))
-            except Exception:
-                pass
+        except (asyncio.CancelledError, PoolCancelledError):
+            pass
+        except BaseException as error:
+            terminate_background_failure(error)
         finally:
-            if self._metrics_enabled:
+            if start is not None:
                 if task.expedited:
                     self._task_cancelled_counter.inc()
                 self._tasks_total.inc()

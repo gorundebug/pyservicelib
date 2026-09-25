@@ -156,6 +156,7 @@ class _TemporalEndpointConsumer[Input, T, R, E](
         error: Optional[Exception] = None
         future: Optional[asyncio.Future[R]] = None
         durable_span = False
+        span = NOOP_SPAN
         try:
             with ExitStack() as scopes:
                 if self._tracer is not None:
@@ -167,7 +168,6 @@ class _TemporalEndpointConsumer[Input, T, R, E](
                             )
                         )
                     )
-                span = NOOP_SPAN
                 if self._tracer is not None and sampling_enabled():
                     _, span = start_endpoint_span(
                         self._tracer,

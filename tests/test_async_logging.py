@@ -1,6 +1,6 @@
 import logging
 
-from pyservicelib_gorundebug.runtime.logging.asynclog.asynclog import AsyncLogger
+from pyservicelib_gorundebug.runtime.logging import AsyncLogger
 
 
 def test_default_async_logger_does_not_reconfigure_root_logger():

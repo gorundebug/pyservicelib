@@ -17,6 +17,7 @@ from aiohttp import web
 from watchfiles import Change, awatch
 
 from ..api.models.call_semantics import CallSemantics
+from ._background import terminate_background_failure
 from .common import (
     ConsumeStatistics,
     DataSink,
@@ -50,6 +51,7 @@ from .environment.tracing import Tracing, TracingEngine
 from .logging import create_asynclog_engine
 from .pool import (
     DelayPool,
+    PoolCancelledError,
     PriorityTaskPool,
     TaskPool,
     make_delay_pool,
@@ -490,8 +492,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await pool.start(ctx)
         for component in self._components:
             await component.start(ctx)
-        for ds in self._dataSinks.values():  # type: ignore[assignment]
-            await ds.start(ctx)
+        for data_sink in self._dataSinks.values():
+            await data_sink.start(ctx)
         # A managed connector may expose inbound polling as well as an
         # outbound client. Open admission only after every downstream graph
         # resource and sink is ready.
@@ -499,8 +501,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await connector.start_admission(ctx)
         # Sources may emit immediately from start(), so they are the final
         # graph admission boundary after all downstream resources are ready.
-        for ds in self._dataSources.values():
-            await ds.start(ctx)
+        for data_source in self._dataSources.values():
+            await data_source.start(ctx)
 
         service_config = self.service_config
         if service_config.status_handler:
@@ -732,7 +734,16 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def create_task(self, fn: Callable[..., Any], *args, **kwargs):
         task = asyncio.create_task(fn(*args, **kwargs))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def complete(done: asyncio.Task[Any]) -> None:
+            self._tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None and not isinstance(error, PoolCancelledError):
+                terminate_background_failure(error)
+
+        task.add_done_callback(complete)
 
 
 class ServiceAppLoader[ServiceType: ServiceApp, ConfigType: ServiceAppConfig](

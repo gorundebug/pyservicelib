@@ -1,3 +1,7 @@
+from typing import cast
+from pyservicelib_gorundebug.runtime.common import DataSink, DataSource, ManagedDataConnector
+from pyservicelib_gorundebug.runtime.store import Storage
+from pyservicelib_gorundebug.runtime.pool import TaskPool, PriorityTaskPool
 import asyncio
 from datetime import timedelta
 
@@ -143,8 +147,11 @@ async def test_service_opens_managed_admission_only_after_graph_is_ready() -> No
         def __init__(self, name: str) -> None:
             self.name = name
 
-        async def start(self, _ctx: Context) -> None:
+        async def start(self, ctx: Context) -> None:
             events.append(f"start:{self.name}")
+
+        async def stop(self, ctx):
+            pass
 
     class ManagedConnector(Resource):
         async def start_admission(self, _ctx: Context) -> None:
@@ -152,17 +159,17 @@ async def test_service_opens_managed_admission_only_after_graph_is_ready() -> No
 
     app = TestApp()
     app._delay_pool = Resource("delay")  # type: ignore[assignment]
-    app._storages = [Resource("storage")]  # type: ignore[assignment]
-    app._task_pools = {"task": Resource("task")}  # type: ignore[assignment]
-    app._priority_task_pools = {  # type: ignore[assignment]
-        "priority": Resource("priority")
+    app._storages = [cast(Storage, Resource("storage"))]
+    app._task_pools = {"task": cast(TaskPool, Resource("task"))}
+    app._priority_task_pools = {
+        "priority": cast(PriorityTaskPool, Resource("priority"))
     }
-    app._components = [Resource("component")]  # type: ignore[assignment]
-    app._dataSinks = {1: Resource("sink")}  # type: ignore[assignment]
-    app._managed_data_connectors = {  # type: ignore[assignment]
-        1: ManagedConnector("managed")
+    app._components = [Resource("component")]
+    app._dataSinks = {1: cast(DataSink, Resource("sink"))}
+    app._managed_data_connectors = {
+        1: cast(ManagedDataConnector, ManagedConnector("managed"))
     }
-    app._dataSources = {1: Resource("source")}  # type: ignore[assignment]
+    app._dataSources = {1: cast(DataSource, Resource("source"))}
 
     await app.start(Context(timedelta(seconds=1)))
 

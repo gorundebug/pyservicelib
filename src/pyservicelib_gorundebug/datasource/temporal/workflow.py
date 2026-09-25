@@ -44,6 +44,7 @@ from ...runtime.context import (
     request_stream_id,
 )
 from ...runtime.schedule import normalize_temporal_priority
+from ...runtime.environment.tracing.tracing import EndpointTracingEnvironment
 from ...runtime.environment.tracing import (
     data_source_endpoint_tracing_enabled,
     sampling_requested_by_carrier,
@@ -139,7 +140,7 @@ EndpointHandler = Callable[[EndpointEnvelope], Awaitable[EndpointResult]]
 EndpointEncoder = Callable[[Any], bytes]
 
 
-class WorkflowGraphEnvironment(Protocol):
+class WorkflowGraphEnvironment(EndpointTracingEnvironment, Protocol):
     async def start(self, ctx: Context) -> None: ...
 
     async def finish(self) -> None: ...

@@ -1,3 +1,6 @@
+from typing import Any, cast
+from pyservicelib_gorundebug.runtime.common import TypedSinkStream
+from pyservicelib_gorundebug.datasink.kafka.aiokafkads import _AIOKafkaSinkEndpoint
 import asyncio
 from types import SimpleNamespace
 from typing import Callable
@@ -28,17 +31,17 @@ class _Handler:
         stream: object,
         handler_state: None,
         value: object,
-        message: object,
+        msg: SinkMessage[object],
     ) -> None:
-        del stream, handler_state, value, message
+        del stream, handler_state, value, msg
 
     async def end_request(
         self,
         stream: object,
-        error: Exception | None,
+        err: Exception | None,
         handler_state: None,
     ) -> None:
-        del stream, error, handler_state
+        del stream, err, handler_state
 
 
 class _Partitioner:
@@ -56,10 +59,10 @@ class _SendingHandler(_Handler):
         stream: object,
         handler_state: None,
         value: object,
-        message: SinkMessage[object],
+        msg: SinkMessage[object],
     ) -> None:
         del stream, handler_state, value
-        message.send(lambda partition, offset, error: (partition, offset, error))
+        msg.send(lambda partition, offset, error: (partition, offset, error))
 
 
 class _FailingBeginHandler(_Handler):
@@ -104,13 +107,14 @@ async def test_kafka_message_key_does_not_replace_request_stream_id() -> None:
         on_request_end=lambda start, error: None,
     )
     consumer = object.__new__(_AIOKafkaEndpointConsumer)
-    consumer._endpoint = endpoint
-    consumer._stream = SimpleNamespace(name="Kafka stream")
+    consumer._endpoint = cast(_AIOKafkaSinkEndpoint, endpoint)
+    consumer._stream = cast(TypedSinkStream[Any, Any], SimpleNamespace(name="Kafka stream"))
     consumer._handler = _Handler()
     consumer._partitioner = None
     consumer._pipeline_name = ""
     consumer._component_name = ""
     consumer._tracer = None
+    consumer._tracing = None
 
     with_stream_id("request-correlation-id")
     await consumer.consume(object())
@@ -142,13 +146,14 @@ async def test_kafka_custom_partitioner_receives_current_partition_count() -> No
         on_request_end=lambda start, error: None,
     )
     consumer = object.__new__(_AIOKafkaEndpointConsumer)
-    consumer._endpoint = endpoint
-    consumer._stream = SimpleNamespace(name="Kafka stream")
+    consumer._endpoint = cast(_AIOKafkaSinkEndpoint, endpoint)
+    consumer._stream = cast(TypedSinkStream[Any, Any], SimpleNamespace(name="Kafka stream"))
     consumer._handler = _SendingHandler()
     consumer._partitioner = partitioner
     consumer._pipeline_name = ""
     consumer._component_name = ""
     consumer._tracer = None
+    consumer._tracing = None
 
     await consumer.consume(value)
     await asyncio.gather(*scheduled)
@@ -177,13 +182,14 @@ async def test_kafka_begin_failure_is_not_counted_as_active_request() -> None:
         on_request_end=lambda start, error: events.append(("end", error)),
     )
     consumer = object.__new__(_AIOKafkaEndpointConsumer)
-    consumer._endpoint = endpoint
-    consumer._stream = SimpleNamespace(name="Kafka stream")
+    consumer._endpoint = cast(_AIOKafkaSinkEndpoint, endpoint)
+    consumer._stream = cast(TypedSinkStream[Any, Any], SimpleNamespace(name="Kafka stream"))
     consumer._handler = _FailingBeginHandler()
     consumer._partitioner = None
     consumer._pipeline_name = ""
     consumer._component_name = ""
     consumer._tracer = None
+    consumer._tracing = None
 
     await consumer.consume(object())
 

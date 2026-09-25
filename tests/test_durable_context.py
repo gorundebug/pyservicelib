@@ -113,6 +113,7 @@ async def test_late_heartbeat_after_activity_completion_is_rejected() -> None:
 
     await run_durable_call_activity(durable, invoke)
     assert captured is durable
+    assert captured is not None
     with pytest.raises(DurableCallHeartbeatAfterCompletionError):
         captured.heartbeat("too late")
 

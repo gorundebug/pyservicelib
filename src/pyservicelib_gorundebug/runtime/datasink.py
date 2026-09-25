@@ -5,12 +5,13 @@
 #   file for details.
 import time
 from abc import ABC
-from typing import Optional, Iterable, cast, Any
+from typing import Optional, Iterable, cast, Any, Awaitable, Callable
 
 from .common import ServiceExecutionEnvironment, Consumer
 from .common import DataConnector, DataSink
 from .common import SinkEndpoint, OutputEndpointConsumer, TypedSinkStream
 from .config import DataConnectorConfig, EndpointConfig, data_connector_protocol
+from .context import Context
 from .environment.metrics import Int64Counter, Int64Gauge, Float64Histogram
 from .environment.log.log import str_field, err_field
 from .transportmetrics import TransportRequest, TransportRequestMetrics
@@ -162,6 +163,27 @@ class DataSinkEndpoint(SinkEndpoint):
     @property
     def endpoint_consumers(self) -> Iterable[OutputEndpointConsumer]:
         return self._endpoint_consumers
+
+    async def start_endpoint_consumers(self, ctx: Context) -> None:
+        started: list[Callable[[Context], Awaitable[None]]] = []
+        try:
+            for consumer in self._endpoint_consumers:
+                start = getattr(consumer, "start", None)
+                stop = getattr(consumer, "stop", None)
+                if not callable(start) or not callable(stop):
+                    raise TypeError("sink endpoint consumer does not implement lifecycle")
+                await cast(Callable[[Context], Awaitable[None]], start)(ctx)
+                started.append(cast(Callable[[Context], Awaitable[None]], stop))
+        except BaseException:
+            for stop in reversed(started):
+                await stop(ctx)
+            raise
+
+    async def stop_endpoint_consumers(self, ctx: Context) -> None:
+        for consumer in reversed(self._endpoint_consumers):
+            stop = getattr(consumer, "stop", None)
+            if callable(stop):
+                await cast(Callable[[Context], Awaitable[None]], stop)(ctx)
 
     @property
     def name(self) -> str:

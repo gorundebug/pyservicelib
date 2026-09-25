@@ -244,7 +244,7 @@ class _Widget:
 
 
 def test_dataclass_json_serde_roundtrip():
-    ser = DataclassJsonSerde("Widget", _Widget)
+    ser = DataclassJsonSerde[_Widget]("Widget", _Widget)
     widget = _Widget(
         id="w-1",
         items=[_Item("a", 1), _Item("b", 2)],
@@ -256,7 +256,7 @@ def test_dataclass_json_serde_roundtrip():
 
 
 def test_dataclass_json_serde_preserves_prefix_buffer():
-    ser = DataclassJsonSerde("Widget", _Widget)
+    ser = DataclassJsonSerde[_Widget]("Widget", _Widget)
     widget = _Widget(id="w-2")
     buf = bytearray(b"\xab")
     out = ser.serialize(widget, buf)
@@ -265,7 +265,7 @@ def test_dataclass_json_serde_preserves_prefix_buffer():
 
 
 def test_dataclass_json_serde_optional_none():
-    ser = DataclassJsonSerde("Widget", _Widget)
+    ser = DataclassJsonSerde[_Widget]("Widget", _Widget)
     widget = _Widget(id="w-3", created_at=None)
     data = ser.serialize(widget, bytearray())
     back = ser.deserialize(data)

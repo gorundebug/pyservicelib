@@ -49,12 +49,21 @@ Graph construction, consumer resolution, middleware composition, and metric crea
 
 | Semantics | Behavior |
 |---|---|
-| `FunctionCall` | Await the next consumer directly; optionally schedule asynchronously |
+| `FunctionCall` | Await the next consumer directly; `async` changes branch ordering, not execution into a detached task |
 | `TaskPool` | Schedule work on a named bounded asyncio worker pool |
 | `PriorityTaskPool` | Schedule work using request priority |
 | `Parallel` | Dispatch independently as an asyncio task |
 
 Message context, payload, cancellation, deadline, priority, and tracing state are carried independently so transport-visible state can be propagated without serializing process-local scheduling details.
+
+Unhandled exceptions in detached `ParallelCall`, task-pool, priority-pool, and
+delay-pool callbacks terminate the process with exit code 2, matching the agreed
+Go panic policy. `asyncio.CancelledError` and `PoolCancelledError` are expected
+cancellation and remain nonfatal. An unrelated failure is not ignored merely
+because its request context is already cancelled. Typed business-error outputs
+remain normal graph values; exceptions awaited directly by a caller remain that
+caller's responsibility. Temporal uses its separate workflow failure boundary,
+not this process-exit policy. Diagnostic/logger failure cannot suppress the exit.
 
 ---
 
@@ -206,3 +215,43 @@ Temporal workflows use the workflow environment's cooperative execution and
 durable timers, not ordinary asyncio timing or external I/O. Keep workflow code
 deterministic and external effects in Activities. Local call state is rebuilt
 on replay; an ordinary local call is not made durable by using a Temporal Sink.
+
+### Generated process termination
+
+The generated Python executable gives `stop_service` one shared shutdown budget.
+After that method returns, the executable exits with status 0 without an additional
+`asyncio.run` task drain or a wait for unfinished non-daemon threads. Startup or
+shutdown exceptions are reported and exit with status 1. This matches the generated
+Go process boundary; it does not shorten the runtime's graceful shutdown phases.
+Put application cleanup in the service lifecycle hooks, not in Python `atexit`
+handlers. Embedded callers of `run()` remain responsible for their own process.
+
+## gRPC request context and completion
+
+The gRPC source installs the incoming RPC deadline and cancellation signal in
+`runtime.context.request.request_deadline` and `request_cancelled`. These
+request-local values follow asyncio task context, like `request_stream_id`.
+The previous values are restored when the source handler returns.
+
+An outgoing gRPC sink computes its timeout from the absolute deadline at the
+moment it opens the RPC. Time spent in business code or waiting before that
+call is deducted; an intermediate service does not restart the original
+budget. The source signals cancellation before terminal business handling,
+and also signals it when the RPC's lifetime ends.
+
+For unary sources, `ResultContext.done()` does not replace a response:
+`Sender.send()` supplies the result. For client-streaming sources, `done()`
+allows finalization after input EOF, including a response sent by
+`EndRequest`. The first client-streaming `send()` supplies the response and
+signals completion; subsequent sends are ignored, matching Go's
+`SendAndClose` once-only contract. A client-streaming source without a result
+path supplies the zero response at EOF before `EndRequest`. Generated Python
+gRPC adapters turn a zero response into an empty message of the declared
+protobuf response type.
+
+Cancellation is not permission to reuse an active request's `streamId`.
+Already running result callbacks and `EndRequest` retain their state until
+they finish, even if the RPC task receives repeated cancellation requests.
+New or late result deliveries are rejected after terminal handling begins.
+The signal remains available to business code; this protection does not
+clear cancellation or create a new deadline.

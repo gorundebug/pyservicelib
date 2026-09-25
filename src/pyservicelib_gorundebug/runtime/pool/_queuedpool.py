@@ -8,12 +8,14 @@ from contextvars import Context as VariablesContext
 import os
 import time
 from collections import OrderedDict
+from typing import Any
 from ..common import ServiceEnvironment
+from .._background import terminate_background_failure
 from ..context import Context
-from .pool import PoolAlreadyStartedError, PoolStoppedError, PoolCancelledError, _AsyncWaitGroup
+from .pool import PoolAlreadyStartedError, PoolStoppedError, PoolCancelledError, _AsyncWaitGroup, _PoolTask
 from ._scheduling import IndexedHeap, ContextWatches, make_task, await_drain
 from ..context.request import request_context_error
-from ..environment.log import str_field, int_field, err_field
+from ..environment.log import str_field, int_field
 
 
 class QueuedPool:
@@ -26,14 +28,14 @@ class QueuedPool:
         self._name = name
         self._priority = priority
         self._fallback_count = cfg.executors_count
-        self._queue = IndexedHeap() if priority else OrderedDict()
+        self._queue: IndexedHeap | OrderedDict[int, _PoolTask] = IndexedHeap() if priority else OrderedDict()
         self._watches = ContextWatches()
         self._changed = asyncio.Event()
-        self._executors = {}
-        self._all_executors = set()
-        self._running_tasks = set()
-        self._executor_manager_task = None
-        self._stop_task = None
+        self._executors: dict[int, asyncio.Task[Any]] = {}
+        self._all_executors: set[asyncio.Task[Any]] = set()
+        self._running_tasks: set[asyncio.Task[Any]] = set()
+        self._executor_manager_task: asyncio.Task[Any] | None = None
+        self._stop_task: asyncio.Task[Any] | None = None
         self._started = False
         self._stopped = False
         self._counter = 0
@@ -90,7 +92,7 @@ class QueuedPool:
     def _promote(self, task):
         if task.state != "delayed":
             return
-        if self._priority:
+        if isinstance(self._queue, IndexedHeap):
             moved = self._queue.promote(task)
         else:
             moved = bool(self._queue) and next(iter(self._queue)) != id(task)
@@ -111,7 +113,7 @@ class QueuedPool:
                 self._task_rejected_counter.inc()
             raise PoolStoppedError()
         task = make_task(fn, args, kwargs)
-        if self._priority:
+        if isinstance(self._queue, IndexedHeap):
             self._queue.push(task, (priority, self._counter))
         else:
             self._queue[id(task)] = task
@@ -149,11 +151,10 @@ class QueuedPool:
         start = time.monotonic() if self._metrics_enabled else None
         try:
             await task.fn(*task.args, **task.kwargs)
-        except (Exception, asyncio.CancelledError) as error:
-            try:
-                self._environment.log.warn("task pool task error", str_field("pool", self._name), err_field(error))
-            except Exception:
-                pass
+        except (asyncio.CancelledError, PoolCancelledError):
+            pass
+        except BaseException as error:
+            terminate_background_failure(error)
         finally:
             if start is not None:
                 self._tasks_total.inc()
@@ -170,7 +171,7 @@ class QueuedPool:
                 self._changed.clear()
                 await self._changed.wait()
                 continue
-            if self._priority:
+            if isinstance(self._queue, IndexedHeap):
                 _, task = self._queue.pop()
             else:
                 _, task = self._queue.popitem(last=False)

@@ -4,7 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 import asyncio
 from types import SimpleNamespace
-from typing import Optional
+from typing import Any, Optional, cast
 
 import aiohttp
 import pytest
@@ -14,7 +14,7 @@ from aiohttp.test_utils import make_mocked_request
 from pyservicelib_gorundebug.datasource.http.aiohttpds import (
     HandlerData, ResultContext, _NetHTTPTypedEndpointConsumer,
 )
-from pyservicelib_gorundebug.runtime.common import StreamContext
+from pyservicelib_gorundebug.runtime.common import InputEndpoint, StreamContext, TypedInputStream
 
 from .mockservice import RequestData, setup, teardown
 
@@ -124,6 +124,9 @@ async def test_aiohttp_datasource():
 @pytest.mark.asyncio
 async def test_result_endpoint_returns_response_set_by_handler():
     class ImmediateResponseHandler:
+        def get_message_id(self, sc, handler_state, value) -> str:
+            return ""
+
         async def begin_request(self, sc, data):
             return data, None
 
@@ -144,9 +147,10 @@ async def test_result_endpoint_returns_response_set_by_handler():
     )
     consumer = object.__new__(_NetHTTPTypedEndpointConsumer)
     consumer._handler = ImmediateResponseHandler()
-    consumer._sc = SimpleNamespace()
-    consumer._endpoint = endpoint
-    consumer._input_stream = SimpleNamespace(name="ResultInput")
+    consumer._sc = cast(StreamContext[Any, Any, Any], SimpleNamespace())
+    consumer._endpoint = cast(InputEndpoint, endpoint)
+    consumer._input_stream = cast(TypedInputStream[Any, Any, Any], SimpleNamespace(name="ResultInput"))
+    consumer._metrics_enabled = False
     consumer._pipeline_name = ""
     consumer._component_name = ""
     consumer._tracer = None

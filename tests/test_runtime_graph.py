@@ -1,3 +1,5 @@
+from typing import cast
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 from types import SimpleNamespace
 
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
@@ -51,7 +53,7 @@ def test_runtime_graph_reconstructs_virtual_error_output() -> None:
         _runtime_links=[],
     )
 
-    graph = runtime_to_stream_app(app)
+    graph = runtime_to_stream_app(cast(ServiceApp, app))
 
     by_id = {stream.id: stream for stream in graph.streams}
     assert by_id[-7].type == TransformationType.Error
