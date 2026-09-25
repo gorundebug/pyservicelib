@@ -87,18 +87,25 @@ class CaseStream[T](TypedCaseStream[T]):
 
     async def consume(self, value: T) -> None:
         if self._tracer is None or not sampling_enabled():
-            if self._when_func is not None:
-                index = self._when_func(value)
-                await self._when_streams[index].consume_case(value)
+            await self._consume_case(value)
             return
         _, span = start_stream_span(self._tracer, "stream.case", self)
         try:
             with span.scoped():
-                if self._when_func is not None:
-                    index = self._when_func(value)
-                    await self._when_streams[index].consume_case(value)
+                await self._consume_case(value)
         finally:
             span.end()
+
+    async def _consume_case(self, value: T) -> None:
+        if self._when_func is None:
+            raise RuntimeError(f"CaseStream {self.name} is not built")
+        index = self._when_func(value)
+        if index < 0 or index >= len(self._when_streams):
+            raise IndexError(
+                f"case selector returned branch {index}, "
+                f"but only {len(self._when_streams)} branches exist"
+            )
+        await self._when_streams[index].consume_case(value)
 
     def build(self) -> None:
         self._when_func = self._build_switch.build_switch(self, self._when_streams)  # type: ignore[arg-type]
