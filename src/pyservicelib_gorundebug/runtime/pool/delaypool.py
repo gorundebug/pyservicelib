@@ -8,6 +8,7 @@ from contextvars import Context as VariablesContext
 import time
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
+
 from ..common import ServiceEnvironment
 from .._background import terminate_background_failure
 from ..context import Context

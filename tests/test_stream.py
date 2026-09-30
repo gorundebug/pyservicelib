@@ -6,17 +6,18 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT)
 #   file for details.
 from typing import cast
-from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream, StreamConsumer
-from pyservicelib_gorundebug.runtime.serde import TypedStreamSerde
-from pyservicelib_gorundebug.runtime.config.stream_types import CycleLinkStreamConfig
 import os
 import sys
 from pathlib import Path
 from typing import get_origin, Any, Optional
 from types import SimpleNamespace
 from collections.abc import Iterable
+
 import pytest
 
+from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream, StreamConsumer
+from pyservicelib_gorundebug.runtime.serde import TypedStreamSerde
+from pyservicelib_gorundebug.runtime.config.stream_types import CycleLinkStreamConfig
 from pyservicelib_gorundebug.runtime.config import ConfigSettings, StreamConfig
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.serviceapp import ServiceAppLoader

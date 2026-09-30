@@ -6,6 +6,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, Any
+
 from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.kafka_sasl_mechanism import KafkaSaslMechanism

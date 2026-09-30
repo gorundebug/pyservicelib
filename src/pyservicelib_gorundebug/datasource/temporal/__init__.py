@@ -8,7 +8,6 @@ from .connector import (
     execute_direct_endpoint_workflow,
     make_connector,
 )
-
 from .temporal import (
     EndpointHandler,
     make_direct_endpoint_consumer,

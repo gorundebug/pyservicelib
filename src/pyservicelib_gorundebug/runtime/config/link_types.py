@@ -5,6 +5,7 @@
 #   file for details.
 
 from abc import ABC, abstractmethod
+
 from ...api.models.call_semantics import CallSemantics
 
 

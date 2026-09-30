@@ -1,11 +1,10 @@
 from types import SimpleNamespace
 from typing import cast
 
-from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
-
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 from pyservicelib_gorundebug.api.models.data_connector_type import DataConnectorType
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.runtime.statusweb import (

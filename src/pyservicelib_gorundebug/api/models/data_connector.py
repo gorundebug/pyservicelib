@@ -13,20 +13,22 @@
 
 
 from __future__ import annotations
+
 import pprint
 import re  # noqa: F401
 import json
+from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional, Union
 from typing_extensions import Annotated
+from typing_extensions import Self
+from pydantic_core import to_jsonable_python
+
 from ..models.data_connector_implementation import DataConnectorImplementation
 from ..models.data_connector_type import DataConnectorType
 from ..models.kafka_sasl_mechanism import KafkaSaslMechanism
 from ..models.kafka_security_protocol import KafkaSecurityProtocol
-from typing import Optional, Set
-from typing_extensions import Self
-from pydantic_core import to_jsonable_python
 
 class DataConnector(BaseModel):
     """

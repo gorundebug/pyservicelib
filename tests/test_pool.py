@@ -5,11 +5,12 @@
 #   file for details.
 import asyncio
 import sys
-import pytest
 import os
 from pathlib import Path
 from datetime import timedelta, datetime
 from unittest.mock import MagicMock
+
+import pytest
 
 from pyservicelib_gorundebug.runtime.pool import (
     PoolAlreadyStartedError,

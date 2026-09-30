@@ -5,6 +5,7 @@
 #   file for details.
 
 from typing import Any
+
 import yaml
 
 from ...api.models.stream_app import StreamApp

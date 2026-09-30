@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from typing import Any, Awaitable, Callable
+
 from ..common import ServiceEnvironment
 from .pool import TaskPool
 from ._queuedpool import QueuedPool

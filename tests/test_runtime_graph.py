@@ -1,7 +1,7 @@
 from typing import cast
-from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 from types import SimpleNamespace
 
+from pyservicelib_gorundebug.runtime.serviceapp import ServiceApp
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.api.models.project_settings import ProjectSettings
 from pyservicelib_gorundebug.runtime.config.config import StreamConfig

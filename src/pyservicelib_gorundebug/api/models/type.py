@@ -13,17 +13,19 @@
 
 
 from __future__ import annotations
+
 import pprint
 import re  # noqa: F401
 import json
+from typing import Any, ClassVar, Dict, List, Optional
+from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional
-from ..models.data_type import DataType
-from ..models.type_definition_format import TypeDefinitionFormat
-from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
+
+from ..models.data_type import DataType
+from ..models.type_definition_format import TypeDefinitionFormat
 
 class Type(BaseModel):
     """

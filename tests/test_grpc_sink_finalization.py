@@ -1,11 +1,11 @@
 from typing import cast
-from pyservicelib_gorundebug.runtime.common import TypedSinkStreamWithResult
-from pyservicelib_gorundebug.datasink.grpc.grpcds import _GrpcSinkEndpoint
 import asyncio
 from typing import Any
 
 import pytest
 
+from pyservicelib_gorundebug.runtime.common import TypedSinkStreamWithResult
+from pyservicelib_gorundebug.datasink.grpc.grpcds import _GrpcSinkEndpoint
 from pyservicelib_gorundebug.datasink.grpc.grpcds import (
     _BidiStreamingSinkConsumer,
     _ClientStreamingSinkConsumer,

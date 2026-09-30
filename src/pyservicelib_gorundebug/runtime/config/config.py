@@ -7,11 +7,12 @@ from typing import Any, Union, Self, cast, Optional, ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .stream_types import SubStreamConfig
-from pydantic import Field, ConfigDict, StrictInt, StrictStr, field_validator
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import os
 import re
+
+from pydantic import Field, ConfigDict, StrictInt, StrictStr, field_validator
 
 def _to_camel_case(snake: str) -> str:
     parts = snake.split('_')

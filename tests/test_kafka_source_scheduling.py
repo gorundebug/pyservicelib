@@ -207,6 +207,7 @@ async def test_partition_backlog_does_not_allocate_a_task_per_record() -> None:
 @pytest.mark.parametrize("revoked", [False, True])
 async def test_partition_cleanup_on_stop_or_rebalance(revoked: bool) -> None:
     from unittest.mock import Mock
+
     from pyservicelib_gorundebug.datasource.kafka.aiokafkads import TopicPartition
 
     scheduler = _scheduler(1)

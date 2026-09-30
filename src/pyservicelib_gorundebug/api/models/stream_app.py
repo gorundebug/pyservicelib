@@ -13,12 +13,17 @@
 
 
 from __future__ import annotations
+
 import pprint
 import re  # noqa: F401
 import json
+from typing import Any, ClassVar, Dict, List, Optional
+from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, ClassVar, Dict, List, Optional
+from typing_extensions import Self
+from pydantic_core import to_jsonable_python
+
 from ..models.data_connector import DataConnector
 from ..models.endpoint import Endpoint
 from ..models.link import Link
@@ -29,9 +34,6 @@ from ..models.service import Service
 from ..models.stream import Stream
 from ..models.type import Type
 from ..models.undefined_enum import UndefinedEnum
-from typing import Optional, Set
-from typing_extensions import Self
-from pydantic_core import to_jsonable_python
 
 class StreamApp(BaseModel):
     """

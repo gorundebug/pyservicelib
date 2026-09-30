@@ -1,6 +1,4 @@
 from typing import Any, cast
-from pyservicelib_gorundebug.runtime.common import TypedSinkStream
-from pyservicelib_gorundebug.datasink.kafka.aiokafkads import _AIOKafkaSinkEndpoint
 import asyncio
 from types import SimpleNamespace
 from typing import Callable
@@ -8,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from pyservicelib_gorundebug.runtime.common import TypedSinkStream
+from pyservicelib_gorundebug.datasink.kafka.aiokafkads import _AIOKafkaSinkEndpoint
 from pyservicelib_gorundebug.datasink.kafka.aiokafkads import (
     SinkMessage,
     _AIOKafkaEndpointConsumer,

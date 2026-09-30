@@ -5,6 +5,7 @@
 #   file for details.
 
 from typing import Optional, cast
+
 from ...api.models.stream_app import StreamApp
 from ...api.models.service import Service
 from ...api.models.stream import Stream

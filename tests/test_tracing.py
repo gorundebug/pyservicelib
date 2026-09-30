@@ -3,11 +3,11 @@
 #
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
-from pyservicelib_gorundebug.runtime.environment.tracing import Span
 import contextvars
 
 import pytest
 
+from pyservicelib_gorundebug.runtime.environment.tracing import Span
 from pyservicelib_gorundebug.runtime.environment.tracing import (
     enable_sampling, sampling_enabled,
     start_span, span_event, span_error, span_attrs,

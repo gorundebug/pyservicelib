@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+
 from pyservicelib_gorundebug.datasource.cron.apscheduler import (
     _CronEndpointConsumer,
     _portable_cron_trigger,

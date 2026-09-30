@@ -8,9 +8,9 @@ from typing import cast
 
 import pytest
 from temporalio.worker import ExecuteActivityInput, Worker
+
 from pyservicelib_gorundebug.runtime.common import TypedSinkStream
 from pyservicelib_gorundebug.runtime.common import ServiceStream
-
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (
     DataConnectorImplementation,
 )

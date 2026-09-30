@@ -1,10 +1,10 @@
 from typing import cast
-from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from pyservicelib_gorundebug.runtime.common import ServiceExecutionEnvironment, TypedStream
 from pyservicelib_gorundebug.api.models.call_semantics import CallSemantics
 from pyservicelib_gorundebug.api.models.transformation_type import TransformationType
 from pyservicelib_gorundebug.api.models.stream import Stream

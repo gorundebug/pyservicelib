@@ -1,5 +1,6 @@
-import pytest
 import warnings
+
+import pytest
 import yaml
 
 from pyservicelib_gorundebug.api.models.data_connector_implementation import (

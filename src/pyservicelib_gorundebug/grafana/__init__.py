@@ -12,6 +12,7 @@ Usage — copy dashboards to a project directory and generate JSON::
 
     import shutil
     from pathlib import Path
+
     from pyservicelib_gorundebug.grafana import get_files
 
     dest = Path("grafana")

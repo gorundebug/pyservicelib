@@ -13,20 +13,22 @@
 
 
 from __future__ import annotations
+
 import pprint
 import re  # noqa: F401
 import json
+from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional, Union
 from typing_extensions import Annotated
+from typing_extensions import Self
+from pydantic_core import to_jsonable_python
+
 from ..models.join_storage_type import JoinStorageType
 from ..models.join_type import JoinType
 from ..models.process_pattern import ProcessPattern
 from ..models.transformation_type import TransformationType
-from typing import Optional, Set
-from typing_extensions import Self
-from pydantic_core import to_jsonable_python
 
 class Stream(BaseModel):
     """

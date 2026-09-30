@@ -13,21 +13,23 @@
 
 
 from __future__ import annotations
+
 import pprint
 import re  # noqa: F401
 import json
+from typing import Any, ClassVar, Dict, List, Optional
+from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional
 from typing_extensions import Annotated
+from typing_extensions import Self
+from pydantic_core import to_jsonable_python
+
 from ..models.grpc_method_type import GrpcMethodType
 from ..models.http_method_type import HTTPMethodType
 from ..models.schedule_missed_run_policy import ScheduleMissedRunPolicy
 from ..models.schedule_overlap_policy import ScheduleOverlapPolicy
 from ..models.temporal_execution_type import TemporalExecutionType
-from typing import Optional, Set
-from typing_extensions import Self
-from pydantic_core import to_jsonable_python
 
 class Endpoint(BaseModel):
     """
