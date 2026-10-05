@@ -141,14 +141,11 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 t_node["valueType"] = t.value_type
             if t.key_type:
                 t_node["keyType"] = t.key_type
-            if t.type_definition_lang1:
-                t_node["typeDefinitionLang1"] = t.type_definition_lang1
-            if t.type_definition_lang2:
-                t_node["typeDefinitionLang2"] = t.type_definition_lang2
-            if t.type_import_lang1:
-                t_node["typeImportLang1"] = t.type_import_lang1
-            if t.type_import_lang2:
-                t_node["typeImportLang2"] = t.type_import_lang2
+            if t.bindings is not None:
+                t_node["bindings"] = {
+                    target: binding.model_dump(by_alias=True, exclude_none=True)
+                    for target, binding in t.bindings.items()
+                }
             types_node[key] = t_node
         doc["types"] = types_node
 
@@ -160,8 +157,10 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 "name": dc.name,
                 "type": dc.type.name,
             }
-            if dc.implementation is not None and str(dc.implementation) != "":
-                dc_obj["implementation"] = str(dc.implementation)
+            if dc.implementation is not None and dc.implementation.value != "":
+                dc_obj["implementation"] = dc.implementation.value
+            if dc.implementations is not None:
+                dc_obj["implementations"] = dict(dc.implementations)
             if dc.host:
                 dc_obj["host"] = dc.host
             if dc.port:

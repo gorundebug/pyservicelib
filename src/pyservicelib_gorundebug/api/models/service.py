@@ -13,23 +13,21 @@
 
 
 from __future__ import annotations
-
 import pprint
 import re  # noqa: F401
 import json
-from typing import Any, ClassVar, Dict, List, Optional
-from typing import Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from typing import Any, ClassVar, Dict, List, Optional
 from typing_extensions import Annotated
-from typing_extensions import Self
-from pydantic_core import to_jsonable_python
-
 from ..models.call_semantics import CallSemantics
 from ..models.environment import Environment
 from ..models.kubernetes_workload_type import KubernetesWorkloadType
 from ..models.log_level import LogLevel
 from ..models.programming_language import ProgrammingLanguage
+from typing import Optional, Set
+from typing_extensions import Self
+from pydantic_core import to_jsonable_python
 
 class Service(BaseModel):
     """

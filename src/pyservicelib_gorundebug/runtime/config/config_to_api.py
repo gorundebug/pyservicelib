@@ -10,7 +10,6 @@ from ...api.models.stream_app import StreamApp
 from ...api.models.service import Service
 from ...api.models.stream import Stream
 from ...api.models.data_connector import DataConnector
-from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.endpoint import Endpoint
 from ...api.models.link import Link
@@ -94,16 +93,20 @@ def stream_config_to_api(sc: StreamConfig) -> Stream:
 
 
 def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
-    impl = dc.implementation
-    if impl is None:
-        impl_val = DataConnectorImplementation.Undefined
-    else:
-        impl_val = DataConnectorImplementation(impl)
+    bindings = dict(dc.implementations) if dc.implementations is not None else None
+    implementation = None
+    if dc.type == DataConnectorType.Custom:
+        implementation = dc.implementation
+    elif dc.implementation:
+        if bindings is None:
+            bindings = {}
+        bindings["python"] = dc.implementation.value
     return DataConnector.model_validate({
         "id": dc.id,
         "name": dc.name,
         "type": dc.type,
-        "implementation": impl_val,
+        "implementation": implementation,
+        "implementations": bindings,
         "host": dc.host or None,
         "port": dc.port or None,
         "address": dc.address or None,
@@ -186,10 +189,7 @@ def type_config_to_api(t: TypeConfig) -> Type:
     return Type(
         name=t.name,
         type=t.type,
-        typeDefinitionLang1=t.type_definition_lang1 or None,
-        typeDefinitionLang2=t.type_definition_lang2 or None,
-        typeImportLang1=t.type_import_lang1 or None,
-        typeImportLang2=t.type_import_lang2 or None,
+        bindings=t.bindings,
         valueType=t.value_type or None,
         keyType=t.key_type or None,
         package=t.package or None,

@@ -13,10 +13,8 @@
 
 
 from __future__ import annotations
-
 import json
 from enum import Enum
-
 from typing_extensions import Self
 
 
@@ -33,8 +31,8 @@ class ProgrammingLanguage(int, Enum):
     CppUserver = 2
     Python = 3
     Rust = 4
-    CppBoost = 5
     TypeScript = 6
+    CppCoro = 7
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
