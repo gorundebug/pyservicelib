@@ -45,8 +45,26 @@ class DelayFunction[T](Protocol):
 
 class When(Protocol):
     @property
+    def name(self) -> str: ...
+    @property
     def type(self) -> type: ...
     def get_when_consumer(self) -> Stream: ...
+
+
+def when_index(when_items: list[When], name: str) -> int:
+    """Bind a When node's configured name once in build_switch, not per message."""
+    if not name:
+        raise ValueError("case branch name must not be empty")
+    index = -1
+    for i, item in enumerate(when_items):
+        if item.name != name:
+            continue
+        if index >= 0:
+            raise ValueError(f"case branch {name!r} is ambiguous (indices {index} and {i})")
+        index = i
+    if index < 0:
+        raise ValueError(f"case branch {name!r} was not found")
+    return index
 
 
 class BuildSwitchFunction[T](Protocol):
