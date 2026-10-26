@@ -143,7 +143,7 @@ EndpointEncoder = Callable[[Any], bytes]
 class WorkflowGraphEnvironment(EndpointTracingEnvironment, Protocol):
     async def start(self, ctx: Context) -> None: ...
 
-    async def finish(self) -> None: ...
+    async def finish(self, ctx: Context) -> None: ...
 
     async def wait_for_completion(
         self, result: asyncio.Future[Any] | None
@@ -470,6 +470,7 @@ async def execute_direct_endpoint_workflow(
 
 async def execute_workflow_graph_endpoint(
     *,
+    ctx: Context,
     environment: WorkflowGraphEnvironment,
     stream: TypedInputStream[Any, Any, Any],
     envelope: EndpointEnvelope,
@@ -511,7 +512,7 @@ async def execute_workflow_graph_endpoint(
                     or remote_sampled
                 )
             )
-        await environment.start(Context())
+        await environment.start(ctx)
         execution_error: BaseException | None = None
         try:
             await activate(envelope)
@@ -526,7 +527,7 @@ async def execute_workflow_graph_endpoint(
             raise
         finally:
             try:
-                await environment.finish()
+                await environment.finish(ctx)
             except BaseException as cleanup_error:
                 if execution_error is None:
                     raise

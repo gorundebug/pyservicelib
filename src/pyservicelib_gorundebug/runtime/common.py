@@ -1135,7 +1135,7 @@ class ServiceExecutionEnvironment(ServiceEnvironment):
         pass
 
     @abstractmethod
-    async def release(self) -> None:
+    async def release(self, ctx: Context) -> None:
         pass
 
     @abstractmethod

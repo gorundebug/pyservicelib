@@ -15,6 +15,12 @@ def _scheduler(limit: int) -> Any:
     scheduler = object.__new__(_AIOKafkaTypedEndpointConsumer)
     scheduler._handler = Mock(concurrency=lambda _sc: limit)
     scheduler._sc = cast(Any, object())
+    from pyservicelib_gorundebug.runtime.context import Context
+    scheduler._owner = Context()
+    scheduler._shutdown_task = None
+    scheduler._start_task = None
+    scheduler._transport_close_task = None
+    scheduler._message_errors = []
     scheduler._stopped = False
     scheduler._active_count = 0
     scheduler._concurrency_changed = asyncio.Condition()

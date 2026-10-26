@@ -82,7 +82,7 @@ async def test_delay_pool() -> None:
       assert all(elapsed + 0.001 >= value / 1000 for value, elapsed in recorded_delays)
    finally:
       await service.stop(ctx)
-      await service.release()
+      await service.release(ctx)
 
 @pytest.mark.asyncio
 async def test_async_pool():

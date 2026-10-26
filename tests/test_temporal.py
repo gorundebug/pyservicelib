@@ -452,6 +452,8 @@ async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
     provider_enabled: bool,
     expected_sampling: bool,
 ) -> None:
+    caller_context = Context()
+
     class TestTracing(Tracing):
         def tracer(self, name: str) -> Tracer:
             raise AssertionError("This test only uses carrier extraction")
@@ -465,10 +467,10 @@ async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
             )
 
         async def start(self, _ctx: Context) -> None:
-            pass
+            assert _ctx is caller_context
 
-        async def finish(self) -> None:
-            pass
+        async def finish(self, ctx: Context) -> None:
+            assert ctx is caller_context
 
         async def wait_for_completion(
             self, result: asyncio.Future[object] | None
@@ -495,6 +497,7 @@ async def test_direct_workflow_graph_sampling_uses_endpoint_or_carrier(
         assert sampling_enabled() is expected_sampling
 
     result = await execute_workflow_graph_endpoint(
+        ctx=caller_context,
         environment=Environment(),  # type: ignore[arg-type]
         stream=Stream(),  # type: ignore[arg-type]
         envelope=EndpointEnvelope(1, 17, "message", "stream", 0),

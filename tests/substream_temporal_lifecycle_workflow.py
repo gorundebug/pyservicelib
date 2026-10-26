@@ -47,7 +47,8 @@ class SubStreamLifecycleWorkflow:
             environment.create_task(emit_later)
 
         entry, _ = make_substream(environment, body)
-        await environment.start(Context())
+        context = Context()
+        await environment.start(context)
         parent = request_stream_id.set("lifecycle-parent")
         cancellation = request_cancelled.set(cancelled)
         deadline = request_deadline.set(
@@ -91,7 +92,7 @@ class SubStreamLifecycleWorkflow:
 
             assert entry._call.get() is None
             closed.set()
-            await environment.finish()
+            await environment.finish(context)
             if scenario == "cancel_collector":
                 assert results == [42]
             else:
@@ -106,4 +107,4 @@ class SubStreamLifecycleWorkflow:
             request_deadline.reset(deadline)
             request_cancelled.reset(cancellation)
             request_stream_id.reset(parent)
-            await environment.finish()
+            await environment.finish(context)

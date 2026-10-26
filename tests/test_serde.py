@@ -36,7 +36,7 @@ async def test_serde_type_dict():
     value_copy = ser.deserialize(b)
 
     await service.stop(ctx)
-    await service.release()
+    await service.release(ctx)
     assert value == value_copy
 
 

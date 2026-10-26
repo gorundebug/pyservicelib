@@ -37,7 +37,8 @@ class SubStreamReplayWorkflow:
             await out.out(-1)
 
         entry, _ = make_substream(environment, body)
-        await environment.start(Context())
+        context = Context()
+        await environment.start(context)
         parent = request_stream_id.set("shared-workflow-parent")
 
         async def invoke(value: int) -> int:
@@ -60,4 +61,4 @@ class SubStreamReplayWorkflow:
             return list(values)
         finally:
             request_stream_id.reset(parent)
-            await environment.finish()
+            await environment.finish(context)

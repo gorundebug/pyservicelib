@@ -4,6 +4,7 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 from datetime import timedelta
+from collections.abc import Callable
 import time
 from typing import Optional
 
@@ -24,6 +25,7 @@ class Context:
         # synchronization primitives are deliberately unavailable. Ordinary
         # maker groups use this flag cooperatively between Python threads.
         self.__cancelled = False
+        self.__cancel_callbacks: dict[object, Callable[[], None]] = {}
         if _deadline is not None:
             self.__deadline = _deadline
         elif timeout is None:
@@ -43,6 +45,48 @@ class Context:
 
     def cancel(self) -> None:
         self.__cancelled = True
+        for callback in tuple(self.__cancel_callbacks.values()):
+            callback()
+
+    def add_cancel_callback(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Notify once on local/ancestor cancellation; return an unsubscribe function.
+
+        Callbacks run synchronously on the cancelling thread and must not raise.
+        No event-loop primitives are created, including inside Workflow contexts.
+        """
+        subscriptions: list[tuple[Context, object]] = []
+        context: Context | None = self
+        while context is not None:
+            subscriptions.append((context, object()))
+            context = context.__parent
+        claim = object()
+        pending = {claim: callback}
+
+        def cleanup() -> None:
+            for context, key in subscriptions:
+                context.__cancel_callbacks.pop(key, None)
+
+        def remove() -> None:
+            pending.clear()
+            cleanup()
+
+        def notify() -> None:
+            # One dictionary pop claims the notification even when separate
+            # threads cancel a child and its parent at the same time.
+            action = pending.pop(claim, None)
+            if action is not None:
+                cleanup()
+                action()
+
+        for context, key in subscriptions:
+            context.__cancel_callbacks[key] = notify
+        if self.cancelled:
+            notify()
+        # Notification may have run while the loop was still installing
+        # ancestor entries. Remove those late entries as well.
+        if not pending:
+            cleanup()
+        return remove
 
     def child(self) -> "Context":
         """Return a cancellable child that preserves the parent's deadline."""

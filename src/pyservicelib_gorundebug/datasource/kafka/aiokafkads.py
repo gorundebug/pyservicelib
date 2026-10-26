@@ -6,6 +6,7 @@
 import asyncio
 from collections import deque
 from contextvars import copy_context
+from datetime import datetime, timezone
 from contextlib import nullcontext, ExitStack
 from typing import Optional, Protocol, Any, Callable, cast
 
@@ -29,7 +30,10 @@ from ...runtime.common import (
     Consumer, StreamContext, CollectFunc,
 )
 from ...runtime.context import Context
-from ...runtime.context.request import new_stream_id, with_stream_id, stream_id_from_context
+from ...runtime.context.request import (
+    new_stream_id, with_stream_id, stream_id_from_context,
+    request_context_scope, request_cancelled, request_deadline,
+)
 from ...runtime.datasource import DataSourceEndpointConsumer, InputDataSource, DataSourceEndpoint
 from ...runtime.store.rotatingmap import RotatingMap
 from ...runtime.environment.tracing import (
@@ -190,37 +194,93 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
 class _AIOKafkaDataSource(InputDataSource):
 
+    def __init__(self, connector_id: int, env: ServiceExecutionEnvironment):
+        super().__init__(connector_id, env)
+        self._owner: Context | None = None
+        self._stopped = False
+        self._start_task: asyncio.Task[None] | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self._active_endpoints: list[_AIOKafkaEndpoint] = []
+        self._admin_client: AIOKafkaAdminClient | None = None
+        self._admin_close_task: asyncio.Task[None] | None = None
+
     async def start(self, ctx: Context) -> None:
-        enabled_configs = [
-            ep.config
-            for ep in self.endpoints
-            if bool(getattr(ep.config, "enabled", False))
-        ]
+        if ctx.is_expired:
+            raise RuntimeError("Kafka datasource context is cancelled or expired")
+        if self._stopped:
+            raise RuntimeError("Kafka datasource has stopped or is still draining")
+        if self._start_task is not None:
+            raise RuntimeError("Kafka datasource is already starting or started")
+        self._owner = ctx.child()
+        self._start_task = asyncio.create_task(self._start(self._owner))
+        try:
+            with request_context_scope(ctx):
+                await _wait_kafka_completion(self._start_task)
+        except BaseException:
+            self._begin_shutdown(ctx)
+            raise
+
+    async def _start(self, ctx: Context) -> None:
+        enabled_configs = [ep.config for ep in self.endpoints
+                           if bool(getattr(ep.config, "enabled", False))]
         if not enabled_configs:
             return
         cfg_ds = self.data_connector
         brokers = getattr(cfg_ds, "brokers", None) or ""
         if not brokers:
             raise ValueError(f"No brokers configured for Kafka data source '{self.name}'")
-        await _create_topics(brokers, enabled_configs, cfg_ds)
+        await _create_topics(brokers, enabled_configs, cfg_ds, owner=self)
         for ep in self.endpoints:
-            await cast("_AIOKafkaEndpoint", ep).start(ctx)
+            if self._stopped or ctx.is_expired:
+                raise asyncio.CancelledError("Kafka datasource startup cancelled")
+            endpoint = cast("_AIOKafkaEndpoint", ep)
+            self._active_endpoints.append(endpoint)
+            await endpoint.start(ctx)
+
+    async def _close_admin(self) -> None:
+        if self._admin_client is None:
+            return
+        if self._admin_close_task is None:
+            self._admin_close_task = asyncio.create_task(self._admin_client.close())
+            self._admin_close_task.add_done_callback(_AIOKafkaTypedEndpointConsumer._observe_drain)
+        await asyncio.shield(self._admin_close_task)
+        self._admin_client = None
+
+    def _begin_shutdown(self, ctx: Context) -> asyncio.Task[None]:
+        self._stopped = True
+        if self._owner is not None:
+            self._owner.cancel()
+        drain = self._shutdown_task
+        if drain is None or (drain.done() and (drain.cancelled() or drain.exception() is not None)):
+            drain = asyncio.create_task(self._drain(ctx))
+            self._shutdown_task = drain
+            drain.add_done_callback(_AIOKafkaTypedEndpointConsumer._observe_drain)
+        return drain
 
     async def stop(self, ctx: Context) -> None:
-        stop_coros = [
-            cast("_AIOKafkaEndpoint", ep).stop(ctx)
-            for ep in self.endpoints
-        ]
-        if stop_coros:
+        drain = self._begin_shutdown(ctx)
+        with request_context_scope(ctx):
+            await _wait_kafka_completion(drain)
+
+    async def _drain(self, ctx: Context) -> None:
+        if self._start_task is not None:
+            if not self._start_task.done() and not self._start_task.cancelling():
+                self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+        errors: list[BaseException] = []
+        for endpoint in tuple(reversed(self._active_endpoints)):
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*stop_coros, return_exceptions=True),
-                    timeout=ctx.time_left,
-                )
-            except (asyncio.TimeoutError, TypeError):
-                self.environment.log.warn(
-                    f"AIOKafka data source '{self.name}' stopped by timeout."
-                )
+                await endpoint.stop(ctx)
+            except BaseException as error:
+                errors.append(error)
+            else:
+                self._active_endpoints.remove(endpoint)
+        try:
+            await self._close_admin()
+        except BaseException as error:
+            errors.append(error)
+        if errors:
+            raise errors[0]
 
 
 class _AIOKafkaEndpoint(DataSourceEndpoint):
@@ -277,6 +337,11 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._kafka_consumer = None
         self._runner_task = None
         self._auto_commit_task = None
+        self._owner: Context | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self._start_task: asyncio.Task[None] | None = None
+        self._transport_close_task: asyncio.Task[None] | None = None
+        self._message_errors: list[BaseException] = []
         self._stopped = False
         self._active_count = 0
         self._concurrency_changed = asyncio.Condition()
@@ -303,11 +368,25 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         endpoint.add_endpoint_consumer(self)
 
     async def start(self, ctx: Context) -> None:
+        if ctx.is_expired:
+            raise RuntimeError("Kafka source context is cancelled or expired")
+        if self._shutdown_task is not None:
+            raise RuntimeError("Kafka source has stopped or is still draining")
+        if self._start_task is not None or self._kafka_consumer is not None:
+            raise RuntimeError("Kafka source is already starting or started")
+        self._owner = ctx.child()
+        self._start_task = asyncio.create_task(self._start(self._owner))
+        try:
+            with request_context_scope(ctx):
+                await _wait_kafka_completion(self._start_task)
+        except BaseException:
+            self._begin_shutdown(ctx)
+            raise
+
+    async def _start(self, ctx: Context) -> None:
         cfg_ep = self.endpoint.config
         if not cast(Any, cfg_ep).enabled:
             return
-
-        self._stopped = False
 
         if self._has_result:
             self._pending = RotatingMap[str, Any](_PENDING_ROTATION_INTERVAL)
@@ -338,39 +417,80 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             enable_auto_commit=False,
             **_client_options(cfg_ds),
         )
-        await kafka_consumer.start()
         self._kafka_consumer = kafka_consumer
+        await kafka_consumer.start()
+        if self._stopped or ctx.is_expired:
+            raise asyncio.CancelledError("Kafka source startup cancelled")
         self._runner_task = asyncio.create_task(self._consume_loop())
         self._auto_commit_task = asyncio.create_task(self._auto_commit_loop())
 
+    def _begin_shutdown(self, ctx: Context) -> asyncio.Task[None]:
+        self._stopped = True
+        if self._owner is not None:
+            self._owner.cancel()
+        drain = self._shutdown_task
+        if drain is None or (drain.done() and (drain.cancelled() or drain.exception() is not None)):
+            drain = asyncio.create_task(self._drain(ctx))
+            self._shutdown_task = drain
+            drain.add_done_callback(self._observe_drain)
+        return drain
+
     async def stop(self, ctx: Context) -> None:
+        drain = self._begin_shutdown(ctx)
+        with request_context_scope(ctx):
+            await _wait_kafka_completion(drain)
+
+    @staticmethod
+    def _observe_drain(task: asyncio.Task[None]) -> None:
+        # Retrieve failures even when every waiter has gone away. The task keeps
+        # the exception for the next stop caller, which can retry cleanup.
+        if not task.cancelled():
+            task.exception()
+
+    def _message_finished(self, task: asyncio.Task[None]) -> None:
+        self._message_tasks.discard(task)
+        if task.cancelled():
+            self._message_errors.append(asyncio.CancelledError("Kafka handler task cancelled"))
+        else:
+            error = task.exception()
+            if error is not None:
+                self._message_errors.append(error)
+
+    async def _drain(self, ctx: Context) -> None:
+        if self._start_task is not None:
+            if not self._start_task.done() and not self._start_task.cancelling():
+                self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
         async with self._concurrency_changed:
-            self._stopped = True
             self._concurrency_changed.notify_all()
-        if self._runner_task is not None:
-            self._runner_task.cancel()
-            try:
-                await self._runner_task
-            except asyncio.CancelledError:
-                pass
-        tasks = tuple(self._message_tasks)
-        for task in tasks:
+        background = tuple(task for task in (self._runner_task, self._auto_commit_task)
+                           if task is not None)
+        for task in background:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if self._auto_commit_task is not None:
-            self._auto_commit_task.cancel()
-            try:
-                await self._auto_commit_task
-            except asyncio.CancelledError:
-                pass
+        results = await asyncio.gather(*background, return_exceptions=True)
+        self._runner_task = None
+        self._auto_commit_task = None
+        # Accepted callbacks retain the transport until their finalizers finish.
+        # Only cooperative owner cancellation is signalled, never Task.cancel().
+        await asyncio.gather(*tuple(self._message_tasks), return_exceptions=True)
+        errors = [error for error in results
+                  if isinstance(error, BaseException) and not isinstance(error, asyncio.CancelledError)]
+        errors.extend(self._message_errors)
+        self._message_errors.clear()
+        if errors:
+            raise errors[0]
         if self._kafka_consumer is not None:
-            try:
-                await self._flush_marked_offsets()
-            finally:
-                await self._kafka_consumer.stop()
+            await self._flush_marked_offsets()
+            if self._transport_close_task is None:
+                self._transport_close_task = asyncio.create_task(self._kafka_consumer.stop())
+                self._transport_close_task.add_done_callback(self._observe_drain)
+            # aiokafka marks itself closed before its stop coroutine finishes.
+            # Retain that exact outcome: calling stop again could silently no-op.
+            await asyncio.shield(self._transport_close_task)
+            self._kafka_consumer = None
         if self._pending is not None:
             await self._pending.stop(ctx)
+            self._pending = None
 
     async def _consume_loop(self) -> None:
         assert self._kafka_consumer is not None
@@ -437,7 +557,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 self._run_partition(partition, queue), context=queue[0][1]
             )
             self._message_tasks.add(lane)
-            lane.add_done_callback(self._message_tasks.discard)
+            lane.add_done_callback(self._message_finished)
 
     def _resume_partition(self, partition) -> None:
         if partition not in self._paused_partitions:
@@ -472,7 +592,10 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         if not await self._acquire_concurrency():
             return
         try:
-            await self._endpoint_request(record)
+            if self._owner is None:
+                raise RuntimeError("Kafka source has not been started")
+            with request_context_scope(self._owner.child()):
+                await self._endpoint_request(record)
         finally:
             await self._release_concurrency()
 
@@ -594,10 +717,10 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     raise RuntimeError("Kafka result context was not initialized")
 
                 try:
-                    await asyncio.shield(result._done)
+                    await _wait_kafka_completion(result._done)
                     if span is not None and span is not NOOP_SPAN:
                         span.add_event("done_received")
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, TimeoutError):
                     if result._done.done() and not result._done.cancelled():
                         if span is not None and span is not NOOP_SPAN:
                             span.add_event("done_received")
@@ -650,6 +773,29 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             result._span.add_event("result_consumed", string_attr("message_id", message_id))
 
 
+async def _wait_kafka_completion(future: asyncio.Future) -> Any:
+    """Bound this caller's wait without cancelling the owned operation."""
+    event = request_cancelled.get()
+    deadline = request_deadline.get()
+    timeout = None if deadline is None else max(
+        0.0, (deadline - datetime.now(timezone.utc)).total_seconds(),
+    )
+    cancelled = None if event is None else asyncio.create_task(event.wait())
+    waiters = (future,) if cancelled is None else (future, cancelled)
+    try:
+        done, _ = await asyncio.wait(waiters, timeout=timeout,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if future in done:
+            return future.result()
+        if event is not None and event.is_set():
+            raise asyncio.CancelledError("Kafka context cancelled; work remains owned")
+        raise TimeoutError("Kafka context deadline exceeded; work remains owned")
+    finally:
+        if cancelled is not None:
+            cancelled.cancel()
+            await asyncio.gather(cancelled, return_exceptions=True)
+
+
 def _make_tracer(stream: TypedInputStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
     tracing = env.tracing
     if tracing is None:
@@ -680,7 +826,8 @@ def _client_options(config: Any) -> dict[str, Any]:
 
 
 async def _create_topics(
-    brokers: str, endpoint_configs: list[Any], connector_config: Any = None
+    brokers: str, endpoint_configs: list[Any], connector_config: Any = None,
+    *, owner: _AIOKafkaDataSource | None = None,
 ) -> None:
     topics: list[NewTopic] = []
     names: set[str] = set()
@@ -706,8 +853,10 @@ async def _create_topics(
     admin = AIOKafkaAdminClient(
         bootstrap_servers=brokers, **_client_options(connector_config)
     )
-    await admin.start()
+    if owner is not None:
+        owner._admin_client = admin
     try:
+        await admin.start()
         response = cast(_CreateTopicsResponse, await admin.create_topics(topics))
         for topic_error in response.topic_errors:
             topic, error_code, *messages = topic_error
@@ -716,8 +865,20 @@ async def _create_topics(
             message = messages[0] if messages else ""
             error_type = for_code(error_code)
             raise error_type(f"Could not create Kafka topic {topic!r}: {message}")
-    finally:
-        await admin.close()
+    except BaseException as error:
+        try:
+            if owner is None:
+                await admin.close()
+            else:
+                await owner._close_admin()
+        except BaseException as cleanup_error:
+            error.add_note(f"Kafka admin cleanup also failed: {cleanup_error}")
+        raise
+    else:
+        if owner is None:
+            await admin.close()
+        else:
+            await owner._close_admin()
 
 
 def make_aiokafka_endpoint_consumer[HandlerState, T, R, E](

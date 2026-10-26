@@ -30,6 +30,8 @@ from ...runtime.common import (
 from ...runtime.context import Context
 from ...runtime.context.request import (
     new_stream_id,
+    request_cancelled,
+    request_context_scope,
     stream_id_from_context,
     with_stream_id,
 )
@@ -60,52 +62,73 @@ class _CronDataSource(InputDataSource):
         super().__init__(connector_id, env)
         self._started = False
         self._scheduler = None
+        self._shutdown: asyncio.Task[None] | None = None
 
     async def start(self, ctx: Context) -> None:
-        del ctx
+        if ctx.is_expired:
+            raise RuntimeError("cron source context is cancelled or expired")
+        if self._shutdown is not None and not self._shutdown.done():
+            raise RuntimeError("cron source is still draining")
         if self._started:
             return
+        self._shutdown = None
         self._started = True
         scheduler = AsyncIOScheduler(timezone="UTC")
         self._scheduler = scheduler
         try:
             for endpoint in self.endpoints:
-                cast(_CronEndpoint, endpoint).register(scheduler)
+                cast(_CronEndpoint, endpoint).register(ctx, scheduler)
             scheduler.start()
         except BaseException:
-            await self.stop(Context())
+            await self.stop(ctx)
             raise
 
     async def stop(self, ctx: Context) -> None:
-        if not self._started:
-            return
-        self._started = False
-        scheduler = self._scheduler
-        self._scheduler = None
-        endpoints = [cast(_CronEndpoint, endpoint) for endpoint in self.endpoints]
-        for endpoint in endpoints:
-            endpoint.stop_admission()
-        if scheduler is not None and scheduler.running:
-            scheduler.pause()
-            scheduler.remove_all_jobs()
-        drains = [asyncio.create_task(endpoint.stop()) for endpoint in endpoints]
-        timed_out = False
-        if drains:
-            done, pending = await asyncio.wait(drains, timeout=ctx.time_left)
-            timed_out = bool(pending)
-            if timed_out:
+        if self._shutdown is None:
+            if not self._started:
+                return
+            scheduler = self._scheduler
+            endpoints = [cast(_CronEndpoint, endpoint) for endpoint in self.endpoints]
+            for endpoint in endpoints:
+                endpoint.stop_admission()
+            if scheduler is not None and scheduler.running:
+                scheduler.pause()
+                scheduler.remove_all_jobs()
+            self._shutdown = asyncio.create_task(self._drain_scheduler(scheduler, endpoints))
+            self._shutdown.add_done_callback(self._consume_stop_result)
+        drain = self._shutdown
+        with request_context_scope(ctx):
+            event = request_cancelled.get()
+            assert event is not None
+            cancelled = asyncio.create_task(event.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    (drain, cancelled), timeout=ctx.time_left,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if drain in done:
+                    drain.result()
+                    return
                 self.environment.log.warn(
-                    "cron datasource stopped by shutdown timeout",
+                    "cron shutdown context expired; accepted work remains owned",
                     str_field("datasource", self.name),
                 )
-                for task in pending:
-                    task.cancel()
-                    task.add_done_callback(self._consume_stop_result)
-            for task in done:
-                task.result()
+                if ctx.cancelled:
+                    raise asyncio.CancelledError("cron shutdown context cancelled")
+                raise TimeoutError("cron shutdown deadline exceeded")
+            finally:
+                cancelled.cancel()
+                await asyncio.gather(cancelled, return_exceptions=True)
+
+    async def _drain_scheduler(
+        self, scheduler: AsyncIOScheduler | None, endpoints: list["_CronEndpoint"],
+    ) -> None:
+        await asyncio.gather(*(endpoint.drain() for endpoint in endpoints))
         if scheduler is not None and scheduler.running:
-            scheduler.shutdown(wait=not timed_out)
+            scheduler.shutdown(wait=True)
             await asyncio.sleep(0)
+        self._scheduler = None
+        self._started = False
 
     @staticmethod
     def _consume_stop_result(task: asyncio.Task[None]) -> None:
@@ -135,7 +158,7 @@ class _CronEndpoint(DataSourceEndpoint):
         self._job_id = f"{datasource.id}:{endpoint_id}"
         self._accepting = False
 
-    def register(self, scheduler: AsyncIOScheduler) -> None:
+    def register(self, ctx: Context, scheduler: AsyncIOScheduler) -> None:
         cfg = self.config
         if not bool(getattr(cfg, "enabled", False)):
             return
@@ -146,6 +169,7 @@ class _CronEndpoint(DataSourceEndpoint):
         scheduler.add_listener(self._on_submission, EVENT_JOB_SUBMITTED)
         scheduler.add_job(
             self._scheduled_fire,
+            kwargs={"ctx": ctx},
             trigger=trigger,
             id=self._job_id,
             name=f"{self.datasource.name}:{self.name}",
@@ -170,7 +194,7 @@ class _CronEndpoint(DataSourceEndpoint):
     def stop_admission(self) -> None:
         self._accepting = False
 
-    async def stop(self) -> None:
+    async def drain(self) -> None:
         while self._active:
             await asyncio.gather(*tuple(self._active), return_exceptions=True)
         self._active.clear()
@@ -181,8 +205,8 @@ class _CronEndpoint(DataSourceEndpoint):
             return
         self._scheduled.extend(event.scheduled_run_times)
 
-    async def _scheduled_fire(self) -> None:
-        if not self._accepting:
+    async def _scheduled_fire(self, ctx: Context) -> None:
+        if not self._accepting or ctx.is_expired:
             return
         task = asyncio.current_task()
         if task is None:
@@ -196,7 +220,8 @@ class _CronEndpoint(DataSourceEndpoint):
         scheduled_at = self._scheduled.popleft()
         self._active.add(task)
         try:
-            await self._fire(scheduled_at)
+            with request_context_scope(ctx.child()):
+                await self._fire(scheduled_at)
         finally:
             self._active.discard(task)
 

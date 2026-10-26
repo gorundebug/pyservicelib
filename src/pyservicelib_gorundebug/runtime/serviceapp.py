@@ -342,7 +342,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         if not self.has_custom_http_server():
             self._aiohttp_app = web.Application()
 
-    async def release(self) -> None:
+    async def release(self, ctx: Context) -> None:
         pass
 
     @property

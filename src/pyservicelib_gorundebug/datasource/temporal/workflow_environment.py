@@ -503,19 +503,18 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
             await priority_pool.start(ctx)
         self._started = True
 
-    async def finish(self) -> None:
+    async def finish(self, ctx: Context) -> None:
         if not self._started:
             return
         await self._wait_for_quiescence()
-        context = Context()
         for task_pool in self._task_pools.values():
-            await task_pool.stop(context)
+            await task_pool.stop(ctx)
         for priority_pool in self._priority_task_pools.values():
-            await priority_pool.stop(context)
+            await priority_pool.stop(ctx)
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
         for storage in self._storages:
-            await storage.stop(context)
+            await storage.stop(ctx)
         if isinstance(self._metrics, WorkflowMetrics):
             self._metrics.flush_observables()
         self._started = False
@@ -589,11 +588,10 @@ class TemporalWorkflowEnvironment(ServiceExecutionEnvironment, ServiceExecutionR
                 failure.cancel()
 
     async def stop(self, ctx: Context) -> None:
-        del ctx
-        await self.finish()
+        await self.finish(ctx)
 
-    async def release(self) -> None:
-        await self.finish()
+    async def release(self, ctx: Context) -> None:
+        await self.finish(ctx)
 
     async def delay(
         self,
