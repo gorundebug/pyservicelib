@@ -164,6 +164,10 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
 
     def concurrency(self, sc: StreamContext[T, R, E]) -> int: ...
 
+    async def on_error(self, sc: StreamContext[T, R, E], err: Exception) -> None:
+        """Report a transport failure without message state; do not select retry policy."""
+        ...
+
     async def begin_request(
         self,
         sc: StreamContext[T, R, E],
@@ -414,6 +418,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             bootstrap_servers=brokers,
             group_id=group_id,
             auto_offset_reset='earliest',
+            isolation_level='read_committed',
             enable_auto_commit=False,
             **_client_options(cfg_ds),
         )
@@ -505,6 +510,18 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             self._input_stream.environment.log.warn(
                 f"Kafka consumer loop error for endpoint '{self.endpoint.name}': {e}"
             )
+            await self._report_transport_error(e)
+
+    async def _report_transport_error(self, err: Exception) -> None:
+        if self._stopped or self._owner is None or self._owner.is_expired:
+            return
+        with request_context_scope(self._owner):
+            try:
+                await self._handler.on_error(self._sc, err)
+            except Exception as callback_error:
+                self._input_stream.environment.log.warn(
+                    f"Kafka on_error failed for endpoint '{self.endpoint.name}': {callback_error}"
+                )
 
     async def _auto_commit_loop(self) -> None:
         try:
@@ -517,6 +534,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                         f"Kafka offset commit failed for endpoint "
                         f"'{self.endpoint.name}': {err}"
                     )
+                    await self._report_transport_error(err)
         except asyncio.CancelledError:
             pass
 

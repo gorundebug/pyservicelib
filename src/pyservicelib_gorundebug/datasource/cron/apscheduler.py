@@ -6,15 +6,17 @@
 
 import asyncio
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 from apscheduler.events import (  # type: ignore[import-untyped]
     EVENT_JOB_SUBMITTED,
+    EVENT_JOB_MAX_INSTANCES,
     JobSubmissionEvent,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+from apscheduler.triggers.interval import IntervalTrigger  # type: ignore[import-untyped]
 
 from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.schedule_missed_run_policy import ScheduleMissedRunPolicy
@@ -52,6 +54,7 @@ from ...runtime.schedule import (
     ScheduleTrigger,
     new_schedule_trigger,
 )
+from ...runtime.schedule_interval import parse_local_schedule_interval
 
 
 class _CronDataSource(InputDataSource):
@@ -136,17 +139,44 @@ class _CronDataSource(InputDataSource):
             task.exception()
 
 
-def _portable_cron_trigger(expression: str, timezone_name: str) -> CronTrigger:
+class _CoalescingIntervalTrigger(IntervalTrigger):
+    """Bound catch-up before APScheduler enumerates its run-time list.
+
+    Interval jobs always coalesce. Preserve the first and latest due slots so
+    endpoint policy can still distinguish Skip from FireOnce. APScheduler owns
+    timers, execution, overlap and shutdown as before.
+    """
+
+    def get_next_fire_time(
+        self, previous_fire_time: datetime | None, now: datetime,
+    ) -> datetime | None:
+        candidate = super().get_next_fire_time(previous_fire_time, now)
+        if previous_fire_time is not None and candidate is not None and candidate <= now:
+            candidate += ((now - candidate) // self.interval) * self.interval
+        return candidate
+
+
+def _portable_cron_trigger(
+    expression: str, timezone_name: str, *, now: datetime | None = None,
+) -> CronTrigger | IntervalTrigger:
     """Use APScheduler's trigger with the portable UTC-only contract."""
     if timezone_name != "UTC":
         raise ValueError("scheduled endpoint timezone must be UTC")
+    interval = parse_local_schedule_interval(expression)
+    if interval is not None:
+        anchor = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        anchor = anchor.replace(microsecond=(anchor.microsecond // 1000) * 1000)
+        return _CoalescingIntervalTrigger(
+            seconds=interval.total_seconds(), start_date=anchor + interval,
+            timezone=timezone_name,
+        )
     return CronTrigger.from_crontab(expression, timezone=timezone_name)
 
 
 class _CronEndpoint(DataSourceEndpoint):
     _consumer: "_CronEndpointConsumer | None"
     _active: set[asyncio.Task[None]]
-    _scheduled: deque[datetime]
+    _scheduled: deque[datetime | None]
     _job_id: str
     _accepting: bool
 
@@ -157,6 +187,8 @@ class _CronEndpoint(DataSourceEndpoint):
         self._scheduled = deque()
         self._job_id = f"{datasource.id}:{endpoint_id}"
         self._accepting = False
+        self._interval_step: timedelta | None = None
+        self._interval_next: datetime | None = None
 
     def register(self, ctx: Context, scheduler: AsyncIOScheduler) -> None:
         cfg = self.config
@@ -166,7 +198,12 @@ class _CronEndpoint(DataSourceEndpoint):
         schedule = str(getattr(cfg, "schedule"))
         timezone_name = str(getattr(cfg, "timezone"))
         trigger = _portable_cron_trigger(schedule, timezone_name)
-        scheduler.add_listener(self._on_submission, EVENT_JOB_SUBMITTED)
+        if isinstance(trigger, IntervalTrigger):
+            self._interval_step = trigger.interval
+            self._interval_next = trigger.start_date
+        else:
+            self._interval_step = self._interval_next = None
+        scheduler.add_listener(self._on_submission, EVENT_JOB_SUBMITTED | EVENT_JOB_MAX_INSTANCES)
         scheduler.add_job(
             self._scheduled_fire,
             kwargs={"ctx": ctx},
@@ -174,7 +211,7 @@ class _CronEndpoint(DataSourceEndpoint):
             id=self._job_id,
             name=f"{self.datasource.name}:{self.name}",
             coalesce=(
-                getattr(cfg, "missed_run_policy")
+                self._interval_step is not None or getattr(cfg, "missed_run_policy")
                 == ScheduleMissedRunPolicy.FIREONCE
             ),
             max_instances=(
@@ -185,7 +222,7 @@ class _CronEndpoint(DataSourceEndpoint):
             ),
             misfire_grace_time=(
                 None
-                if getattr(cfg, "missed_run_policy")
+                if self._interval_step is not None or getattr(cfg, "missed_run_policy")
                 == ScheduleMissedRunPolicy.FIREONCE
                 else 1
             ),
@@ -203,6 +240,27 @@ class _CronEndpoint(DataSourceEndpoint):
     def _on_submission(self, event: object) -> None:
         if not isinstance(event, JobSubmissionEvent) or event.job_id != self._job_id:
             return
+        if self._interval_step is not None and self._interval_next is not None:
+            if not event.scheduled_run_times:
+                return
+            latest = event.scheduled_run_times[-1]
+            count = (latest - self._interval_next) // self._interval_step + 1
+            if count > 0:
+                self._interval_next = latest + self._interval_step
+            # A rejected overlapping job has no callback. Advancing its slot
+            # prevents the next accepted job from being mistaken for backlog.
+            if event.code != EVENT_JOB_SUBMITTED:
+                return
+            skip = count <= 0 or (
+                count > 1 and getattr(self.config, "missed_run_policy")
+                == ScheduleMissedRunPolicy.SKIP
+            )
+            # APScheduler coalesces interval backlog to one invocation. Retain
+            # its admission outcome, not every missed timestamp or a work queue.
+            self._scheduled.append(None if skip else latest)
+            return
+        if event.code != EVENT_JOB_SUBMITTED:
+            return
         self._scheduled.extend(event.scheduled_run_times)
 
     async def _scheduled_fire(self, ctx: Context) -> None:
@@ -218,6 +276,8 @@ class _CronEndpoint(DataSourceEndpoint):
             )
             return
         scheduled_at = self._scheduled.popleft()
+        if scheduled_at is None:
+            return
         self._active.add(task)
         try:
             with request_context_scope(ctx.child()):

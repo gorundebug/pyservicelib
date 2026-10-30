@@ -6,7 +6,7 @@
 import asyncio
 import random
 import sys
-from typing import Optional, Protocol, Callable, Any, cast
+from typing import Optional, Protocol, Callable, Awaitable, Any, cast
 
 from aiokafka import AIOKafkaProducer  # type: ignore[import-not-found,import-untyped]
 from aiokafka.admin import (  # type: ignore[import-not-found,import-untyped]
@@ -20,7 +20,7 @@ from aiokafka.errors import (  # type: ignore[import-not-found,import-untyped]
 
 from ...runtime.stream_grouping import stream_grouping
 from ...runtime.common import (
-    Consumer, TypedSinkStream, ServiceExecutionEnvironment, Stream,
+    Consumer, TypedSinkStream, TypedSinkStreamWithResult, ServiceExecutionEnvironment, Stream,
     SinkEndpoint, OutputEndpointConsumer,
 )
 from ...runtime.context import Context
@@ -234,7 +234,7 @@ class _AIOKafkaSinkEndpoint(DataSinkEndpoint):
 
 class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointConsumer):
     _endpoint: _AIOKafkaSinkEndpoint
-    _stream: TypedSinkStream[T, R]
+    _stream: TypedSinkStream[T, R] | TypedSinkStreamWithResult[T, R, Any]
     _handler: EndpointHandler[HandlerState, T, R]
     _partitioner: Optional[Partitioner[T]]
     _tracer: Optional[Tracer]
@@ -242,8 +242,9 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
     def __init__(
         self,
         endpoint: _AIOKafkaSinkEndpoint,
-        stream: TypedSinkStream[T, R],
+        stream: TypedSinkStream[T, R] | TypedSinkStreamWithResult[T, R, Any],
         handler: EndpointHandler[HandlerState, T, R],
+        result_collect: Callable[[R], Awaitable[None]],
         partitioner: Optional[Partitioner[T]] = None,
         tracer: Optional[Tracer] = None,
     ):
@@ -251,6 +252,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
         self._pipeline_name, self._component_name = stream_grouping(stream)
         self._stream = stream
         self._handler = handler
+        self._result_collect = result_collect
         self._partitioner = partitioner
         self._tracing: Optional[Tracing] = stream.environment.tracing
         self._tracer = tracer
@@ -310,10 +312,6 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
 
                 ds = cast(_AIOKafkaSinkDataSink, ep.datasink)
 
-                async def _result_collect(r: R) -> None:
-                    if hasattr(stream, 'error_stream'):
-                        await stream.error_stream.consume(r)  # type: ignore[arg-type]
-
                 def _send_fn(
                     key: Optional[bytes],
                     val: Optional[bytes],
@@ -352,7 +350,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                 msg: SinkMessage[R] = SinkMessage[R](
                     topic=ep.topic,
                     send_fn=_send_fn,
-                    result_collect=_result_collect,
+                    result_collect=self._result_collect,
                     create_task=ep.environment.runtime.create_task,
                 )
 
@@ -377,7 +375,7 @@ class _AIOKafkaEndpointConsumer[HandlerState, T, R](Consumer[T], OutputEndpointC
                 span.end()
 
 
-def _make_tracer(stream: TypedSinkStream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
+def _make_tracer(stream: Stream, env: ServiceExecutionEnvironment) -> Optional[Tracer]:
     tracing = env.tracing
     if tracing is None:
         return None
@@ -456,6 +454,24 @@ def make_aiokafka_endpoint_consumer[HandlerState, T, R](
     Creates an aiokafka sink endpoint consumer.
     Equivalent to Go's MakeSaramaKafkaEndpointConsumer (datasink/kafka).
     """
+    return _make_endpoint_consumer(stream, handler, stream.error_stream.consume, partitioner)
+
+
+def make_aiokafka_endpoint_consumer_with_result[HandlerState, T, R, E](
+    stream: TypedSinkStreamWithResult[T, R, E],
+    handler: "EndpointHandler[HandlerState, T, R]",
+    partitioner: Optional["Partitioner[T]"] = None,
+) -> Consumer[T]:
+    """Bind delivery results to the explicit SinkWithResult continuation."""
+    return _make_endpoint_consumer(stream, handler, stream.consume_result, partitioner)
+
+
+def _make_endpoint_consumer[HandlerState, T, R](
+    stream: TypedSinkStream[T, R] | TypedSinkStreamWithResult[T, R, Any],
+    handler: EndpointHandler[HandlerState, T, R],
+    result_collect: Callable[[R], Awaitable[None]],
+    partitioner: Optional[Partitioner[T]],
+) -> Consumer[T]:
     env = stream.environment
     cfg_ep = env.config.get_endpoint_config_by_id(stream.endpoint_id)
     datasink = env.get_datasink(cfg_ep.id_data_connector)
@@ -474,6 +490,7 @@ def make_aiokafka_endpoint_consumer[HandlerState, T, R](
         endpoint=cast(_AIOKafkaSinkEndpoint, endpoint),
         stream=stream,
         handler=handler,
+        result_collect=result_collect,
         partitioner=partitioner,
         tracer=_make_tracer(stream, env),
     )

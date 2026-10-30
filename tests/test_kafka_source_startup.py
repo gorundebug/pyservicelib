@@ -43,7 +43,11 @@ async def test_partial_connect_remains_owned_until_connect_exits(monkeypatch, mo
             raise
 
     transport = SimpleNamespace(start=connect, stop=AsyncMock())
-    monkeypatch.setattr(kafka, 'AIOKafkaConsumer', lambda *a, **kw: transport)
+    def build_consumer(*args, **kwargs):
+        assert kwargs['isolation_level'] == 'read_committed'
+        return transport
+
+    monkeypatch.setattr(kafka, 'AIOKafkaConsumer', build_consumer)
     parent = Context(timeout=timedelta(milliseconds=25)) if mode == 'deadline' else Context()
     starting = asyncio.create_task(instance.start(parent))
     await entered.wait()

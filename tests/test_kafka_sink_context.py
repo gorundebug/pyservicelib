@@ -115,6 +115,7 @@ async def test_kafka_message_key_does_not_replace_request_stream_id() -> None:
     consumer._component_name = ""
     consumer._tracer = None
     consumer._tracing = None
+    consumer._result_collect = AsyncMock()
 
     with_stream_id("request-correlation-id")
     await consumer.consume(object())
@@ -154,6 +155,7 @@ async def test_kafka_custom_partitioner_receives_current_partition_count() -> No
     consumer._component_name = ""
     consumer._tracer = None
     consumer._tracing = None
+    consumer._result_collect = AsyncMock()
 
     await consumer.consume(value)
     await asyncio.gather(*scheduled)
@@ -190,6 +192,7 @@ async def test_kafka_begin_failure_is_not_counted_as_active_request() -> None:
     consumer._component_name = ""
     consumer._tracer = None
     consumer._tracing = None
+    consumer._result_collect = AsyncMock()
 
     await consumer.consume(object())
 

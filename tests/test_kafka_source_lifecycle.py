@@ -39,6 +39,58 @@ def consumer():
 
 
 @pytest.mark.asyncio
+async def test_transport_error_without_message_uses_owner_and_no_request_lifecycle():
+    instance = consumer()
+    failure = RuntimeError('broker unavailable')
+    observed = []
+    async def on_error(sc, err):
+        observed.append((sc, err, request_cancelled.get()))
+    instance._handler.on_error = AsyncMock(side_effect=on_error)
+    ambient = Context()
+    ambient.cancel()
+    with request_context_scope(ambient):
+        await instance._report_transport_error(failure)
+    assert len(observed) == 1
+    assert observed[0][0] is instance._sc
+    assert observed[0][1] is failure
+    assert not observed[0][2].is_set()
+    instance._handler.begin_request.assert_not_called()
+    instance._handler.consume_message.assert_not_called()
+    instance._handler.end_request.assert_not_called()
+    instance._owner.cancel()
+    await instance._report_transport_error(failure)
+    instance._handler.on_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consume_loop_reports_driver_failure_without_message():
+    instance = consumer()
+    failure = RuntimeError('offset unavailable')
+    class BrokenConsumer:
+        def __aiter__(self): return self
+        async def __anext__(self): raise failure
+    instance._kafka_consumer = BrokenConsumer()
+    instance._endpoint = SimpleNamespace(name='events')
+    instance._input_stream = SimpleNamespace(environment=SimpleNamespace(log=Mock()))
+    instance._handler.on_error = AsyncMock()
+    await instance._consume_loop()
+    instance._handler.on_error.assert_awaited_once_with(instance._sc, failure)
+    instance._handler.begin_request.assert_not_called()
+    assert not instance._marked_offsets
+
+
+@pytest.mark.asyncio
+async def test_error_callback_failure_does_not_change_transport_policy():
+    instance = consumer()
+    instance._endpoint = SimpleNamespace(name='events')
+    instance._input_stream = SimpleNamespace(environment=SimpleNamespace(log=Mock()))
+    instance._handler.on_error = AsyncMock(side_effect=ValueError('mapping failed'))
+    await instance._report_transport_error(RuntimeError('broker unavailable'))
+    assert not instance._stopped
+    instance._input_stream.environment.log.warn.assert_called_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['deadline', 'context', 'caller'])
 async def test_interrupted_stop_retains_handler_and_transport(mode):
     instance = consumer()

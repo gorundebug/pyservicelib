@@ -9,6 +9,7 @@ from pyservicelib_gorundebug.datasource.cron.apscheduler import (
     _portable_cron_trigger,
 )
 from pyservicelib_gorundebug.runtime.context.request import with_stream_id
+from pyservicelib_gorundebug.runtime.common import CollectFunc
 from pyservicelib_gorundebug.runtime.schedule import (
     ScheduleBackend,
     new_schedule_trigger,
@@ -67,13 +68,19 @@ async def test_cron_source_waits_for_correlated_pipeline_result() -> None:
 
     class Function:
         async def on_trigger(self, trigger: Any, out: Any) -> None:
-            del trigger, out
+            del trigger
+            await out.out("work")
             invoked.set()
 
     stream = Stream()
     consumer: _CronEndpointConsumer[Any, str, Any] = _CronEndpointConsumer(
         Endpoint(), stream, Function()  # type: ignore[arg-type]
     )
+
+    async def forward(value: str) -> None:
+        assert value == "work"
+
+    consumer._out = CollectFunc(forward)
     with_stream_id("request-1")
     trigger = new_schedule_trigger(
         1,
@@ -89,3 +96,66 @@ async def test_cron_source_waits_for_correlated_pipeline_result() -> None:
 
     await stream.result_consumer.consume("result")
     await asyncio.wait_for(activation, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_empty_cron_activation_waits_for_explicit_result() -> None:
+    pending: set[str] = set()
+    forwarded: list[str] = []
+
+    class Endpoint:
+        id = 1
+        name = "empty-cron"
+
+        def on_pending_add(self, stream_id: str) -> None:
+            assert stream_id not in pending
+            pending.add(stream_id)
+
+        def on_pending_remove(self, stream_id: str) -> None:
+            pending.remove(stream_id)
+
+    class Stream:
+        def get_result_stream(self) -> object:
+            return object()
+
+        def set_result_consumer(self, consumer: Any) -> None:
+            self.result_consumer = consumer
+
+    class Function:
+        ready = False
+        saved: Any = None
+
+        async def on_trigger(self, trigger: Any, out: Any) -> None:
+            self.saved = out
+            if self.ready:
+                await out.out("ready")
+
+    function = Function()
+    stream = Stream()
+    consumer: _CronEndpointConsumer[str, str, Any] = _CronEndpointConsumer(
+        Endpoint(), stream, function  # type: ignore[arg-type]
+    )
+
+    async def forward(value: str) -> None:
+        forwarded.append(value)
+        consumer.consume_result("done")
+
+    consumer._out = CollectFunc(forward)
+    with_stream_id("same-endpoint")
+    trigger = new_schedule_trigger(
+        1, "empty-cron", datetime.now(timezone.utc),
+        datetime.now(timezone.utc), ScheduleBackend.LOCAL,
+    )
+    activation = asyncio.create_task(consumer.on_trigger(trigger))
+    await asyncio.sleep(0)
+    assert not activation.done()
+    assert pending == {"same-endpoint"}
+    consumer.consume_result("no-work")
+    await asyncio.wait_for(activation, timeout=1)
+    assert not pending
+    assert not consumer._pending
+    function.ready = True
+    await asyncio.wait_for(consumer.on_trigger(trigger), timeout=1)
+    assert forwarded == ["ready"]
+    assert not pending
+    assert not consumer._pending
