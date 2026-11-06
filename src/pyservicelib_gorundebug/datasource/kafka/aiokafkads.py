@@ -4,13 +4,14 @@
 #   Licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 import asyncio
+import inspect
 from collections import deque
 from contextvars import copy_context
 from datetime import datetime, timezone
 from contextlib import nullcontext, ExitStack
-from typing import Optional, Protocol, Any, Callable, cast
+from typing import Optional, Protocol, Any, Callable, Awaitable, cast
 
-from aiokafka import AIOKafkaConsumer  # type: ignore[import-not-found,import-untyped]
+from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener  # type: ignore[import-not-found,import-untyped]
 from aiokafka.admin import (  # type: ignore[import-not-found,import-untyped]
     AIOKafkaAdminClient,
     NewTopic,
@@ -50,6 +51,32 @@ class _CreateTopicsResponse(Protocol):
     topic_errors: list[tuple[str, int] | tuple[str, int, str | None]]
 
 
+class CheckpointRestoreError(RuntimeError):
+    """No message admission is permitted from an unconfirmed restored position."""
+
+
+def _checkpoint_copy(offsets: dict[int, int] | None) -> dict[int, int] | None:
+    if offsets is None:
+        return None
+    copied = dict(offsets)
+    for partition, next_offset in copied.items():
+        if (type(partition) is not int or type(next_offset) is not int
+                or not 0 <= partition <= 2**31-1 or not 0 <= next_offset <= 2**63-1):
+            raise CheckpointRestoreError("invalid checkpoint partition or next offset")
+    return copied
+
+
+class _CheckpointListener(ConsumerRebalanceListener):
+    def __init__(self, endpoint):
+        self.endpoint = endpoint
+
+    async def on_partitions_revoked(self, partitions):
+        await self.endpoint._checkpoint_revoked(partitions)
+
+    async def on_partitions_assigned(self, partitions):
+        await self.endpoint._checkpoint_assigned(partitions)
+
+
 class ConsumerMessage:
     """
     Wraps an aiokafka ConsumerRecord with Commit/MarkMessage helpers.
@@ -70,6 +97,7 @@ class ConsumerMessage:
         record: ConsumerRecord,
         consumer: AIOKafkaConsumer,
         mark_message: "Callable[[ConsumerRecord, str], None]",
+        commit_message: Callable[[], Awaitable[None]] | None = None,
     ):
         self._record = record
         self._consumer = consumer
@@ -79,9 +107,13 @@ class ConsumerMessage:
         self.partition = record.partition
         self.offset = record.offset
         self._mark_message = mark_message
+        self._commit_message = commit_message
 
     async def commit(self) -> None:
         """Manually commit this message's offset."""
+        if self._commit_message is not None:
+            await self._commit_message()
+            return
         from aiokafka import TopicPartition  # type: ignore[import-untyped]
         tp = TopicPartition(self.topic, self.partition)
         await self._consumer.commit({tp: self.offset + 1})
@@ -161,6 +193,15 @@ class EndpointHandler[HandlerState, T, R, E](Protocol):
     concurrency() controls maximum parallel message processing (0 = unlimited).
     Equivalent to Go's datasource/kafka EndpointHandler.
     """
+
+    def restore_checkpoint(self, sc: StreamContext[T, R, E]) -> dict[int, int] | None | Awaitable[dict[int, int] | None]:
+        """Already restored durable next offsets; None keeps broker positions.
+
+        Called before startup and on assignments using the owner request context.
+        Non-None covers all assigned partitions and permits committing its prefix.
+        Read available state; do not download snapshots inside rebalance.
+        """
+        ...
 
     def concurrency(self, sc: StreamContext[T, R, E]) -> int: ...
 
@@ -354,6 +395,12 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._paused_partitions = set()
         self._partition_prefetch = 1
         self._marked_offsets = {}
+        self._restoring = False
+        self._checkpoint_error: BaseException | None = None
+        self._assigned_partitions: set[TopicPartition] = set()
+        self._assignment_epochs: dict[TopicPartition, int] = {}
+        self._partition_tasks: dict[TopicPartition, asyncio.Task[None]] = {}
+        self._commit_lock = asyncio.Lock()
         self._tracing = stream.environment.tracing
         self._tracer = tracer
 
@@ -379,13 +426,109 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         if self._start_task is not None or self._kafka_consumer is not None:
             raise RuntimeError("Kafka source is already starting or started")
         self._owner = ctx.child()
-        self._start_task = asyncio.create_task(self._start(self._owner))
+        self._start_task = asyncio.create_task(self._start_background(self._owner))
+        self._start_task.add_done_callback(self._observe_drain)
+
+    async def _restore_checkpoint(self) -> dict[int, int] | None:
+        value = self._handler.restore_checkpoint(self._sc)
+        if inspect.isawaitable(value):
+            value = await value
+        return _checkpoint_copy(value)
+
+    async def _start_background(self, ctx: Context) -> None:
+        loop = asyncio.get_running_loop()
+        # Start returns before restoration/connect. The endpoint still owns and
+        # cancels that work when its caller's context expires during startup.
+        def cancel_start() -> None:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(self._begin_shutdown, ctx)
+        unsubscribe = ctx.add_cancel_callback(cancel_start)
+        remaining = ctx.time_left
+        deadline = None if remaining is None else loop.call_later(remaining, cancel_start)
         try:
             with request_context_scope(ctx):
-                await _wait_kafka_completion(self._start_task)
-        except BaseException:
-            self._begin_shutdown(ctx)
+                await self._start(ctx)
+        except asyncio.CancelledError:
             raise
+        except Exception as error:
+            try:
+                await self._report_transport_error(error)
+            finally:
+                self._begin_shutdown(ctx)
+        finally:
+            unsubscribe()
+            if deadline is not None:
+                deadline.cancel()
+
+    async def _checkpoint_revoked(self, partitions) -> None:
+        # Block new admission first; old request callbacks cannot mark a new
+        # assignment even if user code retains a ConsumerMessage.
+        self._assigned_partitions.difference_update(partitions)
+        tasks = []
+        for partition in partitions:
+            self._assignment_epochs[partition] = self._assignment_epochs.get(partition, 0) + 1
+            task = self._partition_tasks.get(partition)
+            if task is not None:
+                task.cancel()
+                tasks.append(task)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._commit_lock:
+            for partition in partitions:
+                self._marked_offsets.pop(partition, None)
+
+    async def _checkpoint_assigned(self, partitions) -> None:
+        self._assigned_partitions.difference_update(partitions)
+        try:
+            if self._checkpoint_error is not None:
+                return
+            if self._owner is None or self._owner.is_expired or self._kafka_consumer is None:
+                raise CheckpointRestoreError("checkpoint owner is no longer active")
+            consumer = self._kafka_consumer
+            with request_context_scope(self._owner):
+                offsets = await self._restore_checkpoint()
+                if offsets is None:
+                    raise CheckpointRestoreError("checkpoint mode changed during lifecycle")
+                topic = self.endpoint.config.topic
+                selected = {}
+                for partition in partitions:
+                    if partition.topic != topic or partition.partition not in offsets:
+                        raise CheckpointRestoreError("checkpoint does not cover the assignment")
+                    selected[partition] = offsets[partition.partition]
+                if not selected:
+                    return
+                reads = [asyncio.create_task(consumer.beginning_offsets(partitions)),
+                         asyncio.create_task(consumer.end_offsets(partitions))]
+                try:
+                    low = await _wait_kafka_completion(reads[0])
+                    high = await _wait_kafka_completion(reads[1])
+                finally:
+                    for task in reads:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*reads, return_exceptions=True)
+                for partition, next_offset in selected.items():
+                    if not 0 <= low[partition] <= next_offset <= high[partition]:
+                        raise CheckpointRestoreError("checkpoint is outside retained log bounds")
+                async with self._commit_lock:
+                    if self._owner.is_expired:
+                        raise CheckpointRestoreError("checkpoint restoration cancelled")
+                    for partition, next_offset in selected.items():
+                        consumer.seek(partition, next_offset)
+                        self._assignment_epochs[partition] = self._assignment_epochs.get(partition, 0) + 1
+                        # This prefix is durable by contract, not a new ACK.
+                        self._marked_offsets[partition] = next_offset
+                    self._assigned_partitions.update(selected)
+        except BaseException as err:
+            self._checkpoint_error = err
+            self._assigned_partitions.clear()
+            if isinstance(err, Exception):
+                await self._report_transport_error(err)
+            if self._owner is not None:
+                self._owner.cancel()
+            # aiokafka may log a listener exception and continue assigning.
+            # Admission is explicitly closed regardless of that behavior.
+            if isinstance(err, asyncio.CancelledError):
+                raise
 
     async def _start(self, ctx: Context) -> None:
         cfg_ep = self.endpoint.config
@@ -413,17 +556,24 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 f"No consumer group configured for Kafka endpoint '{self.endpoint.name}'"
             )
 
+        with request_context_scope(ctx):
+            checkpoint = await self._restore_checkpoint()
+        self._restoring = checkpoint is not None
         kafka_consumer = AIOKafkaConsumer(
-            topic,
+            *(() if self._restoring else (topic,)),
             bootstrap_servers=brokers,
             group_id=group_id,
-            auto_offset_reset='earliest',
+            auto_offset_reset='none' if self._restoring else 'earliest',
             isolation_level='read_committed',
             enable_auto_commit=False,
             **_client_options(cfg_ds),
         )
         self._kafka_consumer = kafka_consumer
+        if self._restoring:
+            kafka_consumer.subscribe(topics=[topic], listener=_CheckpointListener(self))
         await kafka_consumer.start()
+        if self._checkpoint_error is not None:
+            raise self._checkpoint_error
         if self._stopped or ctx.is_expired:
             raise asyncio.CancelledError("Kafka source startup cancelled")
         self._runner_task = asyncio.create_task(self._consume_loop())
@@ -501,7 +651,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         assert self._kafka_consumer is not None
         try:
             async for record in self._kafka_consumer:
-                if self._stopped:
+                if self._stopped or self._checkpoint_error is not None:
                     break
                 await self._process_record(record)
         except asyncio.CancelledError:
@@ -549,16 +699,21 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
     async def _flush_marked_offsets(self) -> None:
         if self._kafka_consumer is None or not self._marked_offsets:
             return
-        offsets = dict(self._marked_offsets)
-        await self._kafka_consumer.commit(offsets)
-        for partition, offset in offsets.items():
-            if self._marked_offsets.get(partition, 0) <= offset:
-                self._marked_offsets.pop(partition, None)
+        async with self._commit_lock:
+            offsets = dict(self._marked_offsets)
+            if not offsets:
+                return
+            await self._kafka_consumer.commit(offsets)
+            for partition, offset in offsets.items():
+                if self._marked_offsets.get(partition, 0) <= offset:
+                    self._marked_offsets.pop(partition, None)
 
     async def _process_record(self, record: ConsumerRecord) -> None:
         if self._stopped:
             return
         partition = TopicPartition(record.topic, record.partition)
+        if self._restoring and (self._checkpoint_error is not None or partition not in self._assigned_partitions):
+            return
         queue = self._partition_queues.get(partition)
         new_partition = queue is None
         if queue is None:
@@ -574,6 +729,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             lane = asyncio.create_task(
                 self._run_partition(partition, queue), context=queue[0][1]
             )
+            self._partition_tasks[partition] = lane
             self._message_tasks.add(lane)
             lane.add_done_callback(self._message_finished)
 
@@ -601,7 +757,13 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     await asyncio.create_task(self._dispatch_record(record), context=context)
                 if not queue:
                     self._resume_partition(partition)
+        except asyncio.CancelledError:
+            # Revocation intentionally cancels this lane before reassignment.
+            # It is not a failed handler to replay later during service drain.
+            if not self._restoring or partition in self._assigned_partitions:
+                raise
         finally:
+            self._partition_tasks.pop(partition, None)
             self._partition_queues.pop(partition, None)
             queue.clear()
             self._resume_partition(partition)
@@ -678,8 +840,28 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             with ExitStack() as scopes:
                 if span is not NOOP_SPAN:
                     scopes.enter_context(span.scoped())
+                partition = TopicPartition(record.topic, record.partition)
+                epoch = self._assignment_epochs.get(partition, 0)
+
+                def current_assignment() -> bool:
+                    return not self._restoring or (
+                        self._checkpoint_error is None
+                        and partition in self._assigned_partitions
+                        and self._assignment_epochs.get(partition, 0) == epoch
+                    )
+
+                def mark_message(message, metadata):
+                    if current_assignment():
+                        self._mark_message(message, metadata)
+
+                async def commit_message():
+                    async with self._commit_lock:
+                        if not current_assignment():
+                            raise CheckpointRestoreError("message belongs to a revoked assignment")
+                        await self._kafka_consumer.commit({partition: record.offset + 1})
+
                 msg = ConsumerMessage(
-                    record, self._kafka_consumer, self._mark_message
+                    record, self._kafka_consumer, mark_message, commit_message
                 )
                 try:
                     handler_state = await self._handler.begin_request(self._sc)

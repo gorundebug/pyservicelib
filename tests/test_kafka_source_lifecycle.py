@@ -25,6 +25,12 @@ def consumer():
     instance._concurrency_changed = asyncio.Condition()
     instance._message_tasks = set()
     instance._partition_queues = {}
+    instance._restoring = False
+    instance._checkpoint_error = None
+    instance._assigned_partitions = set()
+    instance._assignment_epochs = {}
+    instance._partition_tasks = {}
+    instance._commit_lock = asyncio.Lock()
     instance._paused_partitions = set()
     instance._partition_prefetch = 1
     instance._marked_offsets = {}
@@ -34,6 +40,8 @@ def consumer():
     instance._has_result = False
     instance._sc = object()
     instance._handler = Mock(concurrency=lambda sc: 1)
+    instance._handler.restore_checkpoint = Mock(return_value=None)
+    instance._handler.on_error = AsyncMock()
     instance._kafka_consumer = SimpleNamespace(stop=AsyncMock(), commit=AsyncMock())
     return instance
 

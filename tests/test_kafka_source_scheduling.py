@@ -26,6 +26,12 @@ def _scheduler(limit: int) -> Any:
     scheduler._concurrency_changed = asyncio.Condition()
     scheduler._message_tasks = set()
     scheduler._partition_queues = {}
+    scheduler._restoring = False
+    scheduler._checkpoint_error = None
+    scheduler._assigned_partitions = set()
+    scheduler._assignment_epochs = {}
+    scheduler._partition_tasks = {}
+    scheduler._commit_lock = asyncio.Lock()
     scheduler._paused_partitions = set()
     scheduler._partition_prefetch = 64
     scheduler._kafka_consumer = None

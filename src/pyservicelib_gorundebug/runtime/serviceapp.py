@@ -471,13 +471,8 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
     def streams_init(self, ctx: Context) -> None:
         pass
 
-    async def start(self, ctx: Context) -> None:
-        from .statusweb import data_handler as _data_handler
-        from .statusweb import graph_handler as _graph_handler
-        from .statusweb import status_handler as _status_handler
-        from .statusweb import vis_css_handler as _vis_css_handler
-        from .statusweb import vis_js_handler as _vis_js_handler
-
+    async def start_graph(self, ctx: Context) -> None:
+        """Start graph resources only for explicit operator/substream execution."""
         for stream in self._streams.values():
             stream.build()
 
@@ -494,6 +489,15 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
             await component.start(ctx)
         for data_sink in self._dataSinks.values():
             await data_sink.start(ctx)
+
+    async def start(self, ctx: Context) -> None:
+        from .statusweb import data_handler as _data_handler
+        from .statusweb import graph_handler as _graph_handler
+        from .statusweb import status_handler as _status_handler
+        from .statusweb import vis_css_handler as _vis_css_handler
+        from .statusweb import vis_js_handler as _vis_js_handler
+
+        await self.start_graph(ctx)
         # A managed connector may expose inbound polling as well as an
         # outbound client. Open admission only after every downstream graph
         # resource and sink is ready.

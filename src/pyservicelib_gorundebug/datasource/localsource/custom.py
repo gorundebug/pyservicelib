@@ -13,6 +13,7 @@ from ...runtime.common import (
     Consume, Consumer, ServiceExecutionEnvironment, InputEndpoint, TypedInputStream,
     DataSource, StreamContext, CollectFunc,
 )
+from ...runtime.config import CustomEndpointConfig
 from ...runtime.context import Context
 from ...runtime.context.request import (
     new_stream_id, stream_id_from_context, with_stream_id,
@@ -405,6 +406,8 @@ class TypedCustomEndpointConsumer[HandlerState, T, R, E](
         await self._data_producer.start(ctx, self)
 
     async def start(self, ctx: Context) -> None:
+        if not cast(CustomEndpointConfig, self.endpoint.config).enabled:
+            return
         self._ctx = ctx
         if self._has_result:
             self._pending = RotatingMap[str, Any](30.0)

@@ -27,7 +27,7 @@ def source(endpoints=()):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['caller', 'context', 'deadline', 'stop'])
+@pytest.mark.parametrize('mode', ['context', 'deadline', 'stop'])
 async def test_partial_connect_remains_owned_until_connect_exits(monkeypatch, mode):
     instance = consumer()
     prepare_consumer(instance)
@@ -49,21 +49,15 @@ async def test_partial_connect_remains_owned_until_connect_exits(monkeypatch, mo
 
     monkeypatch.setattr(kafka, 'AIOKafkaConsumer', build_consumer)
     parent = Context(timeout=timedelta(milliseconds=25)) if mode == 'deadline' else Context()
-    starting = asyncio.create_task(instance.start(parent))
-    await entered.wait()
+    await asyncio.wait_for(instance.start(parent), 1)
+    await asyncio.wait_for(entered.wait(), 1)
     assert instance._kafka_consumer is transport
-    if mode == 'caller':
-        starting.cancel()
-    elif mode == 'context':
+    if mode == 'context':
         parent.cancel()
     elif mode == 'stop':
         short = Context(timeout=timedelta(milliseconds=5))
         with pytest.raises(TimeoutError):
             await instance.stop(short)
-    expected = TimeoutError if mode == 'deadline' else asyncio.CancelledError
-    if mode != 'stop':
-        with pytest.raises(expected):
-            await starting
     await asyncio.wait_for(cancelled.wait(), 1)
     transport.stop.assert_not_awaited()
     assert not instance._start_task.done()
@@ -71,9 +65,6 @@ async def test_partial_connect_remains_owned_until_connect_exits(monkeypatch, mo
         await instance.start(Context())
     release.set()
     await asyncio.wait_for(instance.stop(Context()), 1)
-    if mode == 'stop':
-        with pytest.raises(asyncio.CancelledError):
-            await starting
     transport.stop.assert_awaited_once()
     assert instance._kafka_consumer is None
     assert instance._runner_task is None
@@ -88,9 +79,9 @@ async def test_failed_connect_preserves_primary_error_and_owns_cleanup_failure(m
     secondary = RuntimeError('disconnect failed')
     transport = SimpleNamespace(start=AsyncMock(side_effect=primary), stop=AsyncMock(side_effect=secondary))
     monkeypatch.setattr(kafka, 'AIOKafkaConsumer', lambda *a, **kw: transport)
-    with pytest.raises(ValueError) as caught:
-        await instance.start(Context())
-    assert caught.value is primary
+    await asyncio.wait_for(instance.start(Context()), 1)
+    await asyncio.wait_for(asyncio.shield(instance._start_task), 1)
+    instance._handler.on_error.assert_awaited_once_with(instance._sc, primary)
     with pytest.raises(RuntimeError) as cleanup:
         await instance.stop(Context())
     assert cleanup.value is secondary

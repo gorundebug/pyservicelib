@@ -371,7 +371,9 @@ class CustomEndpointConfig(EndpointConfig):
         function_initializer_group: Optional[str] = None,
         function_module: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
+        enabled: bool = False,
     ):
+        self._enabled = enabled
         self._id = id
         self._name = name
         self._id_data_connector = id_data_connector
@@ -383,6 +385,10 @@ class CustomEndpointConfig(EndpointConfig):
         self._function_initializer_group = function_initializer_group
         self._function_module = function_module
         self._properties = properties or {}
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
     @property
     def id(self) -> int:
@@ -423,6 +429,7 @@ class CustomEndpointConfig(EndpointConfig):
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "id": self._id,
+            "enabled": self._enabled,
             "name": self._name,
             "idDataConnector": self._id_data_connector,
             "tracingEnabled": self._tracing_enabled,

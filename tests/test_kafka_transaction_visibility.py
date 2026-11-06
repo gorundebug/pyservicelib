@@ -44,6 +44,9 @@ class Handler:
     def __init__(self):
         self.errors = []
 
+    def restore_checkpoint(self, sc):
+        return None
+
     def concurrency(self, sc):
         return 2
 

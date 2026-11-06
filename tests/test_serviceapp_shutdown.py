@@ -125,7 +125,8 @@ def test_child_context_cancellation_is_one_way() -> None:
 
 
 @pytest.mark.asyncio
-async def test_service_opens_managed_admission_only_after_graph_is_ready() -> None:
+@pytest.mark.parametrize("graph_only", [False, True])
+async def test_service_opens_managed_admission_only_after_graph_is_ready(graph_only: bool) -> None:
     events: list[str] = []
 
     class TestApp(ServiceApp):
@@ -171,19 +172,20 @@ async def test_service_opens_managed_admission_only_after_graph_is_ready() -> No
     }
     app._dataSources = {1: cast(DataSource, Resource("source"))}
 
-    await app.start(Context(timedelta(seconds=1)))
+    ctx = Context(timedelta(seconds=1))
+    if graph_only:
+        await app.start_graph(ctx)
+        assert app._aiohttp_runner is None
+    else:
+        await app.start(ctx)
 
-    assert events == [
-        "start:managed",
-        "start:storage",
-        "start:delay",
-        "start:task",
-        "start:priority",
-        "start:component",
-        "start:sink",
-        "start-admission:managed",
-        "start:source",
+    expected = [
+        "start:managed", "start:storage", "start:delay", "start:task",
+        "start:priority", "start:component", "start:sink",
     ]
+    if not graph_only:
+        expected += ["start-admission:managed", "start:source"]
+    assert events == expected
 
 
 @pytest.mark.asyncio
