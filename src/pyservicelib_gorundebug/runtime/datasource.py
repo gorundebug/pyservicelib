@@ -92,10 +92,8 @@ class DataSourceEndpoint(InputEndpoint):
         labels = {
             "connector": connector_name,
             "endpoint": endpoint_name,
+            "protocol": data_connector_protocol(datasource.data_connector.type) or "",
         }
-        protocol = data_connector_protocol(datasource.data_connector.type)
-        if protocol is not None:
-            labels["protocol"] = protocol
         scope = datasource.environment.metrics.scope("datasource_endpoint", labels)
         self._missing_stream_id_counter = scope.counter(
             "events_total", "Total number of events in data source endpoint",

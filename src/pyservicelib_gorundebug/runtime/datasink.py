@@ -86,10 +86,8 @@ class DataSinkEndpoint(SinkEndpoint):
         labels = {
             "connector": connector_name,
             "endpoint": endpoint_name,
+            "protocol": data_connector_protocol(data_sink.data_connector.type) or "",
         }
-        protocol = data_connector_protocol(data_sink.data_connector.type)
-        if protocol is not None:
-            labels["protocol"] = protocol
         scope = data_sink.environment.metrics.scope("datasink_endpoint", labels)
         self._begin_request_failed_counter = scope.counter(
             "events_total", "Total number of events in data sink endpoint",
