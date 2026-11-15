@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timezone
 from typing import Any, cast
 
@@ -24,6 +25,7 @@ from .workflow import (
     _identity_name,
     submit_endpoint_from_workflow,
 )
+from .submission_options import SubmissionOptions
 
 
 class _WorkflowSinkConsumer[T, R, E](Consumer[T]):
@@ -31,9 +33,11 @@ class _WorkflowSinkConsumer[T, R, E](Consumer[T]):
         self,
         stream: TypedSinkStream[T, E] | TypedSinkStreamWithResult[T, R, E],
         with_result: bool,
+        options: Callable[[T], SubmissionOptions] | None = None,
     ) -> None:
         self._stream = stream
         self._with_result = with_result
+        self._options = options
 
     async def consume(self, value: T) -> None:
         submission = WORKFLOW_SUBMISSION.get()
@@ -66,6 +70,7 @@ class _WorkflowSinkConsumer[T, R, E](Consumer[T]):
                 deadline_unix_nano=deadline_nanos,
                 payload=bytes(input_serde.serialize(value)),
             ),
+            self._options(value) if self._options is not None else SubmissionOptions(),
         )
         if not self._with_result:
             return
@@ -75,15 +80,17 @@ class _WorkflowSinkConsumer[T, R, E](Consumer[T]):
 
 def make_workflow_sink_endpoint_consumer[T, E](
     stream: TypedSinkStream[T, E],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
-    consumer = _WorkflowSinkConsumer[T, Any, E](stream, False)
+    consumer = _WorkflowSinkConsumer[T, Any, E](stream, False, options)
     stream.set_sink_consumer(consumer)
     return consumer
 
 
 def make_workflow_sink_endpoint_consumer_with_result[T, R, E](
     stream: TypedSinkStreamWithResult[T, R, E],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
-    consumer = _WorkflowSinkConsumer[T, R, E](stream, True)
+    consumer = _WorkflowSinkConsumer[T, R, E](stream, True, options)
     stream.set_sink_consumer(consumer)
     return consumer

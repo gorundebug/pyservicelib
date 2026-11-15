@@ -54,6 +54,7 @@ from .context_propagation import (
     current_workflow_carrier,
     workflow_tracing_enabled,
 )
+from .submission_options import SubmissionOptions
 
 
 ENDPOINT_WORKFLOW_TYPE = "servicelib.temporal-endpoint.v1"
@@ -168,6 +169,7 @@ class EndpointWorkflowRequest:
     maximum_attempts: int
     priority: int
     envelope: EndpointEnvelope
+    activity_schedule_to_start_micros: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +310,10 @@ class TemporalEndpointWorkflow:
                 request.activity_type,
                 envelope,
                 result_type=EndpointResult,
+                schedule_to_start_timeout=(
+                    timedelta(microseconds=request.activity_schedule_to_start_micros)
+                    if request.activity_schedule_to_start_micros else None
+                ),
                 start_to_close_timeout=timedelta(
                     milliseconds=request.activity_start_to_close_millis
                 ),
@@ -326,6 +332,7 @@ async def submit_endpoint_from_workflow(
     submission: WorkflowSubmission,
     endpoint_id: int,
     envelope: EndpointEnvelope,
+    options: SubmissionOptions = SubmissionOptions(),
 ) -> EndpointResult:
     cfg = submission.endpoints.get(endpoint_id)
     if cfg is None:
@@ -337,6 +344,7 @@ async def submit_endpoint_from_workflow(
         raise ValueError(
             f"Temporal Workflow submission to {cfg.name!r} requires stable identity"
         )
+    task_queue = options.resolve(cfg.task_queue, cfg.execution_type)
     envelope = replace(envelope, version=1, endpoint_id=endpoint_id)
     retry_policy = RetryPolicy(maximum_attempts=cfg.maximum_attempts)
     priority = Priority(
@@ -349,7 +357,8 @@ async def submit_endpoint_from_workflow(
                 cfg.activity_type,
                 envelope,
                 result_type=EndpointResult,
-                task_queue=cfg.task_queue,
+                task_queue=task_queue,
+                schedule_to_start_timeout=options.schedule_to_start_timeout or None,
                 start_to_close_timeout=timedelta(
                     milliseconds=cfg.activity_start_to_close_millis
                 ),
@@ -381,7 +390,7 @@ async def submit_endpoint_from_workflow(
                 id=_endpoint_workflow_id(
                     submission.connector_name, cfg.name, envelope.message_id
                 ),
-                task_queue=cfg.task_queue,
+                task_queue=task_queue,
                 result_type=EndpointResult,
                 execution_timeout=(
                     timedelta(milliseconds=cfg.workflow_execution_millis)

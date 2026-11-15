@@ -15,6 +15,7 @@ from .temporal import (
     make_schedule_endpoint_consumer,
 )
 from .workflow_environment import TemporalWorkflowEnvironment
+from .submission_options import SubmissionOptions
 
 __all__ = [
     "Connector",
@@ -22,6 +23,7 @@ __all__ = [
     "EndpointEnvelope",
     "EndpointHandler",
     "EndpointResult",
+    "SubmissionOptions",
     "TemporalWorkflowEnvironment",
     "execute_direct_endpoint_workflow",
     "make_connector",

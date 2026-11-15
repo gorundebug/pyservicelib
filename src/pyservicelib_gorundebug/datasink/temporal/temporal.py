@@ -41,6 +41,7 @@ from ...runtime.environment.tracing import (
     start_endpoint_span,
 )
 from ...datasource.temporal.connector import Connector, EndpointEnvelope, make_connector
+from ...datasource.temporal.submission_options import SubmissionOptions
 from ...runtime.serde import TypedStreamSerde
 
 
@@ -119,6 +120,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         input_serde: TypedStreamSerde[T],
         result_serde: Optional[TypedStreamSerde[R]],
         emit_result: Optional[Callable[[R], Awaitable[None]]],
+        options: Callable[[T], SubmissionOptions] | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._datasink = datasink
@@ -129,6 +131,7 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
         self._input_serde = input_serde
         self._result_serde = result_serde
         self._emit_result = emit_result
+        self._options = options
         tracing = endpoint.datasink.environment.tracing
         self._tracing: Optional[Tracing] = tracing
         self._tracer: Optional[Tracer] = (
@@ -179,19 +182,24 @@ class _TemporalSinkConsumer[HandlerState, T, R, E](
                     if deadline.tzinfo is None:
                         deadline = deadline.replace(tzinfo=timezone.utc)
                     deadline_nanos = int(deadline.timestamp() * 1_000_000_000)
-                result = await self._connector.submit_endpoint(
-                    self.endpoint.id,
-                    EndpointEnvelope(
-                        version=1,
-                        endpoint_id=self.endpoint.id,
-                        message_id=message_id,
-                        stream_id=stream_id,
-                        priority=priority if priority is not None else 0,
-                        deadline_unix_nano=deadline_nanos,
-                        payload=bytes(self._input_serde.serialize(value)),
-                    ),
-                    self._result_serde is not None,
+                envelope = EndpointEnvelope(
+                    version=1,
+                    endpoint_id=self.endpoint.id,
+                    message_id=message_id,
+                    stream_id=stream_id,
+                    priority=priority if priority is not None else 0,
+                    deadline_unix_nano=deadline_nanos,
+                    payload=bytes(self._input_serde.serialize(value)),
                 )
+                if self._options is None:
+                    result = await self._connector.submit_endpoint(
+                        self.endpoint.id, envelope, self._result_serde is not None
+                    )
+                else:
+                    result = await self._connector.submit_endpoint_with_options(
+                        self.endpoint.id, envelope, self._result_serde is not None,
+                        self._options(value),
+                    )
                 if self._result_serde is not None:
                     result_value = self._result_serde.deserialize(result.payload)
                     if self._emit_result is None:
@@ -250,12 +258,13 @@ def _create_endpoint(
 def make_endpoint_consumer[HandlerState, T, E](
     stream: TypedSinkStream[T, E],
     handler: EndpointHandler[HandlerState, T],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
     """Create a submission-only Temporal endpoint sink."""
 
     endpoint, datasink, connector = _create_endpoint(stream)  # type: ignore[arg-type]
     consumer = _TemporalSinkConsumer[HandlerState, T, object, E](
-        endpoint, datasink, connector, stream, handler, stream.serde, None, None
+        endpoint, datasink, connector, stream, handler, stream.serde, None, None, options
     )
     endpoint.add_endpoint_consumer(consumer)
     stream.set_sink_consumer(consumer)
@@ -265,13 +274,15 @@ def make_endpoint_consumer[HandlerState, T, E](
 
 def make_direct_endpoint_consumer[T, E](
     stream: TypedSinkStream[T, E],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
-    return make_endpoint_consumer(stream, _DirectEndpointHandler[T]())
+    return make_endpoint_consumer(stream, _DirectEndpointHandler[T](), options=options)
 
 
 def make_endpoint_consumer_with_result[HandlerState, T, R, E](
     stream: TypedSinkStreamWithResult[T, R, E],
     handler: EndpointHandler[HandlerState, T],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
     """Create a Temporal sink that emits the existing endpoint result."""
 
@@ -285,6 +296,7 @@ def make_endpoint_consumer_with_result[HandlerState, T, R, E](
         stream.input_serde,
         stream.serde,
         stream.consume_result,
+        options,
     )
     endpoint.add_endpoint_consumer(consumer)
     stream.set_sink_consumer(consumer)
@@ -294,5 +306,6 @@ def make_endpoint_consumer_with_result[HandlerState, T, R, E](
 
 def make_direct_endpoint_consumer_with_result[T, R, E](
     stream: TypedSinkStreamWithResult[T, R, E],
+    *, options: Callable[[T], SubmissionOptions] | None = None,
 ) -> Consumer[T]:
-    return make_endpoint_consumer_with_result(stream, _DirectEndpointHandler[T]())
+    return make_endpoint_consumer_with_result(stream, _DirectEndpointHandler[T](), options=options)

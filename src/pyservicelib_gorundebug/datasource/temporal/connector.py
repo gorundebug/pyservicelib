@@ -58,6 +58,7 @@ from ...runtime.durable_context import (
 from ...runtime.environment.log import Field, Logger, err_field, str_field
 from ...runtime.schedule import normalize_temporal_priority
 from .context_propagation import TemporalContextPropagationInterceptor
+from .submission_options import SubmissionOptions
 from .workflow import (
     ENDPOINT_WORKFLOW_TYPE,
     WORKFLOW_SUBMISSION,
@@ -606,10 +607,21 @@ class Connector(ManagedDataConnector):
         envelope: EndpointEnvelope,
         wait_for_result: bool,
     ) -> EndpointResult:
+        return await self.submit_endpoint_with_options(
+            endpoint_id, envelope, wait_for_result, SubmissionOptions()
+        )
+
+    async def submit_endpoint_with_options(
+        self,
+        endpoint_id: int,
+        envelope: EndpointEnvelope,
+        wait_for_result: bool,
+        options: SubmissionOptions,
+    ) -> EndpointResult:
         workflow_submission = _WORKFLOW_SUBMISSION.get()
         if workflow_submission is not None:
             return await submit_endpoint_from_workflow(
-                workflow_submission, endpoint_id, envelope
+                workflow_submission, endpoint_id, envelope, options
             )
         registration = self._endpoints.get(endpoint_id)
         if not self._started:
@@ -620,6 +632,7 @@ class Connector(ManagedDataConnector):
         cfg = self._endpoint_config(endpoint_id)
         if not _bool(cfg, "enabled"):
             raise RuntimeError(f"Temporal endpoint {cfg.name!r} is disabled")
+        task_queue = options.resolve(_required_string(cfg, "task_queue"), cfg.temporal_execution_type)
         request = _EndpointWorkflowRequest(
             registration.activity_type,
             _integer(cfg, "activity_start_to_close_timeout"),
@@ -627,6 +640,7 @@ class Connector(ManagedDataConnector):
             _integer(cfg, "maximum_attempts"),
             normalize_temporal_priority(envelope.priority),
             envelope,
+            options.schedule_to_start_timeout // timedelta(microseconds=1),
         )
         workflow_type = ENDPOINT_WORKFLOW_TYPE
         workflow_input: _EndpointWorkflowRequest | DirectEndpointWorkflowRequest = (
@@ -650,7 +664,7 @@ class Connector(ManagedDataConnector):
             workflow_type,
             workflow_input,
             id=workflow_id,
-            task_queue=_required_string(cfg, "task_queue"),
+            task_queue=task_queue,
             execution_timeout=_optional_timeout(cfg, "workflow_execution_timeout"),
             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
             id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
@@ -659,7 +673,7 @@ class Connector(ManagedDataConnector):
             result_type=EndpointResult,
         )
         await _validate_workflow_ownership(
-            handle, workflow_type, owner, envelope.message_id
+            handle, workflow_type, owner, envelope.message_id, options.task_queue
         )
         if not wait_for_result:
             return EndpointResult()
@@ -839,6 +853,7 @@ async def _validate_workflow_ownership(
     expected_type: str,
     expected_owner: str,
     expected_call_id: str,
+    expected_queue: str = "",
 ) -> None:
     description = await handle.describe()
     if description.workflow_type != expected_type:
@@ -847,6 +862,8 @@ async def _validate_workflow_ownership(
             f"workflow type {description.workflow_type!r}, expected {expected_type!r}"
         )
     _validate_memo(await description.memo(), expected_owner, expected_call_id)
+    if expected_queue and description.task_queue != expected_queue:
+        raise RuntimeError("Temporal workflow task queue collision")
 
 
 def make_connector(
