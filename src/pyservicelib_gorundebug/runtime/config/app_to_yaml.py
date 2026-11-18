@@ -167,6 +167,18 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 dc_obj["port"] = dc.port
             if dc.address:
                 dc_obj["address"] = dc.address
+            if dc.type.value in (7, 8, 9, 10, 11):
+                for field in ("servers", "connect_timeout_ms", "operation_timeout_ms", "token", "credentials_file", "virtual_host"):
+                    if dc.type.value in (10, 11) and field == "virtual_host":
+                        continue
+                    value = getattr(dc, field)
+                    if value is not None:
+                        alias = type(dc).model_fields[field].alias or field
+                        dc_obj[alias] = value
+            if dc.type.value == 10 and dc.redis_database is not None:
+                dc_obj["redisDatabase"] = dc.redis_database
+            if dc.type.value == 11 and dc.admin_url:
+                dc_obj["adminUrl"] = dc.admin_url
             if dc.brokers:
                 dc_obj["brokers"] = dc.brokers
             if dc.version:
@@ -195,7 +207,7 @@ def app_to_yaml(app: StreamApp) -> bytes:
                 dc_obj["identity"] = dc.identity
             if dc.api_key:
                 dc_obj["apiKey"] = dc.api_key
-            if dc.tls_enabled:
+            if dc.type.value in (7, 8, 9, 10, 11) and dc.tls_enabled is not None or dc.tls_enabled:
                 dc_obj["tlsEnabled"] = dc.tls_enabled
             if dc.tls_server_name:
                 dc_obj["tlsServerName"] = dc.tls_server_name
@@ -218,6 +230,29 @@ def app_to_yaml(app: StreamApp) -> bytes:
                         ep_obj["httpMethodType"] = str(ep.http_method_type.value)
                     if ep.path:
                         ep_obj["path"] = ep.path
+                    if dc.type.value in (7, 8):
+                        for field in ("subject", "queue_group", "stream_name", "durable_name", "create_stream", "create_consumer"):
+                            value = getattr(ep, field)
+                            if value is not None:
+                                alias = type(ep).model_fields[field].alias or field
+                                ep_obj[alias] = value
+                    if dc.type.value == 9:
+                        for field in ("queue_name", "exchange_name", "routing_key", "queue_type", "exchange_type", "create_queue", "create_exchange", "create_binding", "consumer_credits", "publisher_max_in_flight"):
+                            value = getattr(ep, field)
+                            if value is not None:
+                                alias = type(ep).model_fields[field].alias or field
+                                ep_obj[alias] = getattr(value, "value", value)
+                    if dc.type.value == 10:
+                        for field in ("stream_key", "consumer_name", "create_consumer_group", "group_start_id", "read_count", "read_block_ms", "claim_idle_ms", "claim_interval_ms", "create_stream", "publisher_max_in_flight"):
+                            value = getattr(ep, field)
+                            if value is not None and field in ep.model_fields_set:
+                                alias = type(ep).model_fields[field].alias or field
+                                ep_obj[alias] = value
+                    if dc.type.value == 11:
+                        for field in ("subscription_name", "subscription_type", "create_subscription", "subscription_initial_position", "receiver_queue_size", "negative_ack_redelivery_delay_ms", "publisher_max_in_flight", "create_topic", "partitions"):
+                            value = getattr(ep, field)
+                            if value is not None and field in ep.model_fields_set:
+                                ep_obj[type(ep).model_fields[field].alias or field] = value
                     if ep.topic:
                         ep_obj["topic"] = ep.topic
                     if ep.partitions:

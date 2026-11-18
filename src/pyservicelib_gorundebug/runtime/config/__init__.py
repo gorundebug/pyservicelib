@@ -60,3 +60,11 @@ from .config_to_api import (
     pool_config_to_api,
 )
 from .app_to_yaml import app_to_yaml, to_camel_case_first_lower
+
+from .nats import (NatsDataConnectorConfig, JetStreamDataConnectorConfig,
+                   NatsEndpointConfig, JetStreamEndpointConfig)
+from .rabbitmq import RabbitMQDataConnectorConfig, RabbitMQEndpointConfig
+
+from .redisstreams import RedisStreamsDataConnectorConfig, RedisStreamsEndpointConfig
+
+from .pulsar import PulsarDataConnectorConfig, PulsarEndpointConfig

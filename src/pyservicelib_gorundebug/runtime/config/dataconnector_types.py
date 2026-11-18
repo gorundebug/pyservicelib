@@ -14,6 +14,16 @@ from ...api.models.kafka_security_protocol import KafkaSecurityProtocol
 
 
 def data_connector_protocol(connector_type: DataConnectorType) -> Optional[str]:
+    if connector_type == DataConnectorType.Pulsar:
+        return "pulsar"
+    if connector_type == DataConnectorType.RedisStreams:
+        return "redisstreams"
+    if connector_type == DataConnectorType.RabbitMQ:
+        return "rabbitmq"
+    if connector_type == DataConnectorType.NATS:
+        return "nats"
+    if connector_type == DataConnectorType.JetStream:
+        return "jetstream"
     if connector_type == DataConnectorType.gRPC:
         return "grpc"
     return None

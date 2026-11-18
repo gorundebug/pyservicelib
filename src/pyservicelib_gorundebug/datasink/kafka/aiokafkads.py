@@ -24,6 +24,8 @@ from ...runtime.common import (
     SinkEndpoint, OutputEndpointConsumer,
 )
 from ...runtime.context import Context
+from ...runtime.context.request import request_context_scope
+from ...datasource.kafka.aiokafkads import _wait_kafka_completion
 from ...runtime.datasink import OutputDataSink, DataSinkEndpoint
 from ...runtime.environment.tracing import (
     sampling_enabled,
@@ -152,8 +154,11 @@ class _AIOKafkaSinkDataSink(OutputDataSink):
         super().__init__(connector_id=connector_id, env=env)
         self._producer = None
         self._stopped = False
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def start(self, ctx: Context) -> None:
+        if self._stopped:
+            raise RuntimeError("Kafka sink is stopped")
         for ep in self.endpoints:
             await cast("_AIOKafkaSinkEndpoint", ep).start(ctx)
         enabled = [
@@ -179,10 +184,23 @@ class _AIOKafkaSinkDataSink(OutputDataSink):
 
     async def stop(self, ctx: Context) -> None:
         self._stopped = True
-        if self._producer is not None:
-            await self._producer.stop()
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(self._drain(ctx))
+            self._shutdown_task.add_done_callback(self._observe_shutdown)
+        with request_context_scope(ctx):
+            await _wait_kafka_completion(self._shutdown_task)
+
+    @staticmethod
+    def _observe_shutdown(task: asyncio.Task[None]) -> None:
+        # Retain the outcome for repeat callers even if the first waiter expired.
+        if not task.cancelled():
+            task.exception()
+
+    async def _drain(self, ctx: Context) -> None:
         for ep in self.endpoints:
             await cast("_AIOKafkaSinkEndpoint", ep).stop(ctx)
+        if self._producer is not None:
+            await self._producer.stop()
 
     async def send_message(
         self,

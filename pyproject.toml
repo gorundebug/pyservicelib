@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "pyservicelib_gorundebug"
 version = "0.2.181"
 dynamic = ["dependencies"]
+# Runtime dependencies, including the pinned official nats.py client, are read
+# from requirements.txt by the existing Hatch hook below.
 authors = [
     { name="Sergey Alexeev", email="sergeyalexeev@yahoo.com" },
 ]

@@ -42,7 +42,7 @@ async def test_partial_connect_remains_owned_until_connect_exits(monkeypatch, mo
             await release.wait()
             raise
 
-    transport = SimpleNamespace(start=connect, stop=AsyncMock())
+    transport = SimpleNamespace(subscribe=Mock(), start=connect, stop=AsyncMock())
     def build_consumer(*args, **kwargs):
         assert kwargs['isolation_level'] == 'read_committed'
         return transport
@@ -77,7 +77,7 @@ async def test_failed_connect_preserves_primary_error_and_owns_cleanup_failure(m
     prepare_consumer(instance)
     primary = ValueError('connect failed')
     secondary = RuntimeError('disconnect failed')
-    transport = SimpleNamespace(start=AsyncMock(side_effect=primary), stop=AsyncMock(side_effect=secondary))
+    transport = SimpleNamespace(subscribe=Mock(), start=AsyncMock(side_effect=primary), stop=AsyncMock(side_effect=secondary))
     monkeypatch.setattr(kafka, 'AIOKafkaConsumer', lambda *a, **kw: transport)
     await asyncio.wait_for(instance.start(Context()), 1)
     await asyncio.wait_for(asyncio.shield(instance._start_task), 1)

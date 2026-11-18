@@ -28,6 +28,7 @@ def consumer():
     instance._restoring = False
     instance._checkpoint_error = None
     instance._assigned_partitions = set()
+    instance._failed_partitions = set()
     instance._assignment_epochs = {}
     instance._partition_tasks = {}
     instance._commit_lock = asyncio.Lock()
@@ -42,7 +43,7 @@ def consumer():
     instance._handler = Mock(concurrency=lambda sc: 1)
     instance._handler.restore_checkpoint = Mock(return_value=None)
     instance._handler.on_error = AsyncMock()
-    instance._kafka_consumer = SimpleNamespace(stop=AsyncMock(), commit=AsyncMock())
+    instance._kafka_consumer = SimpleNamespace(stop=AsyncMock(), commit=AsyncMock(), pause=Mock())
     return instance
 
 
@@ -233,7 +234,10 @@ async def test_actual_start_dispatch_binds_owner_instead_of_ambient_context(monk
     observed = []
 
     class Transport:
-        start = AsyncMock()
+        def subscribe(self, *, topics, listener):
+            self.listener = listener
+        async def start(self):
+            await self.listener.on_partitions_assigned(self.assignment())
         stop = AsyncMock()
         commit = AsyncMock()
         pause = Mock()

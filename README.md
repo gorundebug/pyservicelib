@@ -255,3 +255,13 @@ they finish, even if the RPC task receives repeated cancellation requests.
 New or late result deliveries are rejected after terminal handling begins.
 The signal remains available to business code; this protection does not
 clear cancellation or create a new deadline.
+
+Redis Streams adapters use official redis-py asyncio with explicit XACK, ordered
+binary native fields, bounded async publication, and standalone-primary validation.
+See [the Redis Streams SDK contract](docs/redisstreams.md) for configuration,
+lifecycle guarantees, public-client limits and shared-broker acceptance.
+
+Pulsar adapters use Apache pulsar-client 3.13.0's public asyncio API, explicit
+individual ACK/NACK, typed async delivery outcomes and deadline-bounded lifecycle.
+See [the Pulsar SDK contract](docs/pulsar.md) for resource-policy prerequisites,
+configuration, native acceptance and remaining deployment gates.

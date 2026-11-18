@@ -20,6 +20,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 test -f "$work/models/type.py"
 touch "$work/models/__init__.py"
+# Apply the same local presence policy before installing or comparing models.
+"${PYTHON:-python3}" "$root/tools/api_presence.py" "$work/models"
 if [[ "$mode" == --check ]]; then
   diff -ru --exclude=__pycache__ "$models" "$work/models"
 else

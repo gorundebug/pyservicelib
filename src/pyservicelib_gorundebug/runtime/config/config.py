@@ -115,7 +115,7 @@ class StreamConfig(Stream):
 
 
 class DataConnectorConfig(DataConnector):
-    implementation: Optional[DataConnectorImplementation] = Field(default=None)
+    implementation: Optional[DataConnectorImplementation | str] = Field(default=None, union_mode="left_to_right")
     properties: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
     def __getattr__(self, item: str) -> Any:
@@ -344,16 +344,28 @@ class ProjectSettings(ApiProjectSettings):
 _ConfigType = Union[str, int, float, bool, list[Any], dict[str, Any]]
 
 def _replace_placeholders(config: _ConfigType,
-                          values: dict[str, Any]) -> Optional[_ConfigType]:
+                          values: dict[str, Any], path: tuple[str | int, ...] = ()) -> Optional[_ConfigType]:
     if isinstance(config, str):
         if config.startswith("$"):
             placeholder = config[1:]
-            return values.get(placeholder, config)
+            if placeholder in values:
+                return values[placeholder]
+            # Generated overrides use the same nested paths as the template.
+            # Keep false, zero, empty strings and null distinct from missing.
+            current: Any = values
+            for key in path:
+                if isinstance(current, dict) and key in current:
+                    current = current[key]
+                elif isinstance(current, list) and isinstance(key, int) and 0 <= key < len(current):
+                    current = current[key]
+                else:
+                    return config
+            return current
         return config
     elif isinstance(config, dict):
-        return {key: _replace_placeholders(value, values) for key, value in config.items()}
+        return {key: _replace_placeholders(value, values, (*path, key)) for key, value in config.items()}
     elif isinstance(config, list):
-        return [_replace_placeholders(item, values) for item in config]
+        return [_replace_placeholders(item, values, (*path, index)) for index, item in enumerate(config)]
     else:
         return config
 

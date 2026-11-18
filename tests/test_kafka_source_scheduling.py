@@ -1,3 +1,4 @@
+from pyservicelib_gorundebug.datasource.kafka import aiokafkads as kafka
 import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
@@ -28,12 +29,14 @@ def _scheduler(limit: int) -> Any:
     scheduler._partition_queues = {}
     scheduler._restoring = False
     scheduler._checkpoint_error = None
-    scheduler._assigned_partitions = set()
+    scheduler._assigned_partitions = {kafka.TopicPartition("events", n) for n in range(10)}
+    scheduler._failed_partitions = set()
     scheduler._assignment_epochs = {}
     scheduler._partition_tasks = {}
     scheduler._commit_lock = asyncio.Lock()
     scheduler._paused_partitions = set()
     scheduler._partition_prefetch = 64
+    scheduler._marked_offsets = {}
     scheduler._kafka_consumer = None
     return scheduler
 
@@ -132,7 +135,7 @@ async def test_begin_failure_does_not_start_request_metrics() -> None:
     scheduler._component_name = ""
     scheduler._tracer = None
     scheduler._tracing = None
-    scheduler._kafka_consumer = SimpleNamespace()
+    scheduler._kafka_consumer = SimpleNamespace(pause=Mock())
     scheduler._input_stream = SimpleNamespace(name="orders")
     scheduler._endpoint = SimpleNamespace(
         name="events",
@@ -312,4 +315,13 @@ async def test_consume_loop_does_not_read_ahead_of_slow_partitions() -> None:
             task.cancel()
         await asyncio.gather(runner, *tasks, return_exceptions=True)
     assert not scheduler._partition_queues
+    assert scheduler._active_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [-1, -100, True, 1.5])
+async def test_invalid_concurrency_fails_without_admission(limit) -> None:
+    scheduler = _scheduler(limit)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        await asyncio.wait_for(scheduler._acquire_concurrency(), 1)
     assert scheduler._active_count == 0

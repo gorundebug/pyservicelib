@@ -136,7 +136,7 @@ class ResultCallback[HandlerState, T, R, E](Protocol):
 class ResultContext[HandlerState, T, R, E]:
     """Holds result callbacks for a single Kafka message. Equivalent to Go's kafka ResultContext."""
 
-    __slots__ = ("_handler_state", "_done", "_callbacks", "_span", "_once")
+    __slots__ = ("_handler_state", "_done", "_callbacks", "_span", "_once", "_error")
 
     _handler_state: HandlerState
     _done: asyncio.Future[None]
@@ -150,6 +150,7 @@ class ResultContext[HandlerState, T, R, E]:
         self._callbacks = {}
         self._span = None
         self._once = False
+        self._error: Exception | None = None
 
     def set_result_callback(
         self,
@@ -398,6 +399,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         self._restoring = False
         self._checkpoint_error: BaseException | None = None
         self._assigned_partitions: set[TopicPartition] = set()
+        self._failed_partitions: set[TopicPartition] = set()
         self._assignment_epochs: dict[TopicPartition, int] = {}
         self._partition_tasks: dict[TopicPartition, asyncio.Task[None]] = {}
         self._commit_lock = asyncio.Lock()
@@ -475,6 +477,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         async with self._commit_lock:
             for partition in partitions:
                 self._marked_offsets.pop(partition, None)
+                self._failed_partitions.discard(partition)
 
     async def _checkpoint_assigned(self, partitions) -> None:
         self._assigned_partitions.difference_update(partitions)
@@ -484,6 +487,14 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             if self._owner is None or self._owner.is_expired or self._kafka_consumer is None:
                 raise CheckpointRestoreError("checkpoint owner is no longer active")
             consumer = self._kafka_consumer
+            if not self._restoring:
+                for partition in partitions:
+                    self._assignment_epochs[partition] = self._assignment_epochs.get(partition, 0) + 1
+                    self._failed_partitions.discard(partition)
+                self._assigned_partitions.update(partitions)
+                for partition in partitions:
+                    self._resume_partition(partition)
+                return
             with request_context_scope(self._owner):
                 offsets = await self._restore_checkpoint()
                 if offsets is None:
@@ -517,7 +528,10 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                         self._assignment_epochs[partition] = self._assignment_epochs.get(partition, 0) + 1
                         # This prefix is durable by contract, not a new ACK.
                         self._marked_offsets[partition] = next_offset
+                    self._failed_partitions.difference_update(selected)
                     self._assigned_partitions.update(selected)
+                    for partition in selected:
+                        self._resume_partition(partition)
         except BaseException as err:
             self._checkpoint_error = err
             self._assigned_partitions.clear()
@@ -560,7 +574,6 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             checkpoint = await self._restore_checkpoint()
         self._restoring = checkpoint is not None
         kafka_consumer = AIOKafkaConsumer(
-            *(() if self._restoring else (topic,)),
             bootstrap_servers=brokers,
             group_id=group_id,
             auto_offset_reset='none' if self._restoring else 'earliest',
@@ -569,8 +582,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             **_client_options(cfg_ds),
         )
         self._kafka_consumer = kafka_consumer
-        if self._restoring:
-            kafka_consumer.subscribe(topics=[topic], listener=_CheckpointListener(self))
+        kafka_consumer.subscribe(topics=[topic], listener=_CheckpointListener(self))
         await kafka_consumer.start()
         if self._checkpoint_error is not None:
             raise self._checkpoint_error
@@ -712,7 +724,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         if self._stopped:
             return
         partition = TopicPartition(record.topic, record.partition)
-        if self._restoring and (self._checkpoint_error is not None or partition not in self._assigned_partitions):
+        if self._checkpoint_error is not None or partition not in self._assigned_partitions or partition in self._failed_partitions:
             return
         queue = self._partition_queues.get(partition)
         new_partition = queue is None
@@ -734,6 +746,8 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             lane.add_done_callback(self._message_finished)
 
     def _resume_partition(self, partition) -> None:
+        if partition in self._failed_partitions or partition not in self._assigned_partitions:
+            return
         if partition not in self._paused_partitions:
             return
         self._paused_partitions.discard(partition)
@@ -745,7 +759,7 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
     async def _run_partition(self, partition, queue) -> None:
         first = True
         try:
-            while queue and not self._stopped:
+            while queue and not self._stopped and partition not in self._failed_partitions:
                 record, context = queue.popleft()
                 if first:
                     # The lane itself is already a separate task with this
@@ -760,13 +774,31 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         except asyncio.CancelledError:
             # Revocation intentionally cancels this lane before reassignment.
             # It is not a failed handler to replay later during service drain.
-            if not self._restoring or partition in self._assigned_partitions:
+            if partition in self._assigned_partitions:
                 raise
         finally:
             self._partition_tasks.pop(partition, None)
             self._partition_queues.pop(partition, None)
             queue.clear()
             self._resume_partition(partition)
+
+    def _fail_partition(self, record) -> None:
+        """Park this assignment: Kafka commits are cumulative within a partition.
+
+        Reassignment is the recovery boundary; never implicitly retry a failed
+        request or resume its queued successors. Other partitions remain live.
+        """
+        partition = TopicPartition(record.topic, record.partition)
+        if partition in self._failed_partitions:
+            return
+        self._failed_partitions.add(partition)
+        self._assignment_epochs[partition] = self._assignment_epochs.get(partition, 0) + 1
+        marked = self._marked_offsets.get(partition)
+        if marked is not None and marked > record.offset:
+            self._marked_offsets.pop(partition, None)
+        if self._kafka_consumer is not None and partition in self._assigned_partitions:
+            self._kafka_consumer.pause(partition)
+            self._paused_partitions.add(partition)
 
     async def _dispatch_record(self, record) -> None:
         if not await self._acquire_concurrency():
@@ -785,6 +817,8 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 if self._stopped:
                     return False
                 limit = self._handler.concurrency(self._sc)
+                if type(limit) is not int or limit < 0:
+                    raise ValueError("Kafka concurrency must be a non-negative integer")
                 if limit == 0 or self._active_count < limit:
                     self._active_count += 1
                     return True
@@ -800,11 +834,17 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
         if tracing is None:
             await self._endpoint_request_inner(record)
             return
-        carrier = {
-            key.lower(): value.decode("utf-8")
-            for key, value in (getattr(record, "headers", None) or [])
-            if value is not None and key.lower() in ("x-trace", "traceparent", "tracestate")
-        }
+        carrier = {}
+        for key, value in (getattr(record, "headers", None) or []):
+            name = key.lower()
+            if value is None or name not in ("x-trace", "traceparent", "tracestate", "baggage"):
+                continue
+            try:
+                carrier[name] = value.decode("utf-8")
+            except UnicodeDecodeError:
+                # Kafka headers are bytes. Invalid tracing metadata must not
+                # prevent the business handler from processing the record.
+                continue
         with (
             tracing.extract(carrier) if carrier else nullcontext(False)
         ) as remote_sampled:
@@ -843,9 +883,19 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                 partition = TopicPartition(record.topic, record.partition)
                 epoch = self._assignment_epochs.get(partition, 0)
 
+                native_consumer = self._kafka_consumer
+                request_event = request_cancelled.get()
+                request_limit = request_deadline.get()
+
                 def current_assignment() -> bool:
-                    return not self._restoring or (
-                        self._checkpoint_error is None
+                    return (
+                        not self._stopped
+                        and (request_event is None or not request_event.is_set())
+                        and (request_limit is None or request_limit > datetime.now(timezone.utc))
+                        and self._owner is not None and not self._owner.is_expired
+                        and self._kafka_consumer is native_consumer
+                        and partition not in self._failed_partitions
+                        and self._checkpoint_error is None
                         and partition in self._assigned_partitions
                         and self._assignment_epochs.get(partition, 0) == epoch
                     )
@@ -858,7 +908,9 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
                     async with self._commit_lock:
                         if not current_assignment():
                             raise CheckpointRestoreError("message belongs to a revoked assignment")
-                        await self._kafka_consumer.commit({partition: record.offset + 1})
+                        await native_consumer.commit({partition: record.offset + 1})
+                        if not current_assignment():
+                            raise CheckpointRestoreError("assignment revoked during commit")
 
                 msg = ConsumerMessage(
                     record, self._kafka_consumer, mark_message, commit_message
@@ -890,53 +942,41 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
 
                 try:
                     await self._handler.consume_message(self._sc, handler_state, msg, result_ctx)
-                except Exception as err:
-                    if span is not None and span is not NOOP_SPAN:
-                        span_error(span, err)
-                        span.add_event("consume_message.error", string_attr("error", str(err)))
-                    end_err = err
-                    if self._has_result and self._pending is not None:
+                    if span is not NOOP_SPAN:
+                        span.add_event("consume_message")
+                    if result is not None:
+                        await _wait_kafka_completion(result._done)
+                        if result._error is not None:
+                            raise result._error
+                        if span is not NOOP_SPAN:
+                            span.add_event("done_received")
+                    event = request_cancelled.get()
+                    deadline = request_deadline.get()
+                    if ((event is not None and event.is_set()) or
+                        (deadline is not None and deadline <= datetime.now(timezone.utc))):
+                        raise asyncio.CancelledError("Kafka endpoint request cancelled")
+                except (Exception, asyncio.CancelledError) as err:
+                    end_err = (RuntimeError("Kafka endpoint request cancelled")
+                               if isinstance(err, asyncio.CancelledError) else err)
+                    # Fence before invoking EndRequest: retained handles must not
+                    # commit a failed record from cleanup/result callbacks.
+                    self._fail_partition(record)
+                    if span is not NOOP_SPAN:
+                        span_error(span, end_err)
+                finally:
+                    if result is not None and self._pending is not None:
                         self._pending.pop(sid)
                         ep.on_pending_remove(sid)
-                        await self._handler.end_request(
-                            self._sc, err, handler_state
-                        )
-                    else:
-                        await self._handler.end_request(
-                            self._sc, err, handler_state
-                        )
-                    return
-                if span is not None and span is not NOOP_SPAN:
-                    span.add_event("consume_message")
-
-                if not self._has_result:
-                    await self._handler.end_request(self._sc, None, handler_state)
-                    return
-
-                if result is None:
-                    raise RuntimeError("Kafka result context was not initialized")
-
-                try:
-                    await _wait_kafka_completion(result._done)
-                    if span is not None and span is not NOOP_SPAN:
-                        span.add_event("done_received")
-                except (asyncio.CancelledError, TimeoutError):
-                    if result._done.done() and not result._done.cancelled():
-                        if span is not None and span is not NOOP_SPAN:
-                            span.add_event("done_received")
-                    else:
-                        if span is not None and span is not NOOP_SPAN:
-                            span.add_event("context_cancelled")
-                        end_err = RuntimeError("Kafka endpoint request cancelled")
-                        if span is not NOOP_SPAN:
-                            span_error(span, end_err)
-                if self._pending is not None:
-                    self._pending.pop(sid)
-                    ep.on_pending_remove(sid)
-                await self._handler.end_request(
-                    self._sc, end_err, handler_state
-                )
+                    try:
+                        await self._handler.end_request(self._sc, end_err, handler_state)
+                    except (Exception, asyncio.CancelledError) as err:
+                        end_err = (RuntimeError("Kafka EndRequest cancelled")
+                                   if isinstance(err, asyncio.CancelledError) else err)
+                        self._fail_partition(record)
+                        raise
         finally:
+            if end_err is not None:
+                self._fail_partition(record)
             if start_time is not None:
                 ep.on_request_end(start_time, end_err)
             if span is not NOOP_SPAN:
@@ -964,7 +1004,14 @@ class _AIOKafkaTypedEndpointConsumer[HandlerState, T, R, E](DataSourceEndpointCo
             if result._span is not None and result._span is not NOOP_SPAN:
                 result._span.add_event("unknown_message_id", string_attr("message_id", message_id))
             return
-        remove = cb(self._sc, result._handler_state, value)
+        try:
+            remove = cb(self._sc, result._handler_state, value)
+        except Exception as err:
+            # Preserve the original error for the result stream's typed routing,
+            # and wake the owning request so its partition cannot overtake it.
+            result._error = err
+            result.done()
+            raise
         if remove and result._callbacks.pop(message_id, None) is None:
             ep.on_duplicate_message_id(sid, message_id)
             if result._span is not None and result._span is not NOOP_SPAN:
