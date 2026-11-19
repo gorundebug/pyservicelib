@@ -58,6 +58,7 @@ _STREAM_ICON_MAP: dict[TransformationType, str] = {
     TransformationType.Split: _MDI_CALL_SPLIT,
     TransformationType.Case: _MDI_SOURCE_FORK,
     TransformationType.Sink: _MDI_DATABASE_ARROW_LEFT,
+    TransformationType.Query: _MDI_DATABASE_ARROW_LEFT,
     TransformationType.CycleLink: _MDI_SYNC,
     TransformationType.Error: _MDI_ALERT_CIRCLE,
     TransformationType.Delay: _MDI_TIMER,

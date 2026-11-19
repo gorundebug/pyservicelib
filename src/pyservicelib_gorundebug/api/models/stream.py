@@ -34,13 +34,13 @@ class Stream(BaseModel):
     """ # noqa: E501
     id: StrictInt = Field(description="Unique identifier for this stream node within the topology.", json_schema_extra={"examples": [1]})
     name: StrictStr = Field(description="Human-readable node name shown in the visual designer.", json_schema_extra={"examples": ["HttpInputStream"]})
-    id_source: Annotated[int, Field(strict=True, ge=0)] = Field(description="ID of the single upstream stream node. Used by operators with one input (Map, Filter, FlatMap, Process, KeyBy, Split, Case, Delay, Sink). Set to 0 when the node has no single source (Input nodes, Merge, MultiJoin). ", alias="idSource")
+    id_source: Annotated[int, Field(strict=True, ge=0)] = Field(description="ID of the single upstream stream node. Used by operators with one input (Map, Filter, FlatMap, Process, KeyBy, Split, Case, Delay, Sink, Query). Set to 0 when the node has no single source (Input nodes, Merge, MultiJoin). ", alias="idSource")
     id_sources: Optional[List[Annotated[int, Field(strict=True, ge=1)]]] = Field(default=None, description="IDs of multiple upstream stream nodes. Used by Merge (same type, N sources) and MultiJoin (keyed streams, N sources). Mutually exclusive with `idSource` for these operator types. ", alias="idSources")
     type: TransformationType
     value_type: Optional[Annotated[str, Field(min_length=1, strict=True)]] = Field(default=None, description="Name of the output message type for this node (e.g. `OrderEvent`). Must match a type defined in `StreamApp.types` or an imported Go type. ", alias="valueType")
     key_type: Optional[Annotated[str, Field(min_length=1, strict=True)]] = Field(default=None, description="Name of the key type for keyed stream nodes (KeyBy, Join, MultiJoin). Must be a comparable Go type. ", alias="keyType")
     id_service: Annotated[int, Field(strict=True, ge=1)] = Field(description="ID of the service this node belongs to.", alias="idService")
-    id_endpoint: Optional[StrictInt] = Field(default=None, description="ID of the associated endpoint. Required for Input and Sink nodes; determines which data connector entry/exit point this node uses. ", alias="idEndpoint")
+    id_endpoint: Optional[StrictInt] = Field(default=None, description="ID of the associated endpoint. Required for Input, Sink and Query nodes; determines which data connector entry/exit point this node uses. ", alias="idEndpoint")
     join_type: Optional[JoinType] = Field(default=None, alias="joinType")
     join_storage: Optional[JoinStorageType] = Field(default=None, alias="joinStorage")
     pattern: Optional[ProcessPattern] = None

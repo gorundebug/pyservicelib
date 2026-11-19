@@ -39,6 +39,9 @@ class DataConnector(BaseModel):
     implementations: Optional[Dict[str, StrictStr]] = Field(default=None, description="Transport implementation selections keyed by template target identifier. Target and implementation names are open identifiers declared by template packs. Optional: omitted targets use the defaults declared by their selected template packs. Explicit selections override those defaults. No language-specific selector fields exist. ")
     host: Optional[StrictStr] = Field(default=None, description="Hostname or IP address. Applies to HTTP and gRPC connectors.")
     port: Optional[Annotated[int, Field(le=65535, strict=True, ge=80)]] = Field(default=None, description="Port number. Applies to HTTP and gRPC connectors.")
+    connection_string: Optional[StrictStr] = Field(default=None, description="PostgreSQL DSN supplied through runtime configuration, never embedded credentials in the model.", alias="connectionString")
+    region: Optional[StrictStr] = Field(default=None, description="S3 region used by the selected connector implementation.")
+    force_path_style: Optional[StrictBool] = Field(default=False, description="Use path-style S3 addressing for a compatible endpoint.", alias="forcePathStyle")
     address: Optional[StrictStr] = Field(default=None, description="gRPC connection address.")
     connections_count: Optional[Annotated[int, Field(strict=True, ge=1)]] = Field(default=None, description="Number of independent transport connections used by a gRPC sink connector.", alias="connectionsCount")
     brokers: Optional[StrictStr] = Field(default=None, description="Comma-separated list of Kafka broker addresses (e.g. `kafka1:9092,kafka2:9092`). Applies to Kafka connectors.")
@@ -69,7 +72,7 @@ class DataConnector(BaseModel):
     tls_cert_file: Optional[StrictStr] = Field(default=None, description="Path to a PEM client certificate for Temporal, NATS, JetStream, or RabbitMQ mTLS. Set together with tlsKeyFile. Supply through a generated environment-backed override.", alias="tlsCertFile")
     tls_key_file: Optional[StrictStr] = Field(default=None, description="Path to the PEM private key paired with tlsCertFile. Supply through a generated environment-backed override.", alias="tlsKeyFile")
     worker_stop_timeout: Optional[StrictInt] = Field(default=None, description="Maximum milliseconds for Temporal Workers to drain during shutdown; zero inherits the owning service shutdownTimeout.", alias="workerStopTimeout")
-    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "implementations", "host", "port", "address", "connectionsCount", "brokers", "servers", "adminUrl", "redisDatabase", "virtualHost", "connectTimeoutMs", "operationTimeoutMs", "token", "credentialsFile", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "apiKey", "tlsEnabled", "tlsServerName", "tlsCaFile", "tlsCertFile", "tlsKeyFile", "workerStopTimeout"]
+    __properties: ClassVar[List[str]] = ["id", "name", "type", "implementation", "implementations", "host", "port", "connectionString", "region", "forcePathStyle", "address", "connectionsCount", "brokers", "servers", "adminUrl", "redisDatabase", "virtualHost", "connectTimeoutMs", "operationTimeoutMs", "token", "credentialsFile", "version", "dialTimeout", "usePartitioner", "async", "securityProtocol", "saslMechanism", "username", "password", "useDedicatedListener", "module", "namespace", "identity", "apiKey", "tlsEnabled", "tlsServerName", "tlsCaFile", "tlsCertFile", "tlsKeyFile", "workerStopTimeout"]
 
     model_config = ConfigDict(
         validate_by_name=True,

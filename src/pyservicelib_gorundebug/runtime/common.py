@@ -1037,6 +1037,32 @@ class TypedSinkStreamWithResult[T, R, E](TypedTransformConsumedStream[T, R]):
         pass
 
 
+class TypedQueryStream[T, R, E](TypedTransformConsumedStream[T, R]):
+
+    @property
+    @abstractmethod
+    def input_serde(self) -> TypedStreamSerde[T]:
+        pass
+
+    @property
+    @abstractmethod
+    def endpoint_id(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def error_stream(self) -> "TypedConsumedStream[E]":
+        pass
+
+    @abstractmethod
+    def set_query_consumer(self, consumer: "Consumer[T]") -> None:
+        pass
+
+    @abstractmethod
+    async def consume_result(self, value: R) -> None:
+        pass
+
+
 class TypedWhenStream(Stream, ABC):
     """Non-generic when-stream interface, equivalent to Go's runtime.WhenStream (embeds Stream)."""
 

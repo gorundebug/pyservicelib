@@ -82,7 +82,7 @@ async def run_shutdown_operations(
     ctx: Context,
     operations: list[ShutdownOperation],
 ) -> None:
-    """Run named shutdown operations within one shared deadline."""
+    """Finish a shutdown phase before releasing resources owned by the next phase."""
     tasks: dict[asyncio.Task[None], str] = {
         asyncio.create_task(operation, name=f"servicelib-shutdown:{name}"): name
         for name, operation in operations
@@ -98,7 +98,7 @@ async def run_shutdown_operations(
     except asyncio.CancelledError:
         for task in tasks:
             task.cancel()
-            task.add_done_callback(consume_detached_shutdown_result)
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
 
     for task in done:
@@ -123,9 +123,13 @@ async def run_shutdown_operations(
         )
 
     if pending:
-        for task in pending:
-            task.cancel()
-            task.add_done_callback(consume_detached_shutdown_result)
+        # ServiceApp bounds the caller's wait. The teardown owner must still
+        # join physical cleanup before starting the next phase.
+        results = await asyncio.gather(*pending, return_exceptions=True)
+        for task, result in zip(pending, results):
+            if isinstance(result, Exception):
+                logger.warn("shutdown operation failed",
+                            str_field("resource", tasks[task]), err_field(result))
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -184,6 +188,7 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         self._managed_data_connectors = {}
         self._aiohttp_app = None
         self._aiohttp_runner = None
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     def reload_config(self, cfg: Config) -> None:
         self._config = cfg.config
@@ -472,6 +477,11 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
         pass
 
     async def start_graph(self, ctx: Context) -> None:
+        if self._shutdown_task is not None:
+            if not self._shutdown_task.done():
+                raise RuntimeError("service shutdown is still in progress")
+            self._shutdown_task.result()
+            self._shutdown_task = None
         """Start graph resources only for explicit operator/substream execution."""
         for stream in self._streams.values():
             stream.build()
@@ -570,6 +580,19 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
 
     async def stop(self, ctx: Context) -> None:
         ctx = ctx.bounded(timedelta(milliseconds=self.service_config.shutdown_timeout))
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(
+                self._stop_in_order(ctx), name="servicelib-service-shutdown")
+            self._shutdown_task.add_done_callback(consume_detached_shutdown_result)
+        # asyncio.wait does not cancel the teardown when a caller times out or
+        # is cancelled. Later callers join the same owned operation.
+        done, _ = await asyncio.wait([self._shutdown_task], timeout=ctx.time_left)
+        if done:
+            self._shutdown_task.result()
+        else:
+            self._log.warn("service shutdown wait timed out")
+
+    async def _stop_in_order(self, ctx: Context) -> None:
 
         # Phase 1: close network admission and let already accepted HTTP/gRPC
         # requests finish while their endpoint state, graph pools and sinks are
@@ -651,8 +674,9 @@ class ServiceApp(ServiceExecutionEnvironment, ServiceExecutionRuntime):
                 )
                 for task in pending:
                     task.cancel()
-                    task.add_done_callback(consume_detached_shutdown_result)
-                break
+                # Cancellation may enter an asynchronous Query EndRequest or
+                # another finally block. Keep clients alive until it returns.
+                await asyncio.gather(*pending, return_exceptions=True)
             await asyncio.gather(*done, return_exceptions=True)
 
         await run_shutdown_operations(

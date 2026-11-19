@@ -113,6 +113,25 @@ def runtime_to_stream_app(app: "ServiceApp") -> StreamApp:
             ep_api = endpoint_config_to_api(ep.config)
             endpoints.append(ep_api)
 
+    # Query clients are managed resources rather than registered sources/sinks.
+    connector_ids = {connector.id for connector in data_connectors}
+    endpoint_ids = {endpoint.id for endpoint in endpoints}
+    for stream in streams:
+        if stream.type != TransformationType.Query or stream.id_endpoint is None:
+            continue
+        endpoint = app.config.get_endpoint_config_by_id(stream.id_endpoint)
+        if endpoint is None:
+            continue
+        connector = app.config.get_data_connector_by_id(endpoint.id_data_connector)
+        if connector is None:
+            continue
+        if connector.id not in connector_ids:
+            data_connectors.append(data_connector_config_to_api(connector))
+            connector_ids.add(connector.id)
+        if endpoint.id not in endpoint_ids:
+            endpoints.append(endpoint_config_to_api(endpoint))
+            endpoint_ids.add(endpoint.id)
+
     default_cs = CallSemantics.Inherited
     svc_cfg = app.service_config
     if svc_cfg is not None and svc_cfg.default_call_semantics is not None:

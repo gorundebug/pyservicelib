@@ -19,6 +19,7 @@ from .stream_types import (
     SplitStreamConfig,
     DelayStreamConfig,
     SinkStreamConfig,
+    QueryStreamConfig,
     CycleLinkStreamConfig,
     CaseStreamConfig,
     WhenStreamConfig,
@@ -68,3 +69,4 @@ from .rabbitmq import RabbitMQDataConnectorConfig, RabbitMQEndpointConfig
 from .redisstreams import RedisStreamsDataConnectorConfig, RedisStreamsEndpointConfig
 
 from .pulsar import PulsarDataConnectorConfig, PulsarEndpointConfig
+from .query import PostgreSQLSQLAlchemyDataConnectorConfig, QueryEndpointConfig

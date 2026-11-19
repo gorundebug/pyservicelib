@@ -69,6 +69,15 @@ class DataConnectorImplementation(str, Enum):
     PulsarPython = 'pulsar-client-python'
     PulsarNode = 'pulsar-client-node'
     PulsarCpp = 'pulsar-client-cpp'
+    GoBun = 'go/bun'
+    PythonSQLAlchemy = 'python/sqlalchemy'
+    NodeKysely = 'node/kysely'
+    RustSQLx = 'rust/sqlx'
+    GoAWS = 'go/aws'
+    NodeAWS = 'node/aws'
+    PythonAiobotocore = 'python/aiobotocore'
+    UserverPostgreSQL = 'userver/postgresql'
+    Libpq = 'libpq'
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

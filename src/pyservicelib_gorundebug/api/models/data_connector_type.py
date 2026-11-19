@@ -38,6 +38,14 @@ class DataConnectorType(int, Enum):
     RabbitMQ = 9
     RedisStreams = 10
     Pulsar = 11
+    PostgreSQLBun = 12
+    PostgreSQLKysely = 13
+    PostgreSQLSQLAlchemy = 14
+    PostgreSQLSQLx = 15
+    PostgreSQLUserver = 16
+    PostgreSQLLibpq = 17
+    S3AWS = 18
+    S3Userver = 19
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:

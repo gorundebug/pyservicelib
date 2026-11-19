@@ -21,6 +21,7 @@ def _to_camel_case(snake: str) -> str:
 from ...api.models.data_type import DataType
 from ...api.models.transformation_type import TransformationType
 from ...api.models.stream import Stream
+from ...api.models.data_connector_type import DataConnectorType
 from ...api.models.data_connector import DataConnector
 from ...api.models.data_connector_implementation import DataConnectorImplementation
 from ...api.models.endpoint import Endpoint
@@ -43,6 +44,7 @@ transformation_name_map = {
     TransformationType.Process: "process",
     TransformationType.Input: "input",
     TransformationType.SubStream: "substream",
+    TransformationType.Query: "query",
     TransformationType.Join: "join",
     TransformationType.KeyBy: "keyBy",
     TransformationType.Map: "map",
@@ -525,6 +527,15 @@ class ServiceAppConfig(StreamApp, Config):
             self.runtime_config.data_connectors_by_id[data_connector.id] = (
                 cast(DataConnectorConfig, data_connector))
 
+        for endpoint in self.endpoints:
+            if endpoint.query_operation is not None:
+                connector = self.runtime_config.data_connectors_by_id.get(endpoint.id_data_connector)
+                if connector is None or connector.type not in (DataConnectorType.PostgreSQLSQLAlchemy, DataConnectorType.S3AWS):
+                    raise ValueError(f"Query endpoint {endpoint.name!r} requires a supported storage connector")
+                operations = ('Rows', 'Execute') if connector.type == DataConnectorType.PostgreSQLSQLAlchemy else ('GetObject', 'HeadObject', 'ListObjects', 'PutObject', 'DeleteObject')
+                if endpoint.query_operation not in operations:
+                    raise ValueError(f"Query endpoint {endpoint.name!r} operation is not supported by its connector")
+
         for module in self.modules or []:
             if module.name in self.runtime_config.modules:
                 raise ValueError(f"duplicate module name: {module.name}")
@@ -572,7 +583,7 @@ class ServiceAppConfig(StreamApp, Config):
         if stream_id < 0:
             owner = self.runtime_config.streams_by_id.get(-stream_id)
             if owner is not None and owner.type in (
-                TransformationType.Input, TransformationType.Process, TransformationType.Sink
+                TransformationType.Input, TransformationType.Process, TransformationType.Sink, TransformationType.Query
             ):
                 return owner
         return self.runtime_config.streams_by_id[stream_id]
@@ -656,6 +667,11 @@ class ServiceAppConfig(StreamApp, Config):
         from .stream_types import SinkStreamConfig
         cfg = self.get_stream_config_by_name(name)
         return SinkStreamConfig(cfg) if cfg is not None else None
+
+    def get_query_stream_config(self, name: str):
+        from .stream_types import QueryStreamConfig
+        cfg = self.get_stream_config_by_name(name)
+        return QueryStreamConfig(cfg) if cfg is not None else None
 
     def get_cycle_link_stream_config(self, name: str):
         from .stream_types import CycleLinkStreamConfig

@@ -18,6 +18,7 @@ from ..operators.merge import MergeStream as Merge
 from ..operators.multijoin import MultiJoinStream as MultiJoin, MultiJoinLink, MultiJoinLinkStream
 from ..operators.process import ProcessStream as Process
 from ..operators.delay import DelayStream as Delay
+from ..operators.query import QueryStream as Query
 from ..operators.sink import SinkStream as Sink, SinkStreamWithResult as SinkWithResult
 from ..operators.case import CaseStream as Case, WhenStream as When
 from ..operators.split import SplitStream as Split
@@ -109,6 +110,7 @@ __all__ = [
     "ProcessFunction",
     "ProcessHandler",
     "ProcessStreamConfig",
+    "Query",
     "Sink",
     "SinkStreamConfig",
     "SinkWithResult",

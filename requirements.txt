@@ -25,3 +25,11 @@ redis==8.1.0
 
 # Official Apache native asyncio Pulsar client.
 pulsar-client==3.13.0
+
+# Query PostgreSQL connector: native async SQLAlchemy Core, no ORM Session.
+SQLAlchemy[asyncio]==2.0.58
+asyncpg==0.32.0
+
+# Query S3: async botocore transport; native API model version is pinned too.
+aiobotocore==3.10.0
+botocore==1.43.117

@@ -97,7 +97,7 @@ def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
     implementation = None
     if dc.type == DataConnectorType.Custom:
         implementation = dc.implementation
-    elif dc.implementation:
+    elif dc.implementation and dc.type not in (DataConnectorType.PostgreSQLSQLAlchemy, DataConnectorType.S3AWS):
         if bindings is None:
             bindings = {}
         bindings["python"] = getattr(dc.implementation, "value", dc.implementation)
@@ -109,9 +109,11 @@ def data_connector_config_to_api(dc: DataConnectorConfig) -> DataConnector:
         "implementations": bindings,
         "host": dc.host or None,
         "port": dc.port or None,
-        "address": dc.address or None,
+        "address": (dc.address or None) if dc.type != DataConnectorType.S3AWS else None,
+        "region": dc.region if dc.type == DataConnectorType.S3AWS else None,
+        "forcePathStyle": dc.force_path_style if dc.type == DataConnectorType.S3AWS else None,
         "connectionsCount": (dc.connections_count or 1)
-        if dc.type == DataConnectorType.gRPC else None,
+        if dc.type in (DataConnectorType.gRPC, DataConnectorType.PostgreSQLSQLAlchemy) else None,
         "brokers": dc.brokers or None,
         "adminUrl": dc.admin_url if dc.type == DataConnectorType.Pulsar else None,
         "servers": list(dc.servers) if dc.servers is not None else None,
@@ -148,6 +150,10 @@ def endpoint_config_to_api(ep: EndpointConfig) -> Endpoint:
         id=ep.id,
         name=ep.name,
         idDataConnector=ep.id_data_connector,
+        queryOperation=ep.query_operation,
+        fetchSize=ep.fetch_size if ep.query_operation else None,
+        sqlFile=ep.sql_file if ep.query_operation else None,
+        bucket=ep.bucket if ep.query_operation else None,
         httpMethodType=ep.http_method_type,
         grpcMethodType=ep.grpc_method_type,
         path=ep.path or None,

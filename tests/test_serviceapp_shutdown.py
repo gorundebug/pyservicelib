@@ -59,7 +59,7 @@ async def test_shutdown_reports_failed_resource() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_timeout_cancels_resource_and_returns() -> None:
+async def test_shutdown_phase_timeout_still_joins_resource() -> None:
     logger = RecordingLogger()
     release = asyncio.Event()
     completed = asyncio.Event()
@@ -69,9 +69,8 @@ async def test_shutdown_timeout_cancels_resource_and_returns() -> None:
             try:
                 await release.wait()
             except asyncio.CancelledError:
-                # A misbehaving resource may defer cancellation while it
-                # releases its own state. It still cannot extend the
-                # service-wide shutdown deadline.
+                # Physical cleanup owns resources until it has finished.
+                # ServiceApp bounds waiting separately from phase ownership.
                 continue
         completed.set()
 
@@ -83,12 +82,9 @@ async def test_shutdown_timeout_cancels_resource_and_returns() -> None:
         )
     )
     await asyncio.sleep(0.02)
-    assert stopped.done()
+    assert not stopped.done()
     release.set()
     await stopped
-
-    assert not completed.is_set()
-    await asyncio.sleep(0)
     assert completed.is_set()
     assert any(
         message == "shutdown operation timed out"
@@ -228,3 +224,73 @@ async def test_service_stops_graph_pools_before_draining_parallel_tasks() -> Non
     await app.stop(Context(timedelta(seconds=1)))
 
     assert events == ["pool:stop", "task:done"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('caller_cancel', [False, True])
+async def test_service_timeout_keeps_client_until_query_finalizer_returns(caller_cancel):
+    from .test_query_lifecycle import Stream
+    from pyservicelib_gorundebug.dataquery import BeginRequest, make_endpoint_consumer
+
+    entered, finalizing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events = []
+    class App(ServiceApp):
+        @property
+        def service_config(self): return type('Config', (), {'shutdown_timeout': 1000})()
+    class Loader:
+        async def stop(self): pass
+    class Pool:
+        async def stop(self, ctx): pass
+    class Engine:
+        async def shutdown(self): pass
+    class Client:
+        id, name = 1, 'query-client'
+        async def stop_admission(self, ctx): pass
+        async def stop(self, ctx): events.append('client-closed')
+    class Handler:
+        async def begin_request(self, stream): return BeginRequest(0)
+        async def end_request(self, stream, state, error, out, errors):
+            assert isinstance(error, asyncio.CancelledError)
+            events.append('end-entered')
+            finalizing.set()
+            await release.wait()
+            await out.out('completion')
+            events.append('end-finished')
+    async def execute(state, value, out):
+        entered.set()
+        try: await asyncio.Event().wait()
+        finally: events.append('operation-cleanup')
+    app = App()
+    app._loader, app._delay_pool = Loader(), Pool()
+    app._log = RecordingLogger()
+    app._metrics_engine = app._logs_engine = Engine()
+    app.add_managed_data_connector(Client())
+    stream = Stream()
+    consumer = make_endpoint_consumer(stream, Handler(), execute)
+    task = asyncio.create_task(consumer.consume(None))
+    app._tasks.add(task)
+    task.add_done_callback(app._tasks.discard)
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+            if caller_cancel:
+                first_stop = asyncio.create_task(app.stop(Context(timedelta(milliseconds=10))))
+                await asyncio.sleep(0)
+                first_stop.cancel()
+                with pytest.raises(asyncio.CancelledError): await first_stop
+            else:
+                await app.stop(Context(timedelta(milliseconds=10)))
+            await finalizing.wait()
+            for _ in range(5): await asyncio.sleep(0)
+            assert 'client-closed' not in events
+            retry = asyncio.create_task(app.stop(Context(timedelta(seconds=1))))
+            await asyncio.sleep(0)
+            assert not retry.done()
+            release.set()
+            await retry
+            await asyncio.gather(task, return_exceptions=True)
+            assert events == ['operation-cleanup', 'end-entered', 'end-finished', 'client-closed']
+            assert stream.values == ['completion']
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
